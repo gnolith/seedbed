@@ -8,48 +8,268 @@ permissions:
   contents: read
 
 jobs:
-  npm:
+  package:
     if: startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: read
-      id-token: write
     outputs:
-      version: ${{ steps.identity.outputs.version }}
+      sha256: ${{ steps.package.outputs.sha256 }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.release.tag_name }}
       - uses: ./.github/actions/setup-node
-      - run: npm config set registry https://registry.npmjs.org
       - id: identity
         shell: bash
         run: |
-          version=$(node -p "require('./package.json').version")
-          test "v$version" = "${{ github.event.release.tag_name }}"
+          tag="${{ github.event.release.tag_name }}"
+          [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]
+          version="${BASH_REMATCH[1]}"
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(node -p "require('./package.json').version")" = "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - run: npm ci
       - run: npm run check
-      - name: Publish the first version with temporary bootstrap authentication
+      - id: package
+        name: Pack and verify the exact publication tarball without credentials
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SEEDBED_VERSION: ${{ steps.identity.outputs.version }}
+        shell: bash
+        run: |
+          publication_dir="$RUNNER_TEMP/npm-publication"
+          mkdir "$publication_dir"
+          pack_json="$publication_dir/npm-pack.json"
+          packed_manifest="$publication_dir/packed-package.json"
+          npm pack --json --pack-destination "$publication_dir" > "$pack_json"
+          filename=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))[0].filename" "$pack_json")
+          integrity=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))[0].integrity" "$pack_json")
+          source="$publication_dir/$filename"
+          test "$filename" = "$(basename "$filename")"
+          test -f "$source"
+          actual_integrity="sha512-$(openssl dgst -sha512 -binary "$source" | openssl base64 -A)"
+          test "$actual_integrity" = "$integrity"
+          sha256=$(sha256sum "$source" | cut -d ' ' -f 1)
+          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          filename="seedbed-publication-$sha256.tgz"
+          artifact_name="seedbed-npm-$sha256-attempt-$RUN_ATTEMPT"
+          tarball="$publication_dir/$filename"
+          mv -- "$source" "$tarball"
+          tar -xOf "$tarball" package/package.json > "$packed_manifest"
+          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).name" "$packed_manifest")" = "@gnolith/seedbed"
+          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$packed_manifest")" = "$SEEDBED_VERSION"
+          printf '{"sha256":"%s","name":"@gnolith/seedbed","version":"%s","filename":"%s"}\n' \
+            "$sha256" "$SEEDBED_VERSION" "$filename" > "$publication_dir/seedbed-publication.json"
+          rm -- "$pack_json" "$packed_manifest"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+      - id: upload
+        name: Upload the content-addressed publication artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/npm-publication/seedbed-publication-${{ steps.package.outputs.sha256 }}.tgz
+            ${{ runner.temp }}/npm-publication/seedbed-publication.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write
+    steps:
+      - name: Install the SHA-verified npm toolchain without checkout
+        shell: bash
+        run: |
+          archive=node-v24.14.0-linux-x64.tar.xz
+          expected=41cd79bb7877c81605a9e68ec4c91547774f46a40c67a17e34d7179ef11729df
+          install_root="$RUNNER_TEMP/node-v24.14.0-linux-x64"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output "$RUNNER_TEMP/$archive" "https://nodejs.org/dist/v24.14.0/$archive"
+          echo "$expected  $RUNNER_TEMP/$archive" | sha256sum --check
+          tar --extract --xz --file "$RUNNER_TEMP/$archive" --directory "$RUNNER_TEMP"
+          echo "$install_root/bin" >> "$GITHUB_PATH"
+      - name: Verify the trusted npm toolchain
+        shell: bash
+        run: |
+          test "$(node --version)" = "v24.14.0"
+          test "$(npm --version)" = "11.9.0"
+      - name: Download the content-addressed publication artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }}
+          path: ${{ runner.temp }}/npm-publication
+          merge-multiple: true
+      - name: Reverify and publish with temporary bootstrap authentication
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-bootstrap.npmrc
+          EXPECTED_SHA256: ${{ needs.package.outputs.sha256 }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.package.outputs.artifact_id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.package.outputs.artifact_digest }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         shell: bash
         run: |
           umask 077
           trap 'rm -f "$NPM_CONFIG_USERCONFIG"' EXIT
+          [[ "$RELEASE_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]
+          expected_version="${BASH_REMATCH[1]}"
+          [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_ARTIFACT_DIGEST" =~ ^(sha256:)?[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          expected_ref="refs/tags/$RELEASE_TAG"
+          expected_filename="seedbed-publication-$EXPECTED_SHA256.tgz"
+          publication_dir="$RUNNER_TEMP/npm-publication"
+          tarball="$publication_dir/$expected_filename"
+          metadata="$publication_dir/seedbed-publication.json"
+          test "$(find "$publication_dir" -mindepth 1 -maxdepth 1 | wc -l)" -eq 2
+          test -f "$tarball" && test ! -L "$tarball"
+          test -f "$metadata" && test ! -L "$metadata"
+          test "$(stat -c %F "$tarball")" = "regular file"
+          test "$(stat -c %F "$metadata")" = "regular file"
+          test "$(sha256sum "$tarball" | cut -d ' ' -f 1)" = "$EXPECTED_SHA256"
+          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).sha256" "$metadata")" = "$EXPECTED_SHA256"
+          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).filename" "$metadata")" = "$expected_filename"
+          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).name" "$metadata")" = "@gnolith/seedbed"
+          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$metadata")" = "$expected_version"
+          python3 - "$tarball" "$expected_version" <<'PY'
+          import json
+          import sys
+          import tarfile
+
+          tarball, expected_version = sys.argv[1:]
+          with tarfile.open(tarball, mode='r:gz') as archive:
+              members = archive.getmembers()
+              names = [member.name for member in members]
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate archive member')
+              for member in members:
+                  name = member.name
+                  if not name or name.startswith(('/', '\\')) or '\\' in name:
+                      raise SystemExit(f'unsafe archive path: {name!r}')
+                  if any(ord(character) < 32 or ord(character) == 127 for character in name):
+                      raise SystemExit(f'control character in archive path: {name!r}')
+                  parts = name.split('/')
+                  if any(part in ('', '.', '..') for part in parts):
+                      raise SystemExit(f'ambiguous archive path: {name!r}')
+                  if parts[0] != 'package':
+                      raise SystemExit(f'archive member outside package/: {name!r}')
+                  if not (member.isfile() or member.isdir()):
+                      raise SystemExit(f'unsupported archive member type: {name!r}')
+              manifests = [member for member in members if member.name == 'package/package.json']
+              if len(manifests) != 1 or not manifests[0].isfile():
+                  raise SystemExit('package/package.json must be one regular file')
+              manifest_file = archive.extractfile(manifests[0])
+              if manifest_file is None:
+                  raise SystemExit('package/package.json is unreadable')
+              manifest = json.load(manifest_file)
+          if manifest.get('name') != '@gnolith/seedbed':
+              raise SystemExit('unexpected package name')
+          if manifest.get('version') != expected_version:
+              raise SystemExit('unexpected package version')
+          PY
+          expected_sha512_hex=$(sha512sum "$tarball" | cut -d ' ' -f 1)
+          expected_integrity="sha512-$(openssl dgst -sha512 -binary "$tarball" | openssl base64 -A)"
+          registry_response="$RUNNER_TEMP/npm-registry-version.json"
+          registry_url="https://registry.npmjs.org/@gnolith%2fseedbed/$expected_version"
+          verify_registry_provenance() {
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).name" "$registry_response")" = "@gnolith/seedbed"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$registry_response")" = "$expected_version"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.integrity" "$registry_response")" = "$expected_integrity"
+            attestations_url=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.url || ''" "$registry_response")
+            provenance_type=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.provenance?.predicateType || ''" "$registry_response")
+            test "$attestations_url" = "https://registry.npmjs.org/-/npm/v1/attestations/@gnolith%2fseedbed@$expected_version"
+            test "$provenance_type" = "https://slsa.dev/provenance/v1"
+            rm -f "$NPM_CONFIG_USERCONFIG"
+            unset NODE_AUTH_TOKEN
+            audit_dir="$RUNNER_TEMP/npm-provenance-audit"
+            mkdir "$audit_dir"
+            cd "$audit_dir"
+            npm init --yes >/dev/null
+            npm install --ignore-scripts --save-exact "@gnolith/seedbed@$expected_version"
+            test "$(node -p "JSON.parse(require('fs').readFileSync('node_modules/@gnolith/seedbed/package.json', 'utf8')).name")" = "@gnolith/seedbed"
+            test "$(node -p "JSON.parse(require('fs').readFileSync('node_modules/@gnolith/seedbed/package.json', 'utf8')).version")" = "$expected_version"
+            test "$(node -p "JSON.parse(require('fs').readFileSync('package-lock.json', 'utf8')).packages['node_modules/@gnolith/seedbed'].integrity")" = "$expected_integrity"
+            npm audit signatures | tee "$RUNNER_TEMP/npm-signature-audit.txt"
+            grep -Eq '[1-9][0-9]* packages? (has|have) (a )?verified attestations?' "$RUNNER_TEMP/npm-signature-audit.txt"
+            attestation_response="$RUNNER_TEMP/npm-provenance-attestations.json"
+            curl --fail --silent --show-error --location \
+              --output "$attestation_response" "$attestations_url"
+            node - "$attestation_response" "$expected_version" "$expected_sha512_hex" "$expected_ref" "$EXPECTED_COMMIT" <<'NODE'
+            const fs = require('fs');
+            const [path, version, sha512, ref, commit] = process.argv.slice(2);
+            const response = JSON.parse(fs.readFileSync(path, 'utf8'));
+            const attestations = response.attestations?.filter(
+              ({ predicateType }) => predicateType === 'https://slsa.dev/provenance/v1',
+            ) ?? [];
+            if (attestations.length !== 1) throw new Error('expected exactly one SLSA v1 provenance attestation');
+            const envelope = attestations[0].bundle?.dsseEnvelope;
+            if (envelope?.payloadType !== 'application/vnd.in-toto+json') throw new Error('unexpected DSSE payload type');
+            const statement = JSON.parse(Buffer.from(envelope.payload, 'base64').toString('utf8'));
+            if (statement._type !== 'https://in-toto.io/Statement/v1') throw new Error('unexpected statement type');
+            if (statement.predicateType !== 'https://slsa.dev/provenance/v1') throw new Error('unexpected predicate type');
+            const subjects = statement.subject ?? [];
+            if (subjects.length !== 1) throw new Error('expected one provenance subject');
+            if (subjects[0].name !== `pkg:npm/%40gnolith/seedbed@${version}`) throw new Error('unexpected provenance subject');
+            if (subjects[0].digest?.sha512 !== sha512) throw new Error('provenance subject digest mismatch');
+            const build = statement.predicate?.buildDefinition;
+            if (build?.buildType !== 'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1') {
+              throw new Error('unexpected provenance build type');
+            }
+            const workflow = build.externalParameters?.workflow;
+            if (workflow?.repository !== 'https://github.com/gnolith/seedbed') throw new Error('unexpected provenance repository');
+            if (workflow?.path !== '.github/workflows/release.yml') throw new Error('unexpected provenance workflow');
+            if (workflow?.ref !== ref) throw new Error('unexpected provenance ref');
+            const dependencies = build.resolvedDependencies ?? [];
+            const source = dependencies.filter(({ uri }) => uri === `git+https://github.com/gnolith/seedbed@${ref}`);
+            if (source.length !== 1 || source[0].digest?.gitCommit !== commit) {
+              throw new Error('unexpected provenance source commit');
+            }
+            NODE
+          }
+          registry_status=$(curl --silent --show-error --location \
+            --output "$registry_response" --write-out '%{http_code}' "$registry_url")
+          if test "$registry_status" = 200; then
+            verify_registry_provenance
+            echo "The exact npm artifact is already public; publication recovery is complete."
+            exit 0
+          fi
+          test "$registry_status" = 404
+          cd "$RUNNER_TEMP"
           # npm expands the token from its environment when it reads this file.
           # shellcheck disable=SC2016
           printf '%s\n' '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "$NPM_CONFIG_USERCONFIG"
-          npm publish --access public --provenance
-      - name: Verify the exact published process assembly
-        env:
-          SEEDBED_VERSION: ${{ steps.identity.outputs.version }}
-        run: npm run test:published
+          npm publish "$tarball" --ignore-scripts --access public --provenance
+          for attempt in {1..12}; do
+            registry_status=$(curl --silent --show-error --location \
+              --output "$registry_response" --write-out '%{http_code}' "$registry_url")
+            if test "$registry_status" = 200; then
+              published_attestations=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.url || ''" "$registry_response")
+              if test -z "$published_attestations"; then
+                sleep 5
+                continue
+              fi
+              verify_registry_provenance
+              exit 0
+            fi
+            test "$registry_status" = 404
+            sleep 5
+          done
+          echo "npm accepted the publication but exact registry evidence did not appear" >&2
+          exit 1
 
   image:
-    needs: npm
+    needs: publish
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -63,18 +283,31 @@ jobs:
       - uses: ./.github/actions/setup-node
       - run: npm config set registry https://registry.npmjs.org
       - run: npm ci --ignore-scripts
+      - id: identity
+        shell: bash
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]
+          version="${BASH_REMATCH[1]}"
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(node -p "require('./package.json').version")" = "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - shell: bash
         run: |
           mkdir registry-artifact
           cd registry-artifact
-          npm pack "@gnolith/seedbed@${{ needs.npm.outputs.version }}" --json > pack.json
+          npm pack "@gnolith/seedbed@${{ steps.identity.outputs.version }}" --json > pack.json
           filename=$(node -p "require('./pack.json')[0].filename")
           packed_integrity=$(node -p "require('./pack.json')[0].integrity")
-          registry_integrity=$(npm view "@gnolith/seedbed@${{ needs.npm.outputs.version }}" dist.integrity)
+          registry_integrity=$(npm view "@gnolith/seedbed@${{ steps.identity.outputs.version }}" dist.integrity)
           test "$packed_integrity" = "$registry_integrity"
-          mv "$filename" ../gnolith-seedbed-${{ needs.npm.outputs.version }}.tgz
+          mv "$filename" ../gnolith-seedbed-${{ steps.identity.outputs.version }}.tgz
           cd ..
           printf '%s\n' "$registry_integrity" > npm-integrity.txt
+      - name: Verify the exact published process assembly
+        env:
+          SEEDBED_VERSION: ${{ steps.identity.outputs.version }}
+        run: npm run test:published
       - id: build
         name: Build and push the provenance-attested image
         shell: bash
@@ -85,10 +318,10 @@ jobs:
             --push \
             --provenance=mode=max \
             --sbom=true \
-            --build-arg SEEDBED_TARBALL=gnolith-seedbed-${{ needs.npm.outputs.version }}.tgz \
+            --build-arg SEEDBED_TARBALL=gnolith-seedbed-${{ steps.identity.outputs.version }}.tgz \
             --build-arg REVISION=${{ github.sha }} \
-            --tag ghcr.io/gnolith/seedbed:${{ needs.npm.outputs.version }} \
-            --label org.opencontainers.image.version=${{ needs.npm.outputs.version }} \
+            --tag ghcr.io/gnolith/seedbed:${{ steps.identity.outputs.version }} \
+            --label org.opencontainers.image.version=${{ steps.identity.outputs.version }} \
             --label org.opencontainers.image.revision=${{ github.sha }} \
             --metadata-file "$RUNNER_TEMP/build-metadata.json"
           digest=$(node -p "require(process.env.RUNNER_TEMP + '/build-metadata.json')['containerimage.digest']")
@@ -99,7 +332,7 @@ jobs:
           docker pull "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}"
           test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{len .Config.ExposedPorts}}')" = "0"
           test "$(docker run --rm --entrypoint id "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" -u)" != "0"
-          test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "${{ needs.npm.outputs.version }}"
+          test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "${{ steps.identity.outputs.version }}"
           test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "${{ github.sha }}"
       - name: Functionally verify the immutable published image
         env:

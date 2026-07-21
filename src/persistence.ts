@@ -55,7 +55,7 @@ type AssemblyExpectation =
 const versions: MigrationVersions = {
   diamond: '0.4.0',
   taproot: '0.2.0',
-  workshop: '0.2.2',
+  workshop: '0.2.3',
   seedbed: '0.1.0',
 };
 

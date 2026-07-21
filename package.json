@@ -52,7 +52,7 @@
   "dependencies": {
     "@gnolith/diamond": "0.4.0",
     "@gnolith/taproot": "0.2.0",
-    "@gnolith/workshop": "0.2.2",
+    "@gnolith/workshop": "0.2.3",
     "@modelcontextprotocol/sdk": "1.29.0"
   },
   "devDependencies": {
