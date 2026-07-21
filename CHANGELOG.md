@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Upgrade Vitest and its V8 coverage provider to 3.2.6 to remediate
+  GHSA-5xrq-8626-4rwp in development tooling.
 - Replace the temporary npm bootstrap token path with OIDC-only trusted publishing.
 - Retry root-packument propagation and a clean exact-version install before accepting
   post-publish registry evidence.
