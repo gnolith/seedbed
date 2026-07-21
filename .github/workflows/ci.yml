@@ -44,7 +44,9 @@ jobs:
 
           npm ci --ignore-scripts --prefix .handoffs/workshop
           npm pack ./.handoffs/workshop --pack-destination "$RUNNER_TEMP"
-          echo "98244a8a14d6a42c7969162572fc76c64b7771f959d388674117ec90f9a72d2d  $RUNNER_TEMP/gnolith-workshop-0.2.2.tgz" | sha256sum --check
+          # Workshop's generated source maps make its pack bytes platform-specific.
+          # This is the deterministic Linux/npm 11.9.0 rebuild of the pinned commit.
+          echo "916cde59f105c799e75fe81e0a02f4655371ac49cf3e6dccd585cfc661863e79  $RUNNER_TEMP/gnolith-workshop-0.2.2.tgz" | sha256sum --check
       - name: Install exact artifacts without changing publishable metadata
         run: >-
           npm install --ignore-scripts --no-save --package-lock=false
