@@ -1,7 +1,7 @@
 import { createSparqlHandler, type D1DatabaseLike as DiamondPersistence } from '@gnolith/diamond';
 import type { NodeSqliteDatabase } from '@gnolith/diamond/node-sqlite';
 import { createWorkshopCore, createWorkshopToolDispatcher } from '@gnolith/workshop/core';
-import type { WorkshopPrincipal } from '@gnolith/workshop/protocol';
+import type { WorkshopCapability, WorkshopPrincipal } from '@gnolith/workshop/protocol';
 import type { WorkshopToolDispatcher } from '@gnolith/workshop/core';
 import type { D1DatabaseLike } from '@gnolith/workshop/server';
 import type { SeedbedConfig } from './config.js';
@@ -15,7 +15,19 @@ export interface SeedbedRuntime {
   readonly dispatcher: WorkshopToolDispatcher;
   readonly principal: WorkshopPrincipal;
   readonly lifecycle: OperationLifecycle;
+  drain(): Promise<void>;
   close(): Promise<void>;
+}
+
+export const LOCAL_PROCESS_CAPABILITIES = [
+  'read',
+  'task-write',
+  'knowledge-write',
+  'memory-write',
+] as const satisfies readonly WorkshopCapability[];
+
+export function createLocalPrincipal(id: string): WorkshopPrincipal {
+  return { id, capabilities: LOCAL_PROCESS_CAPABILITIES };
 }
 
 export async function createSeedbedRuntime(config: SeedbedConfig, taproot: TaprootAssembly): Promise<SeedbedRuntime> {
@@ -57,15 +69,15 @@ export async function createSeedbedRuntime(config: SeedbedConfig, taproot: Tapro
     });
     const dispatcher = createWorkshopToolDispatcher(core);
     const lifecycle = new OperationLifecycle();
-    const principal: WorkshopPrincipal = {
-      id: config.localOwnerId,
-      capabilities: ['admin'],
-    };
+    const principal = createLocalPrincipal(config.localOwnerId);
     return {
       database,
       dispatcher,
       principal,
       lifecycle,
+      async drain() {
+        await lifecycle.drain(config.shutdownTimeoutMs);
+      },
       async close() {
         await lifecycle.drain(config.shutdownTimeoutMs);
         await database.close();

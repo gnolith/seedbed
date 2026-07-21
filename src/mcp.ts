@@ -60,6 +60,8 @@ export async function runMcpStdio(runtime: SeedbedRuntime, logger: Logger): Prom
     if (!closing) {
       logger.info('MCP stdio shutdown started', { reason });
       closing = (async () => {
+        await runtime.drain();
+        await new Promise<void>((resolve) => setImmediate(resolve));
         await server.close();
         await runtime.close();
       })();

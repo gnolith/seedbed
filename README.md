@@ -54,8 +54,9 @@ Precedence is CLI, then `SEEDBED_*` environment variables, then
 | drain timeout | `--shutdown-timeout-ms` | `SEEDBED_SHUTDOWN_TIMEOUT_MS` | `10000` |
 
 The base IRI must be an absolute HTTP(S) URL and becomes immutable database identity.
-The local owner is explicit and receives the `admin` capability only inside this
-local process. Missing or invalid identity fails safely.
+The local owner is explicit and receives only the granular `read`, `task-write`,
+`knowledge-write`, and `memory-write` capabilities. Administrative authority is
+not granted. Missing or invalid identity fails safely.
 
 ## Docker
 

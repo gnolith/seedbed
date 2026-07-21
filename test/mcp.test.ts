@@ -1,14 +1,15 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { authorize } from '@gnolith/workshop/server';
 import { describe, expect, it, vi } from 'vitest';
 import { createMcpServer } from '../src/mcp.js';
 import { OperationLifecycle } from '../src/lifecycle.js';
-import type { SeedbedRuntime } from '../src/runtime.js';
+import { createLocalPrincipal, LOCAL_PROCESS_CAPABILITIES, type SeedbedRuntime } from '../src/runtime.js';
 
-function runtime(): SeedbedRuntime {
+function runtime(callTool?: SeedbedRuntime['dispatcher']['callTool']): SeedbedRuntime {
   return {
     database: { close: vi.fn(async () => undefined) } as unknown as SeedbedRuntime['database'],
-    principal: { id: 'local-owner', capabilities: ['admin'] },
+    principal: createLocalPrincipal('local-owner'),
     lifecycle: new OperationLifecycle(),
     dispatcher: {
       tools: [],
@@ -16,13 +17,16 @@ function runtime(): SeedbedRuntime {
         if (!principal) return { ok: false, failure: { kind: 'unauthenticated', error: { code: 'unauthenticated', message: 'Authentication is required', status: 401 } } };
         return { ok: true, value: [{ name: 'echo', title: 'Echo', description: 'Echo input', capability: 'read', inputSchema: { type: 'object', properties: {}, additionalProperties: true } }] };
       },
-      async callTool(call, context) {
+      callTool: callTool ?? (async (call, context) => {
         if (!context.principal) return { ok: false, failure: { kind: 'unauthenticated', error: { code: 'unauthenticated', message: 'Authentication is required', status: 401 } } };
         return { ok: true, value: { name: call.name, arguments: call.arguments, principal: context.principal.id } };
-      },
+      }),
+    },
+    async drain() {
+      await this.lifecycle.drain(1_000);
     },
     async close() {
-      await this.lifecycle.drain(1_000);
+      await this.drain();
       await this.database.close();
     },
   };
@@ -53,5 +57,38 @@ describe('official MCP SDK integration', () => {
     await expect(response).resolves.toMatchObject({ jsonrpc: '2.0', id: 9, error: { code: expect.any(Number) } });
     await clientTransport.close();
     await server.close();
+  });
+
+  it('drains a delayed call, rejects new work, and excludes administrative authority', async () => {
+    expect(LOCAL_PROCESS_CAPABILITIES).not.toContain('admin');
+    const principal = createLocalPrincipal('local-owner');
+    expect(authorize(principal, 'read')).toBe(principal);
+    expect(() => authorize(principal, 'admin')).toThrow(/admin capability/u);
+    let release!: () => void;
+    let started!: () => void;
+    const callStarted = new Promise<void>((resolve) => { started = resolve; });
+    const subject = runtime(vi.fn(async (call) => {
+      if (call.name === 'slow') {
+        started();
+        await new Promise<void>((resolve) => { release = resolve; });
+      }
+      return { ok: true as const, value: { name: call.name } };
+    }));
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createMcpServer(subject);
+    const client = new Client({ name: 'seedbed-drain-test', version: '1.0.0' });
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const slow = client.callTool({ name: 'slow', arguments: {} });
+    await callStarted;
+    const draining = subject.drain();
+    await expect(client.callTool({ name: 'after-shutdown', arguments: {} })).rejects.toThrow(/shutting down/u);
+    release();
+    await draining;
+    await expect(slow).resolves.toMatchObject({ structuredContent: { name: 'slow' } });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await server.close();
+    await subject.close();
+    await client.close();
   });
 });

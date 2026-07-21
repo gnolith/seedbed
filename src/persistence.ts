@@ -48,6 +48,10 @@ export interface MigrationVersions {
   seedbed: string;
 }
 
+type AssemblyExpectation =
+  | { kind: 'absent' }
+  | { kind: 'current'; marker: AssemblyRow };
+
 const versions: MigrationVersions = {
   diamond: '0.4.0',
   taproot: '0.2.0',
@@ -103,9 +107,9 @@ export async function migrateDatabase(config: SeedbedConfig, taproot: TaprootAss
   }
   const db = await openDatabase(config);
   try {
-    await verifyAssemblyForMigration(db, baseIri, taproot.version);
+    const expectation = await verifyAssemblyForMigration(db, baseIri, taproot.version);
     await runMigrations(db, taproot, baseIri);
-    await writeAssemblyMarker(db, baseIri, taproot.version);
+    await writeAssemblyMarker(db, baseIri, taproot.version, expectation);
     return await inspectReadiness(db, normalizedConfig, taproot);
   } catch (error) {
     throw persistenceError('Migration failed', error);
@@ -225,9 +229,27 @@ async function verifyNamespace(
   }
 }
 
-async function verifyAssemblyForMigration(db: NodeSqliteDatabase, baseIri: string, taprootVersion: string): Promise<void> {
+async function verifyAssemblyForMigration(db: NodeSqliteDatabase, baseIri: string, taprootVersion: string): Promise<AssemblyExpectation> {
+  const assemblyTablePresent = await tableExists(db, 'seedbed_assembly');
+  const ledgerPresent = await tableExists(db, '_gnolith_migrations');
+  const assemblyMigrations = ledgerPresent ? await readAppliedMigrations(db, ASSEMBLY_NAMESPACE) : [];
+  if (!assemblyTablePresent && assemblyMigrations.length === 0) return { kind: 'absent' };
+  if (!assemblyTablePresent || assemblyMigrations.length === 0) {
+    throw new SeedbedError(
+      'Seedbed assembly table and migration ledger are only partially present; refusing repair',
+      ExitCode.persistence,
+      'assembly_inconsistent',
+    );
+  }
+  await verifyNamespace(db, ASSEMBLY_NAMESPACE, [{ id: ASSEMBLY_ID, statements: [assemblyTableStatement] }]);
   const marker = await readAssemblyMarker(db);
-  if (!marker) return;
+  if (!marker) {
+    throw new SeedbedError(
+      'Seedbed assembly marker is missing from an initialized assembly; refusing repair',
+      ExitCode.persistence,
+      'assembly_inconsistent',
+    );
+  }
   if (marker.base_iri !== baseIri) {
     throw new SeedbedError(
       `Configured base IRI ${baseIri} does not match database identity ${marker.base_iri}`,
@@ -247,30 +269,48 @@ async function verifyAssemblyForMigration(db: NodeSqliteDatabase, baseIri: strin
       'assembly_version_mismatch',
     );
   }
-  await verifyNamespace(db, ASSEMBLY_NAMESPACE, [{ id: ASSEMBLY_ID, statements: [assemblyTableStatement] }]);
+  return { kind: 'current', marker };
 }
 
-async function writeAssemblyMarker(db: NodeSqliteDatabase, baseIri: string, taprootVersion: string): Promise<void> {
+async function writeAssemblyMarker(
+  db: NodeSqliteDatabase,
+  baseIri: string,
+  taprootVersion: string,
+  expectation: AssemblyExpectation = { kind: 'absent' },
+): Promise<void> {
   await applyNamespacedMigrations(db, ASSEMBLY_NAMESPACE, [{
     id: ASSEMBLY_ID,
     statements: [assemblyTableStatement],
   }]);
-  await db.prepare(`INSERT INTO seedbed_assembly (
-    singleton, base_iri, diamond_version, taproot_version, workshop_version, seedbed_version, updated_at
-  ) VALUES (1, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT(singleton) DO UPDATE SET
-    diamond_version = excluded.diamond_version,
-    taproot_version = excluded.taproot_version,
-    workshop_version = excluded.workshop_version,
-    seedbed_version = excluded.seedbed_version,
-    updated_at = excluded.updated_at`).bind(
-      baseIri,
-      versions.diamond,
-      taprootVersion,
-      versions.workshop,
-      versions.seedbed,
-      new Date().toISOString(),
-    ).run();
+  const now = new Date().toISOString();
+  const result = expectation.kind === 'absent'
+    ? await db.prepare(`INSERT INTO seedbed_assembly (
+        singleton, base_iri, diamond_version, taproot_version, workshop_version, seedbed_version, updated_at
+      ) VALUES (1, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(singleton) DO NOTHING`).bind(
+        baseIri, versions.diamond, taprootVersion, versions.workshop, versions.seedbed, now,
+      ).run()
+    : await db.prepare(`UPDATE seedbed_assembly SET updated_at = ?
+      WHERE singleton = 1
+        AND base_iri = ?
+        AND diamond_version = ?
+        AND taproot_version = ?
+        AND workshop_version = ?
+        AND seedbed_version = ?`).bind(
+        now,
+        expectation.marker.base_iri,
+        expectation.marker.diamond_version,
+        expectation.marker.taproot_version,
+        expectation.marker.workshop_version,
+        expectation.marker.seedbed_version,
+      ).run();
+  if (Number(result.meta?.changes ?? 0) !== 1) {
+    throw new SeedbedError(
+      'Assembly marker changed concurrently; refusing to overwrite it',
+      ExitCode.persistence,
+      'assembly_concurrent_change',
+    );
+  }
 }
 
 interface AssemblyRow {
@@ -292,9 +332,13 @@ const assemblyTableStatement = `CREATE TABLE seedbed_assembly (
   ) STRICT`;
 
 async function readAssemblyMarker(db: NodeSqliteDatabase): Promise<AssemblyRow | null> {
-  const table = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'seedbed_assembly'").first<{ name: string }>();
-  if (!table) return null;
+  if (!(await tableExists(db, 'seedbed_assembly'))) return null;
   return db.prepare('SELECT base_iri, diamond_version, taproot_version, workshop_version, seedbed_version FROM seedbed_assembly WHERE singleton = 1').first<AssemblyRow>();
+}
+
+async function tableExists(db: NodeSqliteDatabase, name: string): Promise<boolean> {
+  const table = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").bind(name).all<{ name: string }>();
+  return table.results.length === 1;
 }
 
 function persistenceError(prefix: string, error: unknown): SeedbedError {

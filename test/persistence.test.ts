@@ -107,4 +107,56 @@ describe('persistence coordinator', () => {
     await expect(verify.prepare('SELECT seedbed_version FROM seedbed_assembly WHERE singleton = 1').first()).resolves.toEqual({ seedbed_version: '9.0.0' });
     await verify.close();
   });
+
+  it('does not repair a missing marker in an otherwise initialized assembly', async () => {
+    const config = await fixtureConfig();
+    await initializeDatabase(config, fakeTaproot());
+    const db = await openDatabase(config);
+    await db.prepare('DELETE FROM seedbed_assembly WHERE singleton = 1').run();
+    await db.close();
+    await expect(migrateDatabase(config, fakeTaproot())).rejects.toMatchObject({ code: 'assembly_inconsistent' });
+    const verify = await openDatabase(config);
+    await expect(verify.prepare('SELECT COUNT(*) AS count FROM seedbed_assembly').first()).resolves.toEqual({ count: 0 });
+    await verify.close();
+  });
+
+  it('does not repair a missing assembly table when its ledger is present', async () => {
+    const config = await fixtureConfig();
+    await initializeDatabase(config, fakeTaproot());
+    const db = await openDatabase(config);
+    await db.prepare('DROP TABLE seedbed_assembly').run();
+    await db.close();
+    await expect(migrateDatabase(config, fakeTaproot())).rejects.toMatchObject({ code: 'assembly_inconsistent' });
+    const verify = await openDatabase(config);
+    await expect(verify.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'seedbed_assembly'").first()).resolves.toBeNull();
+    await verify.close();
+  });
+
+  it('does not overwrite a marker changed while component migration is paused', async () => {
+    const config = await fixtureConfig();
+    await initializeDatabase(config, fakeTaproot());
+    let migrationStarted!: () => void;
+    const started = new Promise<void>((resolve) => { migrationStarted = resolve; });
+    let resumeMigration!: () => void;
+    const resume = new Promise<void>((resolve) => { resumeMigration = resolve; });
+    const base = fakeTaproot();
+    const paused: TaprootAssembly = {
+      ...base,
+      async migrate(db, baseIri) {
+        migrationStarted();
+        await resume;
+        await base.migrate(db, baseIri);
+      },
+    };
+    const migrating = migrateDatabase(config, paused);
+    await started;
+    const concurrent = await openDatabase(config);
+    await concurrent.prepare("UPDATE seedbed_assembly SET seedbed_version = '9.0.0' WHERE singleton = 1").run();
+    await concurrent.close();
+    resumeMigration();
+    await expect(migrating).rejects.toMatchObject({ code: 'assembly_concurrent_change' });
+    const verify = await openDatabase(config);
+    await expect(verify.prepare('SELECT seedbed_version FROM seedbed_assembly WHERE singleton = 1').first()).resolves.toEqual({ seedbed_version: '9.0.0' });
+    await verify.close();
+  });
 });

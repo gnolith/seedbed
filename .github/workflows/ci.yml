@@ -5,12 +5,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      registry_gate:
-        description: Verify exact dependencies from the public npm registry
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -21,25 +15,22 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: gnolith/diamond
-          ref: 326da7e48d77cddc5a58e21cf65d872ecb9b3b74
-          path: .handoffs/diamond
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: gnolith/taproot
-          ref: efbdd4c815645d4b20c2c58dc19aacb3e12d45bb
-          path: .handoffs/taproot
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: gnolith/workshop
-          ref: cf175d587b0f2917a4d8880469c8a8069188e152
-          path: .handoffs/workshop
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 24.14.0
-          cache: npm
+      - name: Check out exact public source handoffs
+        shell: bash
+        run: |
+          checkout_exact() {
+            name="$1"
+            revision="$2"
+            git init ".handoffs/$name"
+            git -C ".handoffs/$name" remote add origin "https://github.com/gnolith/$name.git"
+            git -C ".handoffs/$name" fetch --depth=1 origin "$revision"
+            git -C ".handoffs/$name" checkout --detach FETCH_HEAD
+            test "$(git -C ".handoffs/$name" rev-parse HEAD)" = "$revision"
+          }
+          checkout_exact diamond 326da7e48d77cddc5a58e21cf65d872ecb9b3b74
+          checkout_exact taproot efbdd4c815645d4b20c2c58dc19aacb3e12d45bb
+          checkout_exact workshop cf175d587b0f2917a4d8880469c8a8069188e152
+      - uses: ./.github/actions/setup-node
       - name: Build and verify exact package handoffs
         shell: bash
         run: |
@@ -77,18 +68,3 @@ jobs:
           cp "$RUNNER_TEMP"/gnolith-workshop-0.2.2.tgz .
           docker build --build-arg SEEDBED_TARBALL=gnolith-seedbed-0.1.0.tgz --build-arg REVISION=${{ github.sha }} --tag seedbed:test .
       - run: npm run test:docker
-
-  registry-only:
-    if: github.event_name == 'workflow_dispatch' && inputs.registry_gate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-node@49933ea5288ca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 24.14.0
-          cache: npm
-          registry-url: https://registry.npmjs.org
-      - run: npm ci --ignore-scripts
-      - run: npm run check
-      - run: npm audit --omit=dev --audit-level=high
-      - run: npm pack --dry-run
