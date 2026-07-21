@@ -71,6 +71,7 @@ export async function databaseExists(path: string): Promise<boolean> {
 
 export async function initializeDatabase(config: SeedbedConfig, taproot: TaprootAssembly): Promise<ReadinessStatus> {
   const baseIri = requireBaseIri(config);
+  const normalizedConfig = { ...config, baseIri };
   if (await databaseExists(config.databasePath)) {
     throw new SeedbedError(
       `Refusing to initialize existing database ${config.databasePath}; use seedbed migrate`,
@@ -82,7 +83,7 @@ export async function initializeDatabase(config: SeedbedConfig, taproot: Taproot
   try {
     await runMigrations(db, taproot, baseIri);
     await writeAssemblyMarker(db, baseIri, taproot.version);
-    return await inspectReadiness(db, config, taproot);
+    return await inspectReadiness(db, normalizedConfig, taproot);
   } catch (error) {
     throw persistenceError('Initialization failed', error);
   } finally {
@@ -91,7 +92,8 @@ export async function initializeDatabase(config: SeedbedConfig, taproot: Taproot
 }
 
 export async function migrateDatabase(config: SeedbedConfig, taproot: TaprootAssembly): Promise<ReadinessStatus> {
-  requireBaseIri(config);
+  const baseIri = requireBaseIri(config);
+  const normalizedConfig = { ...config, baseIri };
   if (!(await databaseExists(config.databasePath))) {
     throw new SeedbedError(
       `Database ${config.databasePath} does not exist; use seedbed init`,
@@ -101,10 +103,10 @@ export async function migrateDatabase(config: SeedbedConfig, taproot: TaprootAss
   }
   const db = await openDatabase(config);
   try {
-    await verifyAssemblyIdentity(db, config.baseIri!);
-    await runMigrations(db, taproot, config.baseIri!);
-    await writeAssemblyMarker(db, config.baseIri!, taproot.version);
-    return await inspectReadiness(db, config, taproot);
+    await verifyAssemblyForMigration(db, baseIri, taproot.version);
+    await runMigrations(db, taproot, baseIri);
+    await writeAssemblyMarker(db, baseIri, taproot.version);
+    return await inspectReadiness(db, normalizedConfig, taproot);
   } catch (error) {
     throw persistenceError('Migration failed', error);
   } finally {
@@ -176,6 +178,8 @@ export async function inspectReadiness(
 }
 
 export async function requireReady(config: SeedbedConfig, taproot: TaprootAssembly): Promise<NodeSqliteDatabase> {
+  const baseIri = requireBaseIri(config);
+  const normalizedConfig = { ...config, baseIri };
   if (!(await databaseExists(config.databasePath))) {
     throw new SeedbedError(
       `Database ${config.databasePath} does not exist; run seedbed init`,
@@ -185,7 +189,7 @@ export async function requireReady(config: SeedbedConfig, taproot: TaprootAssemb
   }
   const db = await openDatabase(config);
   try {
-    const status = await inspectReadiness(db, config, taproot);
+    const status = await inspectReadiness(db, normalizedConfig, taproot);
     if (!status.ready) {
       throw new SeedbedError(
         'Persistence is not ready; inspect with seedbed doctor and advance only with seedbed migrate',
@@ -221,15 +225,29 @@ async function verifyNamespace(
   }
 }
 
-async function verifyAssemblyIdentity(db: NodeSqliteDatabase, baseIri: string): Promise<void> {
+async function verifyAssemblyForMigration(db: NodeSqliteDatabase, baseIri: string, taprootVersion: string): Promise<void> {
   const marker = await readAssemblyMarker(db);
-  if (marker && marker.base_iri !== baseIri) {
+  if (!marker) return;
+  if (marker.base_iri !== baseIri) {
     throw new SeedbedError(
       `Configured base IRI ${baseIri} does not match database identity ${marker.base_iri}`,
       ExitCode.persistence,
       'identity_mismatch',
     );
   }
+  if (
+    marker.diamond_version !== versions.diamond ||
+    marker.taproot_version !== taprootVersion ||
+    marker.workshop_version !== versions.workshop ||
+    marker.seedbed_version !== versions.seedbed
+  ) {
+    throw new SeedbedError(
+      'Assembly marker contains an unknown, newer, or inconsistent package set; refusing to rewrite it',
+      ExitCode.persistence,
+      'assembly_version_mismatch',
+    );
+  }
+  await verifyNamespace(db, ASSEMBLY_NAMESPACE, [{ id: ASSEMBLY_ID, statements: [assemblyTableStatement] }]);
 }
 
 async function writeAssemblyMarker(db: NodeSqliteDatabase, baseIri: string, taprootVersion: string): Promise<void> {

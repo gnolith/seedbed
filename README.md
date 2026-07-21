@@ -13,9 +13,9 @@ HTTP server, listening socket, UI, or implicit migration.
 
 ```sh
 npm install --global @gnolith/seedbed@0.1.0
-seedbed --base-iri https://example.com/my-gnolith/ init
-seedbed --base-iri https://example.com/my-gnolith/ doctor
-seedbed --base-iri https://example.com/my-gnolith/ mcp --stdio
+seedbed --base-iri https://example.com/my-gnolith/ --local-owner local-owner init
+seedbed --base-iri https://example.com/my-gnolith/ --local-owner local-owner doctor
+seedbed --base-iri https://example.com/my-gnolith/ --local-owner local-owner mcp --stdio
 ```
 
 `init` is only for a new database. `migrate` is the only normal command that may
@@ -49,7 +49,7 @@ Precedence is CLI, then `SEEDBED_*` environment variables, then
 | --- | --- | --- | --- |
 | SQLite path | `--database` | `SEEDBED_DATABASE_PATH` | `./.seedbed/gnolith.sqlite` |
 | stable base IRI | `--base-iri` | `SEEDBED_BASE_IRI` | none; required for `init` and runtime |
-| owner principal | `--local-owner` | `SEEDBED_LOCAL_OWNER_ID` | `local-owner` |
+| owner principal | `--local-owner` | `SEEDBED_LOCAL_OWNER_ID` | none; required |
 | log level | `--log-level` | `SEEDBED_LOG_LEVEL` | `info` |
 | drain timeout | `--shutdown-timeout-ms` | `SEEDBED_SHUTDOWN_TIMEOUT_MS` | `10000` |
 
@@ -68,11 +68,13 @@ docker volume create seedbed-data
 docker run --rm -i \
   -v seedbed-data:/var/lib/seedbed \
   -e SEEDBED_BASE_IRI=https://example.com/my-gnolith/ \
+  -e SEEDBED_LOCAL_OWNER_ID=local-owner \
   ghcr.io/gnolith/seedbed:0.1.0 init
 
 docker run --rm -i \
   -v seedbed-data:/var/lib/seedbed \
   -e SEEDBED_BASE_IRI=https://example.com/my-gnolith/ \
+  -e SEEDBED_LOCAL_OWNER_ID=local-owner \
   ghcr.io/gnolith/seedbed:0.1.0 mcp --stdio
 ```
 

@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { SeedbedError, ExitCode } from './errors.js';
+import { canonicalizeTaprootBaseIri } from '@gnolith/taproot';
 
 export interface SeedbedConfig {
   databasePath: string;
@@ -56,22 +57,21 @@ export async function loadConfig(
     environment.SEEDBED_DATABASE_PATH,
     file.databasePath,
     './.seedbed/gnolith.sqlite',
-  );
+  )!;
   const databasePath = isAbsolute(databaseValue)
     ? databaseValue
     : resolve(cwd, databaseValue);
-  const baseIri = optional(first(cli.baseIri, environment.SEEDBED_BASE_IRI, file.baseIri));
-  if (baseIri !== undefined) validateBaseIri(baseIri);
+  const baseIriValue = optional(first(cli.baseIri, environment.SEEDBED_BASE_IRI, file.baseIri));
+  const baseIri = baseIriValue === undefined ? undefined : validateBaseIri(baseIriValue);
 
   const localOwnerId = first(
     cli.localOwnerId,
     environment.SEEDBED_LOCAL_OWNER_ID,
     file.localOwnerId,
-    'local-owner',
-  ).trim();
+  )?.trim();
   if (!localOwnerId || localOwnerId.length > 256) {
     throw new SeedbedError(
-      'localOwnerId must be a non-empty string of at most 256 characters',
+      'An explicit localOwnerId is required and must be at most 256 characters; use --local-owner or SEEDBED_LOCAL_OWNER_ID',
       ExitCode.configuration,
       'invalid_principal',
     );
@@ -82,7 +82,7 @@ export async function loadConfig(
     environment.SEEDBED_LOG_LEVEL,
     file.logLevel,
     'info',
-  );
+  )!;
   if (!logLevels.has(logLevelValue as SeedbedConfig['logLevel'])) {
     throw new SeedbedError(
       `Invalid log level ${logLevelValue}`,
@@ -123,37 +123,27 @@ export function requireBaseIri(config: SeedbedConfig): string {
       'base_iri_required',
     );
   }
-  validateBaseIri(config.baseIri);
-  return config.baseIri;
+  return validateBaseIri(config.baseIri);
 }
 
-function validateBaseIri(value: string): void {
-  let url: URL;
+function validateBaseIri(value: string): string {
   try {
-    url = new URL(value);
+    return canonicalizeTaprootBaseIri(value);
   } catch (error) {
     throw new SeedbedError(
-      `Invalid base IRI: ${value}`,
+      `Invalid base IRI ${value}: ${error instanceof Error ? error.message : String(error)}`,
       ExitCode.configuration,
       'invalid_base_iri',
       { cause: error },
     );
   }
-  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !url.hostname || url.username || url.password || url.hash) {
-    throw new SeedbedError(
-      'baseIri must be an absolute HTTP(S) URL without credentials or a fragment',
-      ExitCode.configuration,
-      'invalid_base_iri',
-    );
-  }
 }
 
-function first<T>(...values: Array<T | undefined>): T {
-  return values.find((value): value is T => value !== undefined) as T;
+function first<T>(...values: Array<T | undefined>): T | undefined {
+  return values.find((value): value is T => value !== undefined);
 }
 
 function optional(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
 }
-

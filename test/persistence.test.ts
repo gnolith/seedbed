@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { KnowledgeService } from '@gnolith/workshop/protocol';
 import {
   initializeDatabase,
+  migrateDatabase,
   openDatabase,
   requireReady,
   type TaprootAssembly,
@@ -93,5 +94,17 @@ describe('persistence coordinator', () => {
     await newer.prepare("INSERT INTO _gnolith_migrations (namespace, migration_id, checksum, adopted, applied_at) VALUES ('@gnolith/workshop', '9999-future', 'future', 0, '2026-01-01T00:00:00.000Z')").run();
     await newer.close();
     await expect(requireReady(newerConfig, fakeTaproot())).rejects.toMatchObject({ code: 'persistence_not_ready' });
+  });
+
+  it('does not rewrite a newer assembly marker during migrate', async () => {
+    const config = await fixtureConfig();
+    await initializeDatabase(config, fakeTaproot());
+    const db = await openDatabase(config);
+    await db.prepare("UPDATE seedbed_assembly SET seedbed_version = '9.0.0' WHERE singleton = 1").run();
+    await db.close();
+    await expect(migrateDatabase(config, fakeTaproot())).rejects.toMatchObject({ code: 'assembly_version_mismatch' });
+    const verify = await openDatabase(config);
+    await expect(verify.prepare('SELECT seedbed_version FROM seedbed_assembly WHERE singleton = 1').first()).resolves.toEqual({ seedbed_version: '9.0.0' });
+    await verify.close();
   });
 });

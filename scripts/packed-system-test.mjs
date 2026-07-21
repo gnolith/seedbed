@@ -27,11 +27,11 @@ try {
   const cli = join(fixture, 'node_modules', '@gnolith', 'seedbed', 'dist', 'cli.js');
   const help = run(process.execPath, [cli, '--help'], fixture);
   if (!help.stdout.includes('mcp --stdio') || /\bserve\b/u.test(help.stdout)) throw new Error('packed CLI surface is invalid');
-  const missing = run(process.execPath, [cli, 'doctor'], fixture, false);
+  const missing = run(process.execPath, [cli, '--local-owner', 'local-owner', 'doctor'], fixture, false);
   if (missing.status !== 4) throw new Error(`doctor missing-database exit was ${missing.status}`);
 
   const databasePath = join(fixture, 'data', 'gnolith.sqlite');
-  const globals = [cli, '--database', databasePath, '--base-iri', 'https://packed.seedbed.test/instance/', '--log-level', 'silent'];
+  const globals = [cli, '--database', databasePath, '--base-iri', 'https://packed.seedbed.test/instance/', '--local-owner', 'local-owner', '--log-level', 'silent'];
   const initialized = json(run(process.execPath, [...globals, 'init'], fixture).stdout);
   if (!initialized.ready) throw new Error('packed init was not ready');
   await Promise.all([

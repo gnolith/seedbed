@@ -44,6 +44,7 @@
     "test:coverage": "vitest run --coverage",
     "test:packed": "node scripts/packed-system-test.mjs",
     "test:docker": "node scripts/docker-smoke.mjs",
+    "test:published": "node scripts/published-system-test.mjs",
     "check": "npm run typecheck && npm test && npm run build && npm run pack:check",
     "pack:check": "npm pack --dry-run",
     "prepack": "npm run build"
