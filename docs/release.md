@@ -11,27 +11,32 @@ after enablement, so every new release must report `immutable: true` through the
 release API. Active no-bypass tag ruleset `19395217` independently blocks updates
 and deletion for `refs/tags/v*`.
 
-For the first publication only, create a short-lived granular npm token with
-write access to the `@gnolith` scope and bypass-2FA enabled. Store it as the
-`NPM_BOOTSTRAP_TOKEN` secret in the GitHub `release` environment. The workflow
-packs and verifies the exact publication tarball in a tokenless job, names it by its
-SHA-256 digest, and uploads it for 30 days with expected digest, package-name, and
-version metadata. The repository's selected-actions policy permits SHA-pinned
-GitHub-owned upload/download artifact actions; the immutable artifact ID and service
-digest independently bind the handoff. A fresh protected-environment runner with no
-checkout downloads that exact artifact and installs Node from a pinned, SHA-verified
-archive rather than a setup action. Its only repository permission is OIDC token
-issuance. The terminal secret-bearing step derives the expected version directly
-from the validated release tag, rejects links, non-regular or ambiguous paths,
-outside-package entries, and duplicate manifests, then recomputes and checks all
-metadata. It publishes only the absolute verified-tarball path with lifecycle
-scripts disabled, so no repository-controlled content or process shares the runner.
+The npm trusted publisher is restricted to `gnolith/seedbed`, `release.yml`, the
+protected `release` environment, and the `npm publish` workflow event. Token
+publishing is disallowed, and the GitHub environment contains no npm token secret.
+The workflow packs and verifies the exact publication tarball in a credential-free
+job, names it by its SHA-256 digest, and uploads it for 30 days with expected digest,
+package-name, and version metadata. The repository's selected-actions policy permits
+SHA-pinned GitHub-owned upload/download artifact actions; the immutable artifact ID
+and service digest independently bind the handoff. A fresh protected-environment
+runner with no checkout downloads that exact artifact and installs Node from a
+pinned, SHA-verified archive rather than a setup action. Its only repository
+permission is OIDC token issuance. The terminal trusted-publishing step derives the
+expected version directly from the validated release tag, rejects links, non-regular
+or ambiguous paths, outside-package entries, and duplicate manifests, then
+recomputes and checks all metadata. It publishes only the absolute verified-tarball
+path with lifecycle scripts disabled, so no repository-controlled content or process
+shares the runner.
 
 The terminal step is idempotent: if that exact name, version, and SHA-512 integrity
 already exist on npm, it also requires the exact SLSA v1 attestation endpoint and a
 successful `npm audit signatures` verification before recording recovery success.
 Missing or invalid provenance fails closed. After a new publish it waits for and
 verifies the same integrity and provenance evidence before the image job can run.
+Registry readiness requires the exact-version document, the corresponding entry in
+the root packument, and a successful ordinary exact-version install with matching
+lockfile integrity. Those checks retry together so a version endpoint that becomes
+visible before the root packument cannot prematurely fail an accepted publication.
 The decoded SLSA statement must bind its sole npm subject and SHA-512 digest to the
 exact `gnolith/seedbed` repository, `.github/workflows/release.yml`, release tag ref,
 and tag commit. Cryptographic signature and attestation verification relies on npm's
@@ -112,10 +117,11 @@ The artifact expires on 2026-08-20. Never edit, delete, republish, or reuse the
 historical 0.1.0 Release or handoff; 0.1.1 is the technically immutable fix-forward
 publication candidate.
 
-After `@gnolith/seedbed` exists, configure its npm trusted publisher for
-`gnolith/seedbed`, `release.yml`, environment `release`, and `npm publish`; then
-remove the bootstrap-token wiring in a cleanup PR and delete and revoke the
-environment secret and token.
+The initial 0.1.1 publication used a temporary protected-environment bootstrap token.
+After publication, npm trusted publishing was configured for `gnolith/seedbed`,
+`release.yml`, environment `release`, and `npm publish`; token publishing was
+disabled and the `NPM_BOOTSTRAP_TOKEN` environment secret was deleted. Current and
+future releases are OIDC-only.
 
 The workflow publishes npm with provenance, installs the exact registry version in
 a clean directory, then builds the image from the exact downloaded npm tarball. The

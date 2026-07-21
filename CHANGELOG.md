@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Replace the temporary npm bootstrap token path with OIDC-only trusted publishing.
+- Retry root-packument propagation and a clean exact-version install before accepting
+  post-publish registry evidence.
+
 ## 0.1.1 - 2026-07-21
 
 - Publish the first npm and container artifacts for the headless Seedbed runtime.
