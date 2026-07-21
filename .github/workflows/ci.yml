@@ -130,5 +130,5 @@ jobs:
           cp "$RUNNER_TEMP"/gnolith-diamond-0.4.0.tgz .
           cp "$RUNNER_TEMP"/gnolith-taproot-0.2.0.tgz .
           cp "$RUNNER_TEMP"/gnolith-workshop-0.2.3.tgz .
-          docker build --build-arg SEEDBED_TARBALL=gnolith-seedbed-0.1.0.tgz --build-arg REVISION=${{ github.sha }} --tag seedbed:test .
+          docker build --build-arg SEEDBED_TARBALL=gnolith-seedbed-0.1.1.tgz --build-arg REVISION=${{ github.sha }} --tag seedbed:test .
       - run: npm run test:docker

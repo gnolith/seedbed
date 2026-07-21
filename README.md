@@ -12,7 +12,7 @@ HTTP server, listening socket, UI, or implicit migration.
 ## Start
 
 ```sh
-npm install --global @gnolith/seedbed@0.1.0
+npm install --global @gnolith/seedbed@0.1.1
 seedbed --base-iri https://example.com/my-gnolith/ --local-owner local-owner init
 seedbed --base-iri https://example.com/my-gnolith/ --local-owner local-owner doctor
 seedbed --base-iri https://example.com/my-gnolith/ --local-owner local-owner mcp --stdio
@@ -70,13 +70,13 @@ docker run --rm -i \
   -v seedbed-data:/var/lib/seedbed \
   -e SEEDBED_BASE_IRI=https://example.com/my-gnolith/ \
   -e SEEDBED_LOCAL_OWNER_ID=local-owner \
-  ghcr.io/gnolith/seedbed:0.1.0 init
+  ghcr.io/gnolith/seedbed:0.1.1 init
 
 docker run --rm -i \
   -v seedbed-data:/var/lib/seedbed \
   -e SEEDBED_BASE_IRI=https://example.com/my-gnolith/ \
   -e SEEDBED_LOCAL_OWNER_ID=local-owner \
-  ghcr.io/gnolith/seedbed:0.1.0 mcp --stdio
+  ghcr.io/gnolith/seedbed:0.1.1 mcp --stdio
 ```
 
 See [release documentation](docs/release.md) for trusted-publisher and recovery

@@ -96,9 +96,9 @@ describe('release credential boundary', () => {
   it('rejects missing or mismatched provenance identity evidence', () => {
     const expected = {
       commit: 'a'.repeat(40),
-      ref: 'refs/tags/v0.1.0',
+      ref: 'refs/tags/v0.1.1',
       sha512: 'b'.repeat(128),
-      version: '0.1.0',
+      version: '0.1.1',
     };
     const valid = provenanceFixture(expected);
     expect(() => validateProvenanceIdentity(valid, expected)).not.toThrow();

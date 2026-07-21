@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 FROM node:24.14.0-bookworm-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8
 
-ARG SEEDBED_TARBALL=gnolith-seedbed-0.1.0.tgz
+ARG SEEDBED_TARBALL=gnolith-seedbed-0.1.1.tgz
 ARG SOURCE_URL=https://github.com/gnolith/seedbed
 ARG REVISION=unknown
 LABEL org.opencontainers.image.source=$SOURCE_URL \
