@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  npm:
+    if: startsWith(github.event.release.tag_name, 'v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: ./.github/actions/setup-node
+      - run: npm config set registry https://registry.npmjs.org
+      - id: identity
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          test "v$version" = "${{ github.event.release.tag_name }}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: npm ci
+      - run: npm run check
+      - run: npm publish --access public --provenance
+      - name: Verify the exact published process assembly
+        env:
+          SEEDBED_VERSION: ${{ steps.identity.outputs.version }}
+        run: npm run test:published
+
+  image:
+    needs: npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: ./.github/actions/setup-node
+      - run: npm config set registry https://registry.npmjs.org
+      - run: npm ci --ignore-scripts
+      - shell: bash
+        run: |
+          mkdir registry-artifact
+          cd registry-artifact
+          npm pack "@gnolith/seedbed@${{ needs.npm.outputs.version }}" --json > pack.json
+          filename=$(node -p "require('./pack.json')[0].filename")
+          packed_integrity=$(node -p "require('./pack.json')[0].integrity")
+          registry_integrity=$(npm view "@gnolith/seedbed@${{ needs.npm.outputs.version }}" dist.integrity)
+          test "$packed_integrity" = "$registry_integrity"
+          mv "$filename" ../gnolith-seedbed-${{ needs.npm.outputs.version }}.tgz
+          cd ..
+          printf '%s\n' "$registry_integrity" > npm-integrity.txt
+      - id: build
+        name: Build and push the provenance-attested image
+        shell: bash
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+          docker buildx create --use --driver docker-container
+          docker buildx build . \
+            --push \
+            --provenance=mode=max \
+            --sbom=true \
+            --build-arg SEEDBED_TARBALL=gnolith-seedbed-${{ needs.npm.outputs.version }}.tgz \
+            --build-arg REVISION=${{ github.sha }} \
+            --tag ghcr.io/gnolith/seedbed:${{ needs.npm.outputs.version }} \
+            --label org.opencontainers.image.version=${{ needs.npm.outputs.version }} \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --metadata-file "$RUNNER_TEMP/build-metadata.json"
+          digest=$(node -p "require(process.env.RUNNER_TEMP + '/build-metadata.json')['containerimage.digest']")
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - shell: bash
+        run: |
+          docker pull "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}"
+          test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{len .Config.ExposedPorts}}')" = "0"
+          test "$(docker run --rm --entrypoint id "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" -u)" != "0"
+          test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "${{ needs.npm.outputs.version }}"
+          test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "${{ github.sha }}"
+      - name: Functionally verify the immutable published image
+        env:
+          SEEDBED_TEST_IMAGE: ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}
+        run: npm run test:docker
+      - shell: bash
+        run: docker buildx imagetools create --tag ghcr.io/gnolith/seedbed:latest "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}"

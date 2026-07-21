@@ -1,0 +1,64 @@
+{
+  "name": "@gnolith/seedbed",
+  "version": "0.1.0",
+  "description": "Headless local process assembly for Gnolith.",
+  "type": "module",
+  "private": false,
+  "license": "MIT",
+  "author": "Gnolith contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gnolith/seedbed.git"
+  },
+  "homepage": "https://github.com/gnolith/seedbed#readme",
+  "bugs": {
+    "url": "https://github.com/gnolith/seedbed/issues"
+  },
+  "keywords": ["gnolith", "mcp", "sqlite", "headless"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "packageManager": "npm@11.9.0",
+  "bin": {
+    "seedbed": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "import": "./dist/config.js"
+    }
+  },
+  "files": ["dist", "docs", "seedbed.config.example.json", "README.md", "LICENSE", "SECURITY.md", "SUPPORT.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:packed": "node scripts/packed-system-test.mjs",
+    "test:docker": "node scripts/docker-smoke.mjs",
+    "test:published": "node scripts/published-system-test.mjs",
+    "check": "npm run typecheck && npm test && npm run build && npm run pack:check",
+    "pack:check": "npm pack --dry-run",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@gnolith/diamond": "0.4.0",
+    "@gnolith/taproot": "0.2.0",
+    "@gnolith/workshop": "0.2.2",
+    "@modelcontextprotocol/sdk": "1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.0",
+    "@vitest/coverage-v8": "3.2.4",
+    "typescript": "5.9.2",
+    "vitest": "3.2.4"
+  }
+}
