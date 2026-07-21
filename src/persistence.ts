@@ -4,12 +4,18 @@ import {
   applyNamespacedMigrations,
   checksumMigration,
   diamondMigrations,
+  inspectStoreSchema,
   migrateDiamondStore,
   readAppliedMigrations,
 } from '@gnolith/diamond';
 import { NodeSqliteDatabase } from '@gnolith/diamond/node-sqlite';
 import { applyWorkshopMigrations } from '@gnolith/workshop/migrations';
-import { workshopMigrations } from '@gnolith/workshop/migrations';
+import {
+  expectedWorkshopIndexes,
+  expectedWorkshopTables,
+  WORKSHOP_SCHEMA_VERSION,
+  workshopMigrations,
+} from '@gnolith/workshop/migrations';
 import type { SeedbedConfig } from './config.js';
 import { requireBaseIri } from './config.js';
 import { ExitCode, SeedbedError } from './errors.js';
@@ -50,13 +56,75 @@ export interface MigrationVersions {
 
 type AssemblyExpectation =
   | { kind: 'absent' }
-  | { kind: 'current'; marker: AssemblyRow };
+  | { kind: 'existing'; marker: AssemblyRow; source: 'target' | AssemblyPredecessor };
+
+export interface ComponentStatePlan {
+  readonly migrations: readonly { id: string; statements: readonly string[] }[];
+  verify(db: NodeSqliteDatabase): Promise<{ ready: boolean; detail?: string }>;
+}
+
+export interface AssemblyPredecessor {
+  readonly versions: MigrationVersions;
+  readonly diamond: ComponentStatePlan;
+  readonly taproot: {
+    verify(db: NodeSqliteDatabase, baseIri: string): Promise<{ ready: boolean; detail?: string }>;
+  };
+  readonly workshop: ComponentStatePlan;
+}
+
+export interface ComponentMigrationPlan {
+  readonly target: MigrationVersions;
+  readonly allowedPredecessors: readonly AssemblyPredecessor[];
+  readonly diamond: ComponentStatePlan & {
+    migrate(db: NodeSqliteDatabase): Promise<void>;
+  };
+  readonly workshop: ComponentStatePlan & {
+    migrate(db: NodeSqliteDatabase): Promise<void>;
+  };
+}
+
+export type MigrationBoundary = 'diamond' | 'taproot' | 'workshop';
+
+export interface MigrationTestHooks {
+  /** Test-only deterministic interruption point after a component is verified current. */
+  afterComponent?(component: MigrationBoundary): void | Promise<void>;
+}
 
 const versions: MigrationVersions = {
   diamond: '0.4.0',
   taproot: '0.2.0',
   workshop: '0.2.3',
   seedbed: '0.1.1',
+};
+
+const workshopKnownMigrations = workshopMigrations.map(({ id, sql }) => ({
+  id,
+  statements: sql.split(/;\s*(?:\r?\n|$)/u).map((statement) => statement.trim()).filter(Boolean),
+}));
+
+const currentMigrationPlan: ComponentMigrationPlan = {
+  target: versions,
+  // A future Seedbed release must add each exact released predecessor and its
+  // read-only package-owned verifiers here. Unknown package sets remain
+  // fail-closed rather than being inferred from semver.
+  allowedPredecessors: [],
+  diamond: {
+    migrations: diamondMigrations,
+    migrate: migrateDiamondStore,
+    async verify(db) {
+      const inspection = await inspectStoreSchema(db);
+      return inspection.valid
+        ? { ready: true }
+        : { ready: false, detail: inspection.errors.join('; ') };
+    },
+  },
+  workshop: {
+    migrations: workshopKnownMigrations,
+    async migrate(db) {
+      await applyWorkshopMigrations(db as unknown as WorkshopPersistence);
+    },
+    verify: verifyCurrentWorkshopSchema,
+  },
 };
 
 export async function openDatabase(config: SeedbedConfig): Promise<NodeSqliteDatabase> {
@@ -74,6 +142,7 @@ export async function databaseExists(path: string): Promise<boolean> {
 }
 
 export async function initializeDatabase(config: SeedbedConfig, taproot: TaprootAssembly): Promise<ReadinessStatus> {
+  assertTaprootVersion(taproot, currentMigrationPlan);
   const baseIri = requireBaseIri(config);
   const normalizedConfig = { ...config, baseIri };
   if (await databaseExists(config.databasePath)) {
@@ -85,8 +154,8 @@ export async function initializeDatabase(config: SeedbedConfig, taproot: Taproot
   }
   const db = await openDatabase(config);
   try {
-    await runMigrations(db, taproot, baseIri);
-    await writeAssemblyMarker(db, baseIri, taproot.version);
+    await runMigrations(db, taproot, baseIri, currentMigrationPlan);
+    await writeAssemblyMarker(db, baseIri, currentMigrationPlan.target);
     return await inspectReadiness(db, normalizedConfig, taproot);
   } catch (error) {
     throw persistenceError('Initialization failed', error);
@@ -96,6 +165,18 @@ export async function initializeDatabase(config: SeedbedConfig, taproot: Taproot
 }
 
 export async function migrateDatabase(config: SeedbedConfig, taproot: TaprootAssembly): Promise<ReadinessStatus> {
+  return migrateDatabaseWithPlan(config, taproot, currentMigrationPlan);
+}
+
+/** Internal coordinator seam used to qualify future exact package assemblies before release. */
+export async function migrateDatabaseWithPlan(
+  config: SeedbedConfig,
+  taproot: TaprootAssembly,
+  plan: ComponentMigrationPlan,
+  hooks: MigrationTestHooks = {},
+): Promise<ReadinessStatus> {
+  const stablePlan = snapshotMigrationPlan(plan);
+  assertTaprootVersion(taproot, stablePlan);
   const baseIri = requireBaseIri(config);
   const normalizedConfig = { ...config, baseIri };
   if (!(await databaseExists(config.databasePath))) {
@@ -107,10 +188,11 @@ export async function migrateDatabase(config: SeedbedConfig, taproot: TaprootAss
   }
   const db = await openDatabase(config);
   try {
-    const expectation = await verifyAssemblyForMigration(db, baseIri, taproot.version);
-    await runMigrations(db, taproot, baseIri);
-    await writeAssemblyMarker(db, baseIri, taproot.version, expectation);
-    return await inspectReadiness(db, normalizedConfig, taproot);
+    const expectation = await verifyAssemblyForMigration(db, baseIri, stablePlan);
+    await preflightAssembly(db, baseIri, taproot, stablePlan, expectation);
+    await runMigrations(db, taproot, baseIri, stablePlan, hooks);
+    await writeAssemblyMarker(db, baseIri, stablePlan.target, expectation);
+    return await inspectReadinessWithPlan(db, normalizedConfig, taproot, stablePlan);
   } catch (error) {
     throw persistenceError('Migration failed', error);
   } finally {
@@ -118,13 +200,28 @@ export async function migrateDatabase(config: SeedbedConfig, taproot: TaprootAss
   }
 }
 
-async function runMigrations(db: NodeSqliteDatabase, taproot: TaprootAssembly, baseIri: string): Promise<void> {
+async function runMigrations(
+  db: NodeSqliteDatabase,
+  taproot: TaprootAssembly,
+  baseIri: string,
+  plan: ComponentMigrationPlan,
+  hooks: MigrationTestHooks = {},
+): Promise<void> {
   // This order is an externally visible safety invariant.
-  await migrateDiamondStore(db);
+  await plan.diamond.migrate(db);
+  await verifyNamespace(db, '@gnolith/diamond', plan.diamond.migrations);
+  await requireComponentVerification('Diamond', await plan.diamond.verify(db));
+  await hooks.afterComponent?.('diamond');
   await taproot.migrate(db, baseIri);
-  // NodeSqliteDatabase implements first() at runtime; Diamond's bind() return type
-  // intentionally exposes only the smaller portable interface.
-  await applyWorkshopMigrations(db as unknown as WorkshopPersistence);
+  const taprootStatus = await taproot.inspect(db, baseIri);
+  if (!taprootStatus.ready) {
+    throw new Error(taprootStatus.detail ?? 'Taproot migration did not produce the exact target schema');
+  }
+  await hooks.afterComponent?.('taproot');
+  await plan.workshop.migrate(db);
+  await verifyNamespace(db, '@gnolith/workshop', plan.workshop.migrations);
+  await requireComponentVerification('Workshop', await plan.workshop.verify(db));
+  await hooks.afterComponent?.('workshop');
 }
 
 export async function inspectReadiness(
@@ -132,23 +229,30 @@ export async function inspectReadiness(
   config: SeedbedConfig,
   taproot: TaprootAssembly,
 ): Promise<ReadinessStatus> {
+  return inspectReadinessWithPlan(db, config, taproot, currentMigrationPlan);
+}
+
+async function inspectReadinessWithPlan(
+  db: NodeSqliteDatabase,
+  config: SeedbedConfig,
+  taproot: TaprootAssembly,
+  plan: ComponentMigrationPlan,
+): Promise<ReadinessStatus> {
   const components: ComponentStatus[] = [
-    { name: 'diamond', version: versions.diamond, ready: false },
+    { name: 'diamond', version: plan.target.diamond, ready: false },
     { name: 'taproot', version: taproot.version, ready: false },
-    { name: 'workshop', version: versions.workshop, ready: false },
+    { name: 'workshop', version: plan.target.workshop, ready: false },
   ];
   let assembly: ReadinessStatus['assembly'] = 'missing';
   try {
-    await verifyNamespace(db, '@gnolith/diamond', diamondMigrations);
+    await verifyNamespace(db, '@gnolith/diamond', plan.diamond.migrations);
+    await requireComponentVerification('Diamond', await plan.diamond.verify(db));
     components[0] = { ...components[0]!, ready: true };
     if (!config.baseIri) throw new Error('Configured base IRI is required for readiness');
     const taprootStatus = await taproot.inspect(db, config.baseIri);
     components[1] = { ...components[1]!, ...taprootStatus };
-    const workshopKnown = workshopMigrations.map(({ id, sql }) => ({
-      id,
-      statements: sql.split(/;\s*(?:\r?\n|$)/u).map((statement) => statement.trim()).filter(Boolean),
-    }));
-    await verifyNamespace(db, '@gnolith/workshop', workshopKnown);
+    await verifyNamespace(db, '@gnolith/workshop', plan.workshop.migrations);
+    await requireComponentVerification('Workshop', await plan.workshop.verify(db));
     components[2] = { ...components[2]!, ready: true };
     await verifyNamespace(db, ASSEMBLY_NAMESPACE, [{
       id: ASSEMBLY_ID,
@@ -159,10 +263,10 @@ export async function inspectReadiness(
       assembly = 'missing';
     } else if (
       marker.base_iri === config.baseIri &&
-      marker.diamond_version === versions.diamond &&
+      marker.diamond_version === plan.target.diamond &&
       marker.taproot_version === taproot.version &&
-      marker.workshop_version === versions.workshop &&
-      marker.seedbed_version === versions.seedbed
+      marker.workshop_version === plan.target.workshop &&
+      marker.seedbed_version === plan.target.seedbed
     ) {
       assembly = 'ready';
     } else {
@@ -229,7 +333,11 @@ async function verifyNamespace(
   }
 }
 
-async function verifyAssemblyForMigration(db: NodeSqliteDatabase, baseIri: string, taprootVersion: string): Promise<AssemblyExpectation> {
+async function verifyAssemblyForMigration(
+  db: NodeSqliteDatabase,
+  baseIri: string,
+  plan: ComponentMigrationPlan,
+): Promise<AssemblyExpectation> {
   const assemblyTablePresent = await tableExists(db, 'seedbed_assembly');
   const ledgerPresent = await tableExists(db, '_gnolith_migrations');
   const assemblyMigrations = ledgerPresent ? await readAppliedMigrations(db, ASSEMBLY_NAMESPACE) : [];
@@ -257,25 +365,102 @@ async function verifyAssemblyForMigration(db: NodeSqliteDatabase, baseIri: strin
       'identity_mismatch',
     );
   }
-  if (
-    marker.diamond_version !== versions.diamond ||
-    marker.taproot_version !== taprootVersion ||
-    marker.workshop_version !== versions.workshop ||
-    marker.seedbed_version !== versions.seedbed
-  ) {
+  const markerVersions = versionsFromMarker(marker);
+  if (sameVersions(markerVersions, plan.target)) {
+    return { kind: 'existing', marker, source: 'target' };
+  }
+  const predecessor = plan.allowedPredecessors.find((candidate) => sameVersions(markerVersions, candidate.versions));
+  if (!predecessor) {
     throw new SeedbedError(
       'Assembly marker contains an unknown, newer, or inconsistent package set; refusing to rewrite it',
       ExitCode.persistence,
       'assembly_version_mismatch',
     );
   }
-  return { kind: 'current', marker };
+  return { kind: 'existing', marker, source: predecessor };
+}
+
+async function preflightAssembly(
+  db: NodeSqliteDatabase,
+  baseIri: string,
+  taproot: TaprootAssembly,
+  plan: ComponentMigrationPlan,
+  expectation: AssemblyExpectation,
+): Promise<void> {
+  if (expectation.kind === 'absent') return;
+  const targetTaproot = { verify: (database: NodeSqliteDatabase, iri: string) => taproot.inspect(database, iri) };
+  if (expectation.source === 'target') {
+    await verifyComponentState(db, 'Diamond', '@gnolith/diamond', plan.diamond);
+    await requireComponentVerification('Taproot', await targetTaproot.verify(db, baseIri));
+    await verifyComponentState(db, 'Workshop', '@gnolith/workshop', plan.workshop);
+    return;
+  }
+  // An interrupted explicit transition may leave any component at either the
+  // predecessor or target state while the marker honestly remains predecessor.
+  // No third state is accepted, and every component is checked before writes.
+  await verifyOneOfComponentStates(db, 'Diamond', '@gnolith/diamond', expectation.source.diamond, plan.diamond);
+  await verifyOneOfTaprootStates(db, baseIri, expectation.source.taproot, targetTaproot);
+  await verifyOneOfComponentStates(db, 'Workshop', '@gnolith/workshop', expectation.source.workshop, plan.workshop);
+}
+
+async function verifyComponentState(
+  db: NodeSqliteDatabase,
+  name: string,
+  namespace: string,
+  state: ComponentStatePlan,
+): Promise<void> {
+  await verifyNamespace(db, namespace, state.migrations);
+  await requireComponentVerification(name, await state.verify(db));
+}
+
+async function verifyOneOfComponentStates(
+  db: NodeSqliteDatabase,
+  name: string,
+  namespace: string,
+  predecessor: ComponentStatePlan,
+  target: ComponentStatePlan,
+): Promise<void> {
+  const predecessorError = await captureVerification(() => verifyComponentState(db, name, namespace, predecessor));
+  if (!predecessorError) return;
+  const targetError = await captureVerification(() => verifyComponentState(db, name, namespace, target));
+  if (!targetError) return;
+  throw new Error(`${name} is neither the exact predecessor nor target state (${predecessorError}; ${targetError})`);
+}
+
+async function verifyOneOfTaprootStates(
+  db: NodeSqliteDatabase,
+  baseIri: string,
+  predecessor: AssemblyPredecessor['taproot'],
+  target: AssemblyPredecessor['taproot'],
+): Promise<void> {
+  const inspect = async (state: AssemblyPredecessor['taproot']): Promise<string | null> => {
+    try {
+      const status = await state.verify(db, baseIri);
+      return status.ready ? null : (status.detail ?? 'schema rejected');
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  };
+  const predecessorError = await inspect(predecessor);
+  if (!predecessorError) return;
+  const targetError = await inspect(target);
+  if (!targetError) return;
+  throw new Error(`Taproot is neither the exact predecessor nor target state (${predecessorError}; ${targetError})`);
+}
+
+async function captureVerification(operation: () => Promise<void>): Promise<string | null> {
+  try {
+    await operation();
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 async function writeAssemblyMarker(
   db: NodeSqliteDatabase,
   baseIri: string,
-  taprootVersion: string,
+  target: MigrationVersions,
   expectation: AssemblyExpectation = { kind: 'absent' },
 ): Promise<void> {
   await applyNamespacedMigrations(db, ASSEMBLY_NAMESPACE, [{
@@ -288,23 +473,34 @@ async function writeAssemblyMarker(
         singleton, base_iri, diamond_version, taproot_version, workshop_version, seedbed_version, updated_at
       ) VALUES (1, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(singleton) DO NOTHING`).bind(
-        baseIri, versions.diamond, taprootVersion, versions.workshop, versions.seedbed, now,
+        baseIri, target.diamond, target.taproot, target.workshop, target.seedbed, now,
       ).run()
-    : await db.prepare(`UPDATE seedbed_assembly SET updated_at = ?
+    : await db.prepare(`UPDATE seedbed_assembly SET
+        diamond_version = ?, taproot_version = ?, workshop_version = ?, seedbed_version = ?, updated_at = ?
       WHERE singleton = 1
         AND base_iri = ?
         AND diamond_version = ?
         AND taproot_version = ?
         AND workshop_version = ?
-        AND seedbed_version = ?`).bind(
+        AND seedbed_version = ?
+        AND updated_at = ?`).bind(
+        target.diamond,
+        target.taproot,
+        target.workshop,
+        target.seedbed,
         now,
         expectation.marker.base_iri,
         expectation.marker.diamond_version,
         expectation.marker.taproot_version,
         expectation.marker.workshop_version,
         expectation.marker.seedbed_version,
+        expectation.marker.updated_at,
       ).run();
   if (Number(result.meta?.changes ?? 0) !== 1) {
+    const winner = await readAssemblyMarker(db);
+    if (winner?.base_iri === baseIri && sameVersions(versionsFromMarker(winner), target)) {
+      return;
+    }
     throw new SeedbedError(
       'Assembly marker changed concurrently; refusing to overwrite it',
       ExitCode.persistence,
@@ -313,12 +509,88 @@ async function writeAssemblyMarker(
   }
 }
 
+function versionsFromMarker(marker: AssemblyRow): MigrationVersions {
+  return {
+    diamond: marker.diamond_version,
+    taproot: marker.taproot_version,
+    workshop: marker.workshop_version,
+    seedbed: marker.seedbed_version,
+  };
+}
+
+function sameVersions(left: MigrationVersions, right: MigrationVersions): boolean {
+  return left.diamond === right.diamond
+    && left.taproot === right.taproot
+    && left.workshop === right.workshop
+    && left.seedbed === right.seedbed;
+}
+
+function assertTaprootVersion(taproot: TaprootAssembly, plan: ComponentMigrationPlan): void {
+  if (taproot.version !== plan.target.taproot) {
+    throw new SeedbedError(
+      `Loaded Taproot ${taproot.version} does not match exact assembly target ${plan.target.taproot}`,
+      ExitCode.persistence,
+      'component_version_mismatch',
+    );
+  }
+}
+
+function snapshotMigrationPlan(plan: ComponentMigrationPlan): ComponentMigrationPlan {
+  const cloneState = (state: ComponentStatePlan): ComponentStatePlan => ({
+    migrations: state.migrations.map((migration) => ({
+      id: migration.id,
+      statements: [...migration.statements],
+    })),
+    verify: state.verify,
+  });
+  return {
+    target: { ...plan.target },
+    allowedPredecessors: plan.allowedPredecessors.map((predecessor) => ({
+      versions: { ...predecessor.versions },
+      diamond: cloneState(predecessor.diamond),
+      taproot: { verify: predecessor.taproot.verify },
+      workshop: cloneState(predecessor.workshop),
+    })),
+    diamond: { ...cloneState(plan.diamond), migrate: plan.diamond.migrate },
+    workshop: { ...cloneState(plan.workshop), migrate: plan.workshop.migrate },
+  };
+}
+
+function requireComponentVerification(
+  name: string,
+  status: { ready: boolean; detail?: string },
+): void {
+  if (!status.ready) {
+    throw new Error(status.detail ?? `${name} migration did not produce the exact target schema`);
+  }
+}
+
+async function verifyCurrentWorkshopSchema(
+  db: NodeSqliteDatabase,
+): Promise<{ ready: boolean; detail?: string }> {
+  const version = await db.prepare('SELECT version FROM workshop_schema WHERE singleton = 1')
+    .first<{ version: number }>();
+  const tables = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'workshop_%' ORDER BY name")
+    .all<{ name: string }>();
+  const indexes = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'workshop_%' ORDER BY name")
+    .all<{ name: string }>();
+  const actualTables = tables.results.map(({ name }) => name);
+  const actualIndexes = indexes.results.map(({ name }) => name);
+  if (version?.version !== WORKSHOP_SCHEMA_VERSION
+    || JSON.stringify(actualTables) !== JSON.stringify([...expectedWorkshopTables].sort())
+    || JSON.stringify(actualIndexes) !== JSON.stringify([...expectedWorkshopIndexes].sort())) {
+    return { ready: false, detail: 'Workshop schema metadata, tables, or indexes do not match the exact target' };
+  }
+  return { ready: true };
+}
+
 interface AssemblyRow {
   base_iri: string;
   diamond_version: string;
   taproot_version: string;
   workshop_version: string;
   seedbed_version: string;
+  updated_at: string;
 }
 
 const assemblyTableStatement = `CREATE TABLE seedbed_assembly (
@@ -333,7 +605,7 @@ const assemblyTableStatement = `CREATE TABLE seedbed_assembly (
 
 async function readAssemblyMarker(db: NodeSqliteDatabase): Promise<AssemblyRow | null> {
   if (!(await tableExists(db, 'seedbed_assembly'))) return null;
-  return db.prepare('SELECT base_iri, diamond_version, taproot_version, workshop_version, seedbed_version FROM seedbed_assembly WHERE singleton = 1').first<AssemblyRow>();
+  return db.prepare('SELECT base_iri, diamond_version, taproot_version, workshop_version, seedbed_version, updated_at FROM seedbed_assembly WHERE singleton = 1').first<AssemblyRow>();
 }
 
 async function tableExists(db: NodeSqliteDatabase, name: string): Promise<boolean> {
