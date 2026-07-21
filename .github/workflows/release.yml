@@ -206,36 +206,36 @@ jobs:
             curl --fail --silent --show-error --location \
               --output "$attestation_response" "$attestations_url"
             node - "$attestation_response" "$expected_version" "$expected_sha512_hex" "$expected_ref" "$EXPECTED_COMMIT" <<'NODE'
-            const fs = require('fs');
-            const [path, version, sha512, ref, commit] = process.argv.slice(2);
-            const response = JSON.parse(fs.readFileSync(path, 'utf8'));
-            const attestations = response.attestations?.filter(
-              ({ predicateType }) => predicateType === 'https://slsa.dev/provenance/v1',
-            ) ?? [];
-            if (attestations.length !== 1) throw new Error('expected exactly one SLSA v1 provenance attestation');
-            const envelope = attestations[0].bundle?.dsseEnvelope;
-            if (envelope?.payloadType !== 'application/vnd.in-toto+json') throw new Error('unexpected DSSE payload type');
-            const statement = JSON.parse(Buffer.from(envelope.payload, 'base64').toString('utf8'));
-            if (statement._type !== 'https://in-toto.io/Statement/v1') throw new Error('unexpected statement type');
-            if (statement.predicateType !== 'https://slsa.dev/provenance/v1') throw new Error('unexpected predicate type');
-            const subjects = statement.subject ?? [];
-            if (subjects.length !== 1) throw new Error('expected one provenance subject');
-            if (subjects[0].name !== `pkg:npm/%40gnolith/seedbed@${version}`) throw new Error('unexpected provenance subject');
-            if (subjects[0].digest?.sha512 !== sha512) throw new Error('provenance subject digest mismatch');
-            const build = statement.predicate?.buildDefinition;
-            if (build?.buildType !== 'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1') {
-              throw new Error('unexpected provenance build type');
-            }
-            const workflow = build.externalParameters?.workflow;
-            if (workflow?.repository !== 'https://github.com/gnolith/seedbed') throw new Error('unexpected provenance repository');
-            if (workflow?.path !== '.github/workflows/release.yml') throw new Error('unexpected provenance workflow');
-            if (workflow?.ref !== ref) throw new Error('unexpected provenance ref');
-            const dependencies = build.resolvedDependencies ?? [];
-            const source = dependencies.filter(({ uri }) => uri === `git+https://github.com/gnolith/seedbed@${ref}`);
-            if (source.length !== 1 || source[0].digest?.gitCommit !== commit) {
-              throw new Error('unexpected provenance source commit');
-            }
-            NODE
+          const fs = require('fs');
+          const [path, version, sha512, ref, commit] = process.argv.slice(2);
+          const response = JSON.parse(fs.readFileSync(path, 'utf8'));
+          const attestations = response.attestations?.filter(
+            ({ predicateType }) => predicateType === 'https://slsa.dev/provenance/v1',
+          ) ?? [];
+          if (attestations.length !== 1) throw new Error('expected exactly one SLSA v1 provenance attestation');
+          const envelope = attestations[0].bundle?.dsseEnvelope;
+          if (envelope?.payloadType !== 'application/vnd.in-toto+json') throw new Error('unexpected DSSE payload type');
+          const statement = JSON.parse(Buffer.from(envelope.payload, 'base64').toString('utf8'));
+          if (statement._type !== 'https://in-toto.io/Statement/v1') throw new Error('unexpected statement type');
+          if (statement.predicateType !== 'https://slsa.dev/provenance/v1') throw new Error('unexpected predicate type');
+          const subjects = statement.subject ?? [];
+          if (subjects.length !== 1) throw new Error('expected one provenance subject');
+          if (subjects[0].name !== `pkg:npm/%40gnolith/seedbed@${version}`) throw new Error('unexpected provenance subject');
+          if (subjects[0].digest?.sha512 !== sha512) throw new Error('provenance subject digest mismatch');
+          const build = statement.predicate?.buildDefinition;
+          if (build?.buildType !== 'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1') {
+            throw new Error('unexpected provenance build type');
+          }
+          const workflow = build.externalParameters?.workflow;
+          if (workflow?.repository !== 'https://github.com/gnolith/seedbed') throw new Error('unexpected provenance repository');
+          if (workflow?.path !== '.github/workflows/release.yml') throw new Error('unexpected provenance workflow');
+          if (workflow?.ref !== ref) throw new Error('unexpected provenance ref');
+          const dependencies = build.resolvedDependencies ?? [];
+          const source = dependencies.filter(({ uri }) => uri === `git+https://github.com/gnolith/seedbed@${ref}`);
+          if (source.length !== 1 || source[0].digest?.gitCommit !== commit) {
+            throw new Error('unexpected provenance source commit');
+          }
+          NODE
           }
           registry_status=$(curl --silent --show-error --location \
             --output "$registry_response" --write-out '%{http_code}' "$registry_url")

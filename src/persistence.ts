@@ -56,7 +56,7 @@ const versions: MigrationVersions = {
   diamond: '0.4.0',
   taproot: '0.2.0',
   workshop: '0.2.3',
-  seedbed: '0.1.0',
+  seedbed: '0.1.1',
 };
 
 export async function openDatabase(config: SeedbedConfig): Promise<NodeSqliteDatabase> {

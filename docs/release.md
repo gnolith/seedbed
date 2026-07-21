@@ -5,6 +5,12 @@ matches `package.json`. Configure npm trusted publishing for the `release.yml`
 workflow in `gnolith/seedbed` and the protected `release` environment. GitHub's
 `packages: write` permission publishes the public GHCR image.
 
+Repository-level immutable releases are enabled through GitHub's supported
+`immutable-releases` setting. GitHub applies that setting only to Releases created
+after enablement, so every new release must report `immutable: true` through the
+release API. Active no-bypass tag ruleset `19395217` independently blocks updates
+and deletion for `refs/tags/v*`.
+
 For the first publication only, create a short-lived granular npm token with
 write access to the `@gnolith` scope and bypass-2FA enabled. Store it as the
 `NPM_BOOTSTRAP_TOKEN` secret in the GitHub `release` environment. The workflow
@@ -51,7 +57,7 @@ checkout and artifact actions.
 
 ## Dependency release inputs
 
-Seedbed 0.1.0 binds Workshop 0.2.3's source identity to the peeled `v0.2.3` tag
+Seedbed 0.1.1 binds Workshop 0.2.3's source identity to the peeled `v0.2.3` tag
 commit `bf168ebd21cc0c4529fc721c1e1ab9b498b4ddd5`. Its assembly, packed-package,
 and Docker gates consume the published npm artifact, not a Seedbed-side source
 repack. The release input must have SHA-256
@@ -70,7 +76,7 @@ acceptance paths.
 
 ## Tracked production advisory
 
-The 0.1.0 production tree contains
+The 0.1.1 production tree contains
 `@modelcontextprotocol/sdk@1.29.0 -> @hono/node-server@1.19.14`, which is affected by
 moderate advisory GHSA-frvp-7c67-39w9 (`@hono/node-server <2.0.5`). The vulnerable
 Windows `serve-static` path is not reachable through Seedbed's stdio-only process
@@ -81,6 +87,30 @@ upstream remediation in [issue #11](https://github.com/gnolith/seedbed/issues/11
 The high-severity production audit gate therefore passes with two audit entries for
 this one upstream moderate advisory; reviewers must explicitly accept this residual
 risk before release.
+
+## Failed 0.1.0 publication evidence
+
+The `v0.1.0` source tag points to commit
+`8371d33f9e1d5182ad38d05d15aad1a35dc1bf75` and is protected from update or
+deletion by active no-bypass tag ruleset `19395217`. Its GitHub Release predates
+repository-level immutable-release enablement and therefore accurately reports
+`immutable: false`; it has no attached assets and is frozen by project policy, not
+by GitHub's technical Release immutability. Release workflow run
+[`29867240910`](https://github.com/gnolith/seedbed/actions/runs/29867240910)
+completed the tokenless package job, then stopped before executing any publish
+command because Bash rejected an indented heredoc terminator while parsing the
+protected runner's inline verifier. The image job was skipped. npm and GHCR both
+remained absent for 0.1.0.
+
+The retained attempt-1 handoff has artifact ID `8509697703`, service digest
+`sha256:6fdb84c7486fabb4e95e8ef71bbf8d66159449f573e6d61f1e7a969dadf87466`,
+tarball SHA-256
+`1126ebc52a05369bc26903fc10538972d72630723fa93a926380b0b2bddff47a`, and npm
+integrity
+`sha512-SPs/YaoenUjS90t3pLQc7RRvnyg9aX8BTf8QiYtw2sco9fTSAEXEUYxfhJkGgzvOBB2mO0cW6L2wUtm+4fpYuQ==`.
+The artifact expires on 2026-08-20. Never edit, delete, republish, or reuse the
+historical 0.1.0 Release or handoff; 0.1.1 is the technically immutable fix-forward
+publication candidate.
 
 After `@gnolith/seedbed` exists, configure its npm trusted publisher for
 `gnolith/seedbed`, `release.yml`, environment `release`, and `npm publish`; then
