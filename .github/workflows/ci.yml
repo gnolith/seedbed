@@ -130,5 +130,18 @@ jobs:
           cp "$RUNNER_TEMP"/gnolith-diamond-0.4.0.tgz .
           cp "$RUNNER_TEMP"/gnolith-taproot-0.2.0.tgz .
           cp "$RUNNER_TEMP"/gnolith-workshop-0.2.3.tgz .
-          docker build --build-arg SEEDBED_TARBALL=gnolith-seedbed-0.1.1.tgz --build-arg REVISION=${{ github.sha }} --tag seedbed:test .
+          seedbed_integrity="sha512-$(openssl dgst -sha512 -binary gnolith-seedbed-0.1.1.tgz | openssl base64 -A)"
+          bash scripts/build-production-closure.sh \
+            gnolith-seedbed-0.1.1.tgz \
+            "$seedbed_integrity" \
+            gnolith-diamond-0.4.0.tgz \
+            gnolith-taproot-0.2.0.tgz \
+            gnolith-workshop-0.2.3.tgz
+          closure_sha=$(cut -d ' ' -f 1 gnolith-production-closure.tar.gz.sha256)
+          docker build \
+            --build-arg PRODUCTION_CLOSURE_SHA256="$closure_sha" \
+            --build-arg REVISION=${{ github.sha }} \
+            --tag seedbed:test .
+          test "$(docker image inspect seedbed:test --format '{{index .Config.Labels "org.gnolith.production-closure.sha256"}}')" = "$closure_sha"
+          echo "SEEDBED_CLOSURE_SHA256=$closure_sha" >> "$GITHUB_ENV"
       - run: npm run test:docker

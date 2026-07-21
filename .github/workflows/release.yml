@@ -347,6 +347,19 @@ jobs:
           mv "$filename" ../gnolith-seedbed-${{ steps.identity.outputs.version }}.tgz
           cd ..
           printf '%s\n' "$registry_integrity" > npm-integrity.txt
+      - id: closure
+        name: Build the locked content-addressed production closure
+        shell: bash
+        run: |
+          bash scripts/build-production-closure.sh \
+            gnolith-seedbed-${{ steps.identity.outputs.version }}.tgz \
+            "$(cat npm-integrity.txt)" \
+            gnolith-diamond-0.4.0.tgz \
+            gnolith-taproot-0.2.0.tgz \
+            gnolith-workshop-0.2.3.tgz
+          closure_sha=$(cut -d ' ' -f 1 gnolith-production-closure.tar.gz.sha256)
+          test -n "$closure_sha"
+          echo "sha256=$closure_sha" >> "$GITHUB_OUTPUT"
       - name: Verify the exact published process assembly
         env:
           SEEDBED_VERSION: ${{ steps.identity.outputs.version }}
@@ -361,10 +374,7 @@ jobs:
             --push \
             --provenance=mode=max \
             --sbom=true \
-            --build-arg DIAMOND_TARBALL=gnolith-diamond-0.4.0.tgz \
-            --build-arg TAPROOT_TARBALL=gnolith-taproot-0.2.0.tgz \
-            --build-arg WORKSHOP_TARBALL=gnolith-workshop-0.2.3.tgz \
-            --build-arg SEEDBED_TARBALL=gnolith-seedbed-${{ steps.identity.outputs.version }}.tgz \
+            --build-arg PRODUCTION_CLOSURE_SHA256=${{ steps.closure.outputs.sha256 }} \
             --build-arg REVISION=${{ github.sha }} \
             --tag ghcr.io/gnolith/seedbed:${{ steps.identity.outputs.version }} \
             --label org.opencontainers.image.version=${{ steps.identity.outputs.version }} \
@@ -380,9 +390,11 @@ jobs:
           test "$(docker run --rm --entrypoint id "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" -u)" != "0"
           test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "${{ steps.identity.outputs.version }}"
           test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "${{ github.sha }}"
+          test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.gnolith.production-closure.sha256"}}')" = "${{ steps.closure.outputs.sha256 }}"
       - name: Functionally verify the immutable published image
         env:
           SEEDBED_TEST_IMAGE: ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}
+          SEEDBED_CLOSURE_SHA256: ${{ steps.closure.outputs.sha256 }}
         run: npm run test:docker
       - shell: bash
         run: docker buildx imagetools create --tag ghcr.io/gnolith/seedbed:latest "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}"

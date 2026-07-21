@@ -124,8 +124,16 @@ disabled and the `NPM_BOOTSTRAP_TOKEN` environment secret was deleted. Current a
 future releases are OIDC-only.
 
 The workflow publishes npm with provenance, installs the exact registry version in
-a clean directory, then builds the image from the exact downloaded npm tarball. The
-versioned image is pushed with provenance and SBOM before `latest` is updated.
+a clean directory, then binds the downloaded Seedbed, Diamond, Taproot, and Workshop
+tarballs to their verified integrity values. It realizes the committed
+`docker/package-lock.json` from a fresh cache and proves that the complete production
+graph can be reinstalled with npm offline while the registry points to an invalid
+local endpoint. Docker receives only the resulting deterministic, SHA-256-addressed
+closure. Its extraction step runs with BuildKit networking disabled and verifies the
+closure digest before exposing the Seedbed executable; the Dockerfile performs no npm
+or registry operation. Image acceptance checks the exact component tuple, closure
+label and reconstructed closure digest. The versioned image is pushed with provenance
+and SBOM before `latest` is updated.
 
 If a release fails after an immutable artifact is public, fix forward with a new
 patch version and new tag. Never move or overwrite a released tag, npm version, or

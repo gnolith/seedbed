@@ -185,6 +185,18 @@ const workshopStructuralDrifts = [
       await db.prepare('CREATE INDEX workshop_tasks_updated_idx ON workshop_tasks (created_at, id)').run();
     },
   },
+  {
+    name: 'deleted schema singleton',
+    async apply(db: NodeSqliteDatabase) {
+      await db.prepare('DELETE FROM workshop_schema WHERE singleton = 1').run();
+    },
+  },
+  {
+    name: 'forged schema singleton',
+    async apply(db: NodeSqliteDatabase) {
+      await db.prepare("UPDATE workshop_schema SET version = 999, package_version = '999.0.0' WHERE singleton = 1").run();
+    },
+  },
 ] as const;
 
 async function expectNoFutureComponentMutation(config: SeedbedConfig): Promise<void> {

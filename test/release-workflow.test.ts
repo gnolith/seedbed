@@ -152,11 +152,14 @@ describe('release credential boundary', () => {
     ] as const)) {
       expect(imageJob).toContain(`stage_component '@gnolith/${name}' '${version}' 'gnolith-${name}-${version}.tgz'`);
       expect(imageJob).toContain(sha256);
-      expect(imageJob).toContain(`--build-arg ${name.toUpperCase()}_TARBALL=gnolith-${name}-${version}.tgz`);
     }
     expect(imageJob).toContain("dist.attestations?.provenance?.predicateType || ''");
     expect(imageJob).toContain('npm audit signatures');
-    expect(imageJob).not.toContain('/tmp/packages/*.tgz');
+    expect(imageJob).toContain('bash scripts/build-production-closure.sh');
+    expect(imageJob).toContain('"$(cat npm-integrity.txt)"');
+    expect(imageJob).toContain('--build-arg PRODUCTION_CLOSURE_SHA256=${{ steps.closure.outputs.sha256 }}');
+    expect(imageJob).toContain('org.gnolith.production-closure.sha256');
+    expect(imageJob).toContain('SEEDBED_CLOSURE_SHA256: ${{ steps.closure.outputs.sha256 }}');
   });
 });
 

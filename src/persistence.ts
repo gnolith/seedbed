@@ -659,7 +659,9 @@ async function captureWorkshopSchema(db: NodeSqliteDatabase): Promise<string> {
       indexes,
     };
   }
-  return JSON.stringify({ objects, tables });
+  const metadata = await db.prepare(`SELECT singleton, version, package_version
+    FROM workshop_schema ORDER BY singleton`).all<Record<string, unknown>>();
+  return JSON.stringify({ objects, tables, metadata: metadata.results.map(normalizePragmaRow) });
 }
 
 function normalizePragmaRow(row: Record<string, unknown>): Record<string, unknown> {
