@@ -108,10 +108,8 @@ jobs:
           artifact-ids: ${{ needs.package.outputs.artifact_id }}
           path: ${{ runner.temp }}/npm-publication
           merge-multiple: true
-      - name: Reverify and publish with temporary bootstrap authentication
+      - name: Reverify and publish with npm trusted publishing
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
-          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-bootstrap.npmrc
           EXPECTED_SHA256: ${{ needs.package.outputs.sha256 }}
           EXPECTED_ARTIFACT_ID: ${{ needs.package.outputs.artifact_id }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.package.outputs.artifact_digest }}
@@ -119,8 +117,6 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         shell: bash
         run: |
-          umask 077
-          trap 'rm -f "$NPM_CONFIG_USERCONFIG"' EXIT
           [[ "$RELEASE_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]
           expected_version="${BASH_REMATCH[1]}"
           [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]
@@ -181,7 +177,52 @@ jobs:
           expected_sha512_hex=$(sha512sum "$tarball" | cut -d ' ' -f 1)
           expected_integrity="sha512-$(openssl dgst -sha512 -binary "$tarball" | openssl base64 -A)"
           registry_response="$RUNNER_TEMP/npm-registry-version.json"
+          root_packument="$RUNNER_TEMP/npm-registry-packument.json"
           registry_url="https://registry.npmjs.org/@gnolith%2fseedbed/$expected_version"
+          root_packument_url="https://registry.npmjs.org/@gnolith%2fseedbed"
+          audit_dir="$RUNNER_TEMP/npm-provenance-audit"
+          registry_ready() {
+            registry_status=$(curl --silent --show-error --location \
+              --output "$registry_response" --write-out '%{http_code}' "$registry_url")
+            root_packument_status=$(curl --silent --show-error --location \
+              --output "$root_packument" --write-out '%{http_code}' "$root_packument_url")
+            test "$registry_status" = 200 || return 1
+            test "$root_packument_status" = 200 || return 1
+            node - "$registry_response" "$root_packument" "$expected_version" "$expected_integrity" <<'NODE' || return 1
+          const fs = require('fs');
+          const [versionPath, packumentPath, version, integrity] = process.argv.slice(2);
+          const exact = JSON.parse(fs.readFileSync(versionPath, 'utf8'));
+          const packument = JSON.parse(fs.readFileSync(packumentPath, 'utf8'));
+          if (exact.name !== '@gnolith/seedbed' || exact.version !== version) process.exit(1);
+          if (exact.dist?.integrity !== integrity) process.exit(1);
+          if (exact.dist?.attestations?.url !== `https://registry.npmjs.org/-/npm/v1/attestations/@gnolith%2fseedbed@${version}`) process.exit(1);
+          if (exact.dist?.attestations?.provenance?.predicateType !== 'https://slsa.dev/provenance/v1') process.exit(1);
+          const rootVersion = packument.versions?.[version];
+          if (rootVersion?.name !== '@gnolith/seedbed' || rootVersion.version !== version) process.exit(1);
+          if (rootVersion.dist?.integrity !== integrity) process.exit(1);
+          NODE
+            rm -rf "$audit_dir" || return 1
+            mkdir "$audit_dir" || return 1
+            cd "$audit_dir" || return 1
+            npm init --yes >/dev/null || return 1
+            npm install --ignore-scripts --save-exact "@gnolith/seedbed@$expected_version" || return 1
+            test "$(node -p "JSON.parse(require('fs').readFileSync('node_modules/@gnolith/seedbed/package.json', 'utf8')).name")" = "@gnolith/seedbed" || return 1
+            test "$(node -p "JSON.parse(require('fs').readFileSync('node_modules/@gnolith/seedbed/package.json', 'utf8')).version")" = "$expected_version" || return 1
+            test "$(node -p "JSON.parse(require('fs').readFileSync('package-lock.json', 'utf8')).packages['node_modules/@gnolith/seedbed'].integrity")" = "$expected_integrity" || return 1
+            cd "$RUNNER_TEMP" || return 1
+          }
+          wait_for_registry() {
+            for attempt in {1..12}; do
+              if registry_ready; then
+                return 0
+              fi
+              cd "$RUNNER_TEMP"
+              echo "Exact npm packument and install evidence is not yet complete (attempt $attempt/12)."
+              sleep 5
+            done
+            echo "npm registry propagation did not produce exact packument and install evidence" >&2
+            return 1
+          }
           verify_registry_provenance() {
             test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).name" "$registry_response")" = "@gnolith/seedbed"
             test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$registry_response")" = "$expected_version"
@@ -190,16 +231,7 @@ jobs:
             provenance_type=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.provenance?.predicateType || ''" "$registry_response")
             test "$attestations_url" = "https://registry.npmjs.org/-/npm/v1/attestations/@gnolith%2fseedbed@$expected_version"
             test "$provenance_type" = "https://slsa.dev/provenance/v1"
-            rm -f "$NPM_CONFIG_USERCONFIG"
-            unset NODE_AUTH_TOKEN
-            audit_dir="$RUNNER_TEMP/npm-provenance-audit"
-            mkdir "$audit_dir"
             cd "$audit_dir"
-            npm init --yes >/dev/null
-            npm install --ignore-scripts --save-exact "@gnolith/seedbed@$expected_version"
-            test "$(node -p "JSON.parse(require('fs').readFileSync('node_modules/@gnolith/seedbed/package.json', 'utf8')).name")" = "@gnolith/seedbed"
-            test "$(node -p "JSON.parse(require('fs').readFileSync('node_modules/@gnolith/seedbed/package.json', 'utf8')).version")" = "$expected_version"
-            test "$(node -p "JSON.parse(require('fs').readFileSync('package-lock.json', 'utf8')).packages['node_modules/@gnolith/seedbed'].integrity")" = "$expected_integrity"
             npm audit signatures | tee "$RUNNER_TEMP/npm-signature-audit.txt"
             grep -Eq '[1-9][0-9]* packages? (has|have) (a )?verified attestations?' "$RUNNER_TEMP/npm-signature-audit.txt"
             attestation_response="$RUNNER_TEMP/npm-provenance-attestations.json"
@@ -240,33 +272,16 @@ jobs:
           registry_status=$(curl --silent --show-error --location \
             --output "$registry_response" --write-out '%{http_code}' "$registry_url")
           if test "$registry_status" = 200; then
+            wait_for_registry
             verify_registry_provenance
             echo "The exact npm artifact is already public; publication recovery is complete."
             exit 0
           fi
           test "$registry_status" = 404
           cd "$RUNNER_TEMP"
-          # npm expands the token from its environment when it reads this file.
-          # shellcheck disable=SC2016
-          printf '%s\n' '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "$NPM_CONFIG_USERCONFIG"
           npm publish "$tarball" --ignore-scripts --access public --provenance
-          for attempt in {1..12}; do
-            registry_status=$(curl --silent --show-error --location \
-              --output "$registry_response" --write-out '%{http_code}' "$registry_url")
-            if test "$registry_status" = 200; then
-              published_attestations=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.url || ''" "$registry_response")
-              if test -z "$published_attestations"; then
-                sleep 5
-                continue
-              fi
-              verify_registry_provenance
-              exit 0
-            fi
-            test "$registry_status" = 404
-            sleep 5
-          done
-          echo "npm accepted the publication but exact registry evidence did not appear" >&2
-          exit 1
+          wait_for_registry
+          verify_registry_provenance
 
   image:
     needs: publish

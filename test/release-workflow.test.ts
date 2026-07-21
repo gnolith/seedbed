@@ -19,25 +19,26 @@ describe('release credential boundary', () => {
     expect(packageJob).toContain('actions/upload-artifact@');
     expect(packageJob).toContain('seedbed-publication-$sha256.tgz');
     expect(packageJob).not.toContain('environment: release');
-    expect(packageJob).not.toContain('NPM_BOOTSTRAP_TOKEN');
+    expect(packageJob).not.toContain('NODE_AUTH_TOKEN');
   });
 
-  it('uses a fresh no-checkout runner for the only credential reference', () => {
+  it('uses a fresh no-checkout runner for OIDC-only trusted publishing', () => {
     expect(publishJob).toContain('needs: package');
     expect(publishJob).toContain('environment: release');
     expect(publishJob).toMatch(/permissions:\r?\n      id-token: write\r?\n/u);
     expect(publishJob).not.toContain('contents: read');
     expect(publishJob).not.toContain('actions: read');
     expect(publishJob).toContain('actions/download-artifact@');
-    expect(publishJob).toContain('NPM_BOOTSTRAP_TOKEN');
     expect(publishJob).not.toContain('actions/checkout@');
     expect(publishJob).not.toContain('actions/setup-node@');
     expect(publishJob).not.toContain('./.github/');
     expect(publishJob).not.toMatch(/\bnpm (?:ci|run|pack|exec)\b/u);
-    expect(workflow.match(/NPM_BOOTSTRAP_TOKEN/gu)).toHaveLength(1);
+    expect(workflow).not.toContain('NPM_BOOTSTRAP_TOKEN');
+    expect(workflow).not.toContain('NODE_AUTH_TOKEN');
+    expect(workflow).not.toContain('_authToken');
+    expect(workflow).not.toContain('npm-bootstrap.npmrc');
     const finalStep = publishJob.lastIndexOf('      - name:');
     expect(finalStep).toBeGreaterThan(-1);
-    expect(publishJob.indexOf('NPM_BOOTSTRAP_TOKEN')).toBeGreaterThan(finalStep);
     expect(publishJob.slice(finalStep)).toContain('npm publish "$tarball"');
   });
 
@@ -79,7 +80,10 @@ describe('release credential boundary', () => {
     expect(publishJob).toContain("packages['node_modules/@gnolith/seedbed'].integrity");
     expect(publishJob).toContain('npm audit signatures');
     expect(publishJob).toContain('verified attestations?');
-    expect(publishJob).toContain('if test -z "$published_attestations"');
+    expect(publishJob).toContain('root_packument_url="https://registry.npmjs.org/@gnolith%2fseedbed"');
+    expect(publishJob).toContain('packument.versions?.[version]');
+    expect(publishJob).toContain('wait_for_registry');
+    expect(publishJob).toContain('Exact npm packument and install evidence is not yet complete');
     expect(publishJob).toContain("subjects[0].name !== `pkg:npm/%40gnolith/seedbed@${version}`");
     expect(publishJob).toContain("subjects[0].digest?.sha512 !== sha512");
     expect(publishJob).toContain("workflow?.repository !== 'https://github.com/gnolith/seedbed'");
@@ -135,7 +139,7 @@ describe('release credential boundary', () => {
     expect(publishJob).toContain('41cd79bb7877c81605a9e68ec4c91547774f46a40c67a17e34d7179ef11729df');
   });
 
-  it('gates the image job on successful credentialed publication', () => {
+  it('gates the image job on successful OIDC publication', () => {
     expect(imageJob).toMatch(/^  image:\r?\n    needs: publish/mu);
     expect(imageJob).not.toContain('needs.npm.outputs');
   });

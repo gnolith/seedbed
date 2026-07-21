@@ -14,7 +14,7 @@ describe('release publish script', () => {
     const workflowSource = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
     const workflow = parse(workflowSource) as ReleaseWorkflow;
     const step = workflow.jobs.publish.steps.find(
-      ({ name }) => name === 'Reverify and publish with temporary bootstrap authentication',
+      ({ name }) => name === 'Reverify and publish with npm trusted publishing',
     );
     if (typeof step?.run !== 'string') throw new Error('publish script is missing from parsed release workflow');
     publishScript = step.run;
@@ -31,7 +31,7 @@ describe('release publish script', () => {
     expect(publishScript).toContain("\nNODE\n");
   });
 
-  it.skipIf(process.platform === 'win32')('executes the exact parsed script through safe recovery', async () => {
+  it.skipIf(process.platform === 'win32')('executes safe recovery and postpublish propagation paths', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seedbed-publish-script-'));
     temporaryDirectories.push(root);
     const publicationDirectory = join(root, 'npm-publication');
@@ -77,6 +77,17 @@ describe('release publish script', () => {
         integrity,
       },
     }));
+    const rootPackumentResponse = join(root, 'root-packument.json');
+    await writeFile(rootPackumentResponse, JSON.stringify({
+      name: '@gnolith/seedbed',
+      versions: {
+        [version]: {
+          name: '@gnolith/seedbed',
+          version,
+          dist: { integrity },
+        },
+      },
+    }));
     const statement = {
       _type: 'https://in-toto.io/Statement/v1',
       predicateType: 'https://slsa.dev/provenance/v1',
@@ -118,11 +129,32 @@ while (($#)); do
 done
 if [[ "$url" == *'/attestations/'* ]]; then
   cp "$MOCK_ATTESTATION_RESPONSE" "$output"
+elif [[ "$url" == "$MOCK_ROOT_PACKUMENT_URL" ]]; then
+  count=0
+  if [[ -f "$MOCK_ROOT_REQUEST_COUNT" ]]; then count=$(cat "$MOCK_ROOT_REQUEST_COUNT"); fi
+  count=$((count + 1))
+  printf '%s' "$count" > "$MOCK_ROOT_REQUEST_COUNT"
+  if ((count == 1)); then
+    printf '{}' > "$output"
+    if $write_status; then printf '404'; fi
+  else
+    cp "$MOCK_ROOT_PACKUMENT_RESPONSE" "$output"
+    if $write_status; then printf '200'; fi
+  fi
 else
-  cp "$MOCK_REGISTRY_RESPONSE" "$output"
-  if $write_status; then printf '200'; fi
+  version_status=200
+  if [[ "\${MOCK_INITIAL_VERSION_404:-false}" == true ]]; then
+    count=0
+    if [[ -f "$MOCK_VERSION_REQUEST_COUNT" ]]; then count=$(cat "$MOCK_VERSION_REQUEST_COUNT"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "$MOCK_VERSION_REQUEST_COUNT"
+    if ((count == 1)); then version_status=404; fi
+  fi
+  if ((version_status == 200)); then cp "$MOCK_REGISTRY_RESPONSE" "$output"; else printf '{}' > "$output"; fi
+  if $write_status; then printf '%s' "$version_status"; fi
 fi
 `);
+    await writeExecutable(join(mockBin, 'sleep'), '#!/usr/bin/env bash\nexit 0\n');
     await writeExecutable(join(mockBin, 'npm'), `#!/usr/bin/env bash
 set -euo pipefail
 case "\${1:-} \${2:-}" in
@@ -136,8 +168,11 @@ case "\${1:-} \${2:-}" in
     echo '1 package has a verified attestation'
     ;;
   'publish '*)
-    echo 'publish must not run during recovery test' >&2
-    exit 90
+    if [[ "\${MOCK_ALLOW_PUBLISH:-false}" != true ]]; then
+      echo 'publish must not run during recovery test' >&2
+      exit 90
+    fi
+    printf '%s\n' "$*" > "$MOCK_PUBLISH_LOG"
     ;;
   *) echo "unexpected npm invocation: $*" >&2; exit 91 ;;
 esac
@@ -161,8 +196,9 @@ esac
         MOCK_INSTALLED_LOCK: installedLock,
         MOCK_INSTALLED_MANIFEST: installedManifest,
         MOCK_REGISTRY_RESPONSE: registryResponse,
-        NODE_AUTH_TOKEN: 'not-a-real-token',
-        NPM_CONFIG_USERCONFIG: join(root, 'npmrc'),
+        MOCK_ROOT_PACKUMENT_RESPONSE: rootPackumentResponse,
+        MOCK_ROOT_PACKUMENT_URL: 'https://registry.npmjs.org/@gnolith%2fseedbed',
+        MOCK_ROOT_REQUEST_COUNT: join(root, 'root-request-count'),
         PATH: `${mockBin}${delimiter}${process.env.PATH ?? ''}`,
         RELEASE_TAG: `v${version}`,
         RUNNER_TEMP: root,
@@ -170,8 +206,43 @@ esac
       input: publishScript,
     });
     expect(result.stderr).toBe('');
+    expect(result.stdout).toContain('packument and install evidence is not yet complete (attempt 1/12)');
     expect(result.stdout).toContain('publication recovery is complete');
     expect(result.status).toBe(0);
+
+    await rm(join(root, 'root-request-count'), { force: true });
+    const publishLog = join(root, 'publish.log');
+    const publishResult = spawnSync('bash', [], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        EXPECTED_ARTIFACT_DIGEST: 'b'.repeat(64),
+        EXPECTED_ARTIFACT_ID: '12345',
+        EXPECTED_COMMIT: commit,
+        EXPECTED_SHA256: sha256,
+        MOCK_ALLOW_PUBLISH: 'true',
+        MOCK_ATTESTATION_RESPONSE: attestationResponse,
+        MOCK_INITIAL_VERSION_404: 'true',
+        MOCK_INSTALLED_LOCK: installedLock,
+        MOCK_INSTALLED_MANIFEST: installedManifest,
+        MOCK_PUBLISH_LOG: publishLog,
+        MOCK_REGISTRY_RESPONSE: registryResponse,
+        MOCK_ROOT_PACKUMENT_RESPONSE: rootPackumentResponse,
+        MOCK_ROOT_PACKUMENT_URL: 'https://registry.npmjs.org/@gnolith%2fseedbed',
+        MOCK_ROOT_REQUEST_COUNT: join(root, 'root-request-count'),
+        MOCK_VERSION_REQUEST_COUNT: join(root, 'version-request-count'),
+        PATH: `${mockBin}${delimiter}${process.env.PATH ?? ''}`,
+        RELEASE_TAG: `v${version}`,
+        RUNNER_TEMP: root,
+      },
+      input: publishScript,
+    });
+    expect(publishResult.stderr).toBe('');
+    expect(publishResult.stdout).toContain('packument and install evidence is not yet complete (attempt 1/12)');
+    expect(publishResult.status).toBe(0);
+    expect(await readFile(publishLog, 'utf8')).toContain(
+      `publish ${tarball} --ignore-scripts --access public --provenance`,
+    );
   });
 });
 
