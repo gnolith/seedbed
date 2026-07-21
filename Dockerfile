@@ -2,6 +2,9 @@
 FROM node:24.14.0-bookworm-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8
 
 ARG SEEDBED_TARBALL=gnolith-seedbed-0.1.1.tgz
+ARG DIAMOND_TARBALL=gnolith-diamond-0.4.0.tgz
+ARG TAPROOT_TARBALL=gnolith-taproot-0.2.0.tgz
+ARG WORKSHOP_TARBALL=gnolith-workshop-0.2.3.tgz
 ARG SOURCE_URL=https://github.com/gnolith/seedbed
 ARG REVISION=unknown
 LABEL org.opencontainers.image.source=$SOURCE_URL \
@@ -17,7 +20,14 @@ RUN apt-get update \
 WORKDIR /opt/seedbed
 COPY gnolith-*.tgz /tmp/packages/
 RUN test -f "/tmp/packages/${SEEDBED_TARBALL}" \
-    && npm install --omit=dev --ignore-scripts --no-audit --no-fund /tmp/packages/*.tgz \
+    && test -f "/tmp/packages/${DIAMOND_TARBALL}" \
+    && test -f "/tmp/packages/${TAPROOT_TARBALL}" \
+    && test -f "/tmp/packages/${WORKSHOP_TARBALL}" \
+    && npm install --omit=dev --ignore-scripts --no-audit --no-fund \
+      "/tmp/packages/${DIAMOND_TARBALL}" \
+      "/tmp/packages/${TAPROOT_TARBALL}" \
+      "/tmp/packages/${WORKSHOP_TARBALL}" \
+      "/tmp/packages/${SEEDBED_TARBALL}" \
     && rm -rf /tmp/packages \
     && npm cache clean --force
 

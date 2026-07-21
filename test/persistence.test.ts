@@ -12,6 +12,7 @@ import {
   migrateDatabaseWithPlan,
   openDatabase,
   requireReady,
+  verifyCurrentWorkshopSchema,
   type ComponentMigrationPlan,
   type TaprootAssembly,
 } from '../src/persistence.js';
@@ -94,7 +95,7 @@ function futurePlan(events: string[] = []): ComponentMigrationPlan {
       taproot: { verify: (db, baseIri) => fakeTaproot().inspect(db, baseIri) },
       workshop: {
         migrations: currentWorkshopMigrations,
-        verify: verifyCurrentWorkshopFixture,
+        verify: verifyCurrentWorkshopSchema,
       },
     }],
     diamond: {
@@ -111,19 +112,12 @@ function futurePlan(events: string[] = []): ComponentMigrationPlan {
         events.push('migrate:workshop');
         await applyNamespacedMigrations(db, '@gnolith/workshop', workshop);
       },
-      verify: (db) => fixtureTableReady(db, 'seedbed_fixture_workshop'),
+      async verify(db) {
+        const current = await verifyCurrentWorkshopSchema(db);
+        return current.ready ? fixtureTableReady(db, 'seedbed_fixture_workshop') : current;
+      },
     },
   };
-}
-
-async function verifyCurrentWorkshopFixture(
-  db: NodeSqliteDatabase,
-): Promise<{ ready: boolean; detail?: string }> {
-  const version = await db.prepare('SELECT version FROM workshop_schema WHERE singleton = 1')
-    .first<{ version: number }>();
-  return version?.version === 3
-    ? { ready: true }
-    : { ready: false, detail: 'Workshop fixture schema version is not current' };
 }
 
 async function fixtureTableReady(
@@ -152,6 +146,57 @@ async function readMarker(config: SeedbedConfig): Promise<Record<string, string>
   try {
     return await db.prepare(`SELECT diamond_version, taproot_version, workshop_version, seedbed_version
       FROM seedbed_assembly WHERE singleton = 1`).first<Record<string, string>>();
+  } finally {
+    await db.close();
+  }
+}
+
+async function removeAssemblyMetadata(db: NodeSqliteDatabase): Promise<void> {
+  await db.prepare("DELETE FROM _gnolith_migrations WHERE namespace = '@gnolith/seedbed'").run();
+  await db.prepare('DROP TABLE seedbed_assembly').run();
+}
+
+const workshopStructuralDrifts = [
+  {
+    name: 'added column',
+    async apply(db: NodeSqliteDatabase) {
+      await db.prepare('ALTER TABLE workshop_tasks ADD COLUMN injected_column TEXT').run();
+    },
+  },
+  {
+    name: 'changed constraint',
+    async apply(db: NodeSqliteDatabase) {
+      const table = await db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workshop_tasks'")
+        .first<{ sql: string }>();
+      const indexes = await db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'workshop_tasks' AND sql IS NOT NULL ORDER BY name")
+        .all<{ sql: string }>();
+      if (!table?.sql) throw new Error('Workshop task table fixture is missing');
+      await db.prepare('ALTER TABLE workshop_tasks RENAME TO workshop_tasks_original').run();
+      await db.prepare(table.sql.replace('CHECK (revision >= 1)', 'CHECK (revision >= 0)')).run();
+      await db.prepare('INSERT INTO workshop_tasks SELECT * FROM workshop_tasks_original').run();
+      await db.prepare('DROP TABLE workshop_tasks_original').run();
+      for (const index of indexes.results) await db.prepare(index.sql).run();
+    },
+  },
+  {
+    name: 'changed index definition',
+    async apply(db: NodeSqliteDatabase) {
+      await db.prepare('DROP INDEX workshop_tasks_updated_idx').run();
+      await db.prepare('CREATE INDEX workshop_tasks_updated_idx ON workshop_tasks (created_at, id)').run();
+    },
+  },
+] as const;
+
+async function expectNoFutureComponentMutation(config: SeedbedConfig): Promise<void> {
+  const db = await openDatabase(config);
+  try {
+    for (const table of ['seedbed_fixture_diamond', 'seedbed_fixture_taproot', 'seedbed_fixture_workshop']) {
+      await expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .bind(table).all()).resolves.toMatchObject({ results: [] });
+    }
+    const futureLedger = await db.prepare("SELECT migration_id FROM _gnolith_migrations WHERE migration_id LIKE '9998-seedbed-fixture-%'")
+      .all();
+    expect(futureLedger.results).toEqual([]);
   } finally {
     await db.close();
   }
@@ -234,6 +279,18 @@ describe('persistence coordinator', () => {
     await expect(requireReady(config, fakeTaproot())).rejects.toMatchObject({ code: 'persistence_not_ready' });
   });
 
+  for (const drift of workshopStructuralDrifts) {
+    it(`rejects Workshop ${drift.name} drift during runtime readiness`, async () => {
+      const config = await fixtureConfig();
+      await initializeDatabase(config, fakeTaproot());
+      const db = await openDatabase(config);
+      await drift.apply(db);
+      await db.close();
+
+      await expect(requireReady(config, fakeTaproot())).rejects.toMatchObject({ code: 'persistence_not_ready' });
+    });
+  }
+
   it('does not rewrite a newer assembly marker during migrate', async () => {
     const config = await fixtureConfig();
     await initializeDatabase(config, fakeTaproot());
@@ -297,6 +354,59 @@ describe('persistence coordinator', () => {
     await expect(verify.prepare('SELECT seedbed_version FROM seedbed_assembly WHERE singleton = 1').first()).resolves.toEqual({ seedbed_version: '9.0.0' });
     await verify.close();
   });
+
+  it('accepts a demonstrably pristine markerless database', async () => {
+    const config = await fixtureConfig();
+    const empty = await openDatabase(config);
+    await empty.close();
+
+    const status = await migrateDatabase(config, fakeTaproot());
+    expect(status.ready).toBe(true);
+  });
+
+  it('qualifies an exact explicit markerless predecessor before upgrading it', async () => {
+    const config = await fixtureConfig();
+    await initializeDatabase(config, fakeTaproot());
+    const db = await openDatabase(config);
+    await removeAssemblyMetadata(db);
+    await db.close();
+
+    const status = await migrateDatabaseWithPlan(config, futureTaproot(), futurePlan());
+    expect(status.ready).toBe(true);
+    expect((await readMarker(config))?.seedbed_version).toBe(futureVersions.seedbed);
+  });
+
+  it('rejects a markerless future Workshop ledger before any component mutation', async () => {
+    const config = await fixtureConfig();
+    await initializeDatabase(config, fakeTaproot());
+    const db = await openDatabase(config);
+    await removeAssemblyMetadata(db);
+    await db.prepare("INSERT INTO _gnolith_migrations (namespace, migration_id, checksum, adopted, applied_at) VALUES ('@gnolith/workshop', '9999-future', 'future', 0, '2026-01-01T00:00:00.000Z')").run();
+    await db.close();
+    const events: string[] = [];
+
+    await expect(migrateDatabaseWithPlan(config, futureTaproot(events), futurePlan(events)))
+      .rejects.toMatchObject({ code: 'assembly_inconsistent' });
+    expect(events).toEqual([]);
+    await expectNoFutureComponentMutation(config);
+  });
+
+  for (const drift of workshopStructuralDrifts) {
+    it(`rejects markerless Workshop ${drift.name} drift before any component mutation`, async () => {
+      const config = await fixtureConfig();
+      await initializeDatabase(config, fakeTaproot());
+      const db = await openDatabase(config);
+      await removeAssemblyMetadata(db);
+      await drift.apply(db);
+      await db.close();
+      const events: string[] = [];
+
+      await expect(migrateDatabaseWithPlan(config, futureTaproot(events), futurePlan(events)))
+        .rejects.toMatchObject({ code: 'assembly_inconsistent' });
+      expect(events).toEqual([]);
+      await expectNoFutureComponentMutation(config);
+    });
+  }
 
   it('advances only an explicit predecessor after ordered component migration and verification', async () => {
     const config = await fixtureConfig();

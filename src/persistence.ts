@@ -10,12 +10,7 @@ import {
 } from '@gnolith/diamond';
 import { NodeSqliteDatabase } from '@gnolith/diamond/node-sqlite';
 import { applyWorkshopMigrations } from '@gnolith/workshop/migrations';
-import {
-  expectedWorkshopIndexes,
-  expectedWorkshopTables,
-  WORKSHOP_SCHEMA_VERSION,
-  workshopMigrations,
-} from '@gnolith/workshop/migrations';
+import { workshopMigrations } from '@gnolith/workshop/migrations';
 import type { SeedbedConfig } from './config.js';
 import { requireBaseIri } from './config.js';
 import { ExitCode, SeedbedError } from './errors.js';
@@ -56,6 +51,7 @@ export interface MigrationVersions {
 
 type AssemblyExpectation =
   | { kind: 'absent' }
+  | { kind: 'markerless' }
   | { kind: 'existing'; marker: AssemblyRow; source: 'target' | AssemblyPredecessor };
 
 export interface ComponentStatePlan {
@@ -341,7 +337,7 @@ async function verifyAssemblyForMigration(
   const assemblyTablePresent = await tableExists(db, 'seedbed_assembly');
   const ledgerPresent = await tableExists(db, '_gnolith_migrations');
   const assemblyMigrations = ledgerPresent ? await readAppliedMigrations(db, ASSEMBLY_NAMESPACE) : [];
-  if (!assemblyTablePresent && assemblyMigrations.length === 0) return { kind: 'absent' };
+  if (!assemblyTablePresent && assemblyMigrations.length === 0) return { kind: 'markerless' };
   if (!assemblyTablePresent || assemblyMigrations.length === 0) {
     throw new SeedbedError(
       'Seedbed assembly table and migration ledger are only partially present; refusing repair',
@@ -388,6 +384,24 @@ async function preflightAssembly(
   expectation: AssemblyExpectation,
 ): Promise<void> {
   if (expectation.kind === 'absent') return;
+  if (expectation.kind === 'markerless') {
+    if (await isPristineDatabase(db)) return;
+    const failures: string[] = [];
+    for (const predecessor of plan.allowedPredecessors) {
+      const failure = await captureVerification(async () => {
+        await verifyComponentState(db, 'Diamond', '@gnolith/diamond', predecessor.diamond);
+        await requireComponentVerification('Taproot', await predecessor.taproot.verify(db, baseIri));
+        await verifyComponentState(db, 'Workshop', '@gnolith/workshop', predecessor.workshop);
+      });
+      if (!failure) return;
+      failures.push(failure);
+    }
+    throw new SeedbedError(
+      `Markerless database is not pristine or an exact explicit predecessor; refusing migration${failures.length > 0 ? ` (${failures.join(' | ')})` : ''}`,
+      ExitCode.persistence,
+      'assembly_inconsistent',
+    );
+  }
   const targetTaproot = { verify: (database: NodeSqliteDatabase, iri: string) => taproot.inspect(database, iri) };
   if (expectation.source === 'target') {
     await verifyComponentState(db, 'Diamond', '@gnolith/diamond', plan.diamond);
@@ -401,6 +415,14 @@ async function preflightAssembly(
   await verifyOneOfComponentStates(db, 'Diamond', '@gnolith/diamond', expectation.source.diamond, plan.diamond);
   await verifyOneOfTaprootStates(db, baseIri, expectation.source.taproot, targetTaproot);
   await verifyOneOfComponentStates(db, 'Workshop', '@gnolith/workshop', expectation.source.workshop, plan.workshop);
+}
+
+async function isPristineDatabase(db: NodeSqliteDatabase): Promise<boolean> {
+  const objects = await db.prepare(`SELECT name FROM sqlite_master
+    WHERE type IN ('table', 'index', 'trigger', 'view')
+      AND name NOT LIKE 'sqlite_%'
+    LIMIT 1`).all<{ name: string }>();
+  return objects.results.length === 0;
 }
 
 async function verifyComponentState(
@@ -468,7 +490,7 @@ async function writeAssemblyMarker(
     statements: [assemblyTableStatement],
   }]);
   const now = new Date().toISOString();
-  const result = expectation.kind === 'absent'
+  const result = expectation.kind !== 'existing'
     ? await db.prepare(`INSERT INTO seedbed_assembly (
         singleton, base_iri, diamond_version, taproot_version, workshop_version, seedbed_version, updated_at
       ) VALUES (1, ?, ?, ?, ?, ?, ?)
@@ -565,23 +587,91 @@ function requireComponentVerification(
   }
 }
 
-async function verifyCurrentWorkshopSchema(
+export async function verifyCurrentWorkshopSchema(
   db: NodeSqliteDatabase,
 ): Promise<{ ready: boolean; detail?: string }> {
-  const version = await db.prepare('SELECT version FROM workshop_schema WHERE singleton = 1')
-    .first<{ version: number }>();
-  const tables = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'workshop_%' ORDER BY name")
-    .all<{ name: string }>();
-  const indexes = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'workshop_%' ORDER BY name")
-    .all<{ name: string }>();
-  const actualTables = tables.results.map(({ name }) => name);
-  const actualIndexes = indexes.results.map(({ name }) => name);
-  if (version?.version !== WORKSHOP_SCHEMA_VERSION
-    || JSON.stringify(actualTables) !== JSON.stringify([...expectedWorkshopTables].sort())
-    || JSON.stringify(actualIndexes) !== JSON.stringify([...expectedWorkshopIndexes].sort())) {
-    return { ready: false, detail: 'Workshop schema metadata, tables, or indexes do not match the exact target' };
+  const [actual, canonical] = await Promise.all([
+    captureWorkshopSchema(db),
+    canonicalWorkshopSchema(),
+  ]);
+  return actual === canonical
+    ? { ready: true }
+    : { ready: false, detail: describeSchemaDifference(actual, canonical) };
+}
+
+function describeSchemaDifference(actual: string, canonical: string): string {
+  let index = 0;
+  while (index < actual.length && index < canonical.length && actual[index] === canonical[index]) index += 1;
+  const start = Math.max(0, index - 80);
+  return `Workshop schema differs from the canonical target near offset ${index}; actual=${actual.slice(start, index + 160)} expected=${canonical.slice(start, index + 160)}`;
+}
+
+let canonicalWorkshopSchemaPromise: Promise<string> | undefined;
+
+function canonicalWorkshopSchema(): Promise<string> {
+  canonicalWorkshopSchemaPromise ??= (async () => {
+    const reference = new NodeSqliteDatabase(':memory:');
+    try {
+      await applyWorkshopMigrations(reference as unknown as WorkshopPersistence);
+      return await captureWorkshopSchema(reference);
+    } finally {
+      await reference.close();
+    }
+  })();
+  return canonicalWorkshopSchemaPromise;
+}
+
+interface SqliteMasterRow {
+  type: string;
+  name: string;
+  tbl_name: string;
+  sql: string | null;
+}
+
+async function captureWorkshopSchema(db: NodeSqliteDatabase): Promise<string> {
+  const master = await db.prepare(`SELECT type, name, tbl_name, sql FROM sqlite_master
+    WHERE type IN ('table', 'index', 'trigger', 'view')
+      AND (name GLOB 'workshop_*' OR tbl_name GLOB 'workshop_*'
+        OR (type IN ('trigger', 'view') AND instr(lower(coalesce(sql, '')), 'workshop_') > 0))
+    ORDER BY type, name`).all<SqliteMasterRow>();
+  const objects = master.results.map((row) => ({
+    type: row.type,
+    name: row.name,
+    table: row.tbl_name,
+    sql: normalizeSchemaSql(row.sql),
+  }));
+  const tables: Record<string, unknown> = {};
+  for (const table of master.results.filter(({ type, name }) => type === 'table' && name.startsWith('workshop_'))) {
+    const identifier = quoteSqliteIdentifier(table.name);
+    const columns = await db.prepare(`PRAGMA table_xinfo(${identifier})`).all<Record<string, unknown>>();
+    const foreignKeys = await db.prepare(`PRAGMA foreign_key_list(${identifier})`).all<Record<string, unknown>>();
+    const indexList = await db.prepare(`PRAGMA index_list(${identifier})`).all<Record<string, unknown>>();
+    const indexes: Record<string, unknown> = {};
+    for (const index of indexList.results) {
+      const name = String(index.name);
+      const details = await db.prepare(`PRAGMA index_xinfo(${quoteSqliteIdentifier(name)})`).all<Record<string, unknown>>();
+      indexes[name] = details.results.map(normalizePragmaRow);
+    }
+    tables[table.name] = {
+      columns: columns.results.map(normalizePragmaRow),
+      foreignKeys: foreignKeys.results.map(normalizePragmaRow),
+      indexList: indexList.results.map(normalizePragmaRow),
+      indexes,
+    };
   }
-  return { ready: true };
+  return JSON.stringify({ objects, tables });
+}
+
+function normalizePragmaRow(row: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, value ?? null]));
+}
+
+function normalizeSchemaSql(sql: string | null): string | null {
+  return sql?.replace(/\s+/gu, ' ').trim() ?? null;
+}
+
+function quoteSqliteIdentifier(identifier: string): string {
+  return `"${identifier.replace(/"/gu, '""')}"`;
 }
 
 interface AssemblyRow {

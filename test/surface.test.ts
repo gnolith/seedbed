@@ -17,5 +17,13 @@ describe('headless product boundary', () => {
       expect(source).not.toMatch(/\.listen\s*\(|createServer\s*\(/u);
     }
   });
+
+  it('installs only the exact assembly tarballs in the image', async () => {
+    const dockerfile = await readFile(new URL('../Dockerfile', import.meta.url), 'utf8');
+    for (const tarball of ['DIAMOND_TARBALL', 'TAPROOT_TARBALL', 'WORKSHOP_TARBALL', 'SEEDBED_TARBALL']) {
+      expect(dockerfile).toContain(`"/tmp/packages/\${${tarball}}"`);
+    }
+    expect(dockerfile).not.toContain('/tmp/packages/*.tgz \\');
+  });
 });
 
