@@ -71,9 +71,9 @@
   },
   "devDependencies": {
     "@types/node": "24.0.0",
-    "@vitest/coverage-v8": "3.2.4",
+    "@vitest/coverage-v8": "4.1.10",
     "typescript": "5.9.2",
-    "vitest": "3.2.4",
+    "vitest": "4.1.10",
     "yaml": "2.9.0"
   }
 }
