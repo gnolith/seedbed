@@ -1,2 +1,4 @@
 *
 !gnolith-production-closure.tar.gz
+!scripts/
+!scripts/verify-production-tree.mjs

@@ -24,6 +24,8 @@ describe('headless product boundary', () => {
     expect(dockerfile).toContain('RUN --network=none');
     expect(dockerfile).toContain('sha256sum --check');
     expect(dockerfile).toContain('production-package-lock.json');
+    expect(dockerfile).toContain('verify-production-tree.mjs --archive');
+    expect(dockerfile).toContain('verify-production-tree.mjs --verify');
     expect(dockerfile).not.toMatch(/\bnpm (?:ci|install|pack)\b/u);
     expect(dockerfile).not.toContain('registry.npmjs.org');
   });
@@ -47,6 +49,10 @@ describe('headless product boundary', () => {
     expect(script).toContain('locked_integrity');
     expect(script).toContain('Seedbed artifact integrity does not match the verified publication artifact');
     expect(script).toContain('docker/package-lock.json');
+    expect(script).toContain('verify-production-tree.mjs" --write');
+    for (const rejection of ['an extra file', 'a changed executable mode', 'a changed symlink target', 'an unsafe archive path']) {
+      expect(script).toContain(rejection);
+    }
   });
 });
 

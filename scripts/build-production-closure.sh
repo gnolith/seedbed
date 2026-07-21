@@ -137,12 +137,17 @@ const cli = path.join(root, 'node_modules', '@gnolith', 'seedbed', 'dist', 'cli.
 if (!fs.statSync(cli).isFile()) throw new Error('closure omitted the Seedbed CLI');
 NODE
 
+cp "$repository/scripts/verify-production-tree.mjs" "$root/"
+rm "$root/package.json" "$root/package-lock.json"
+node "$root/verify-production-tree.mjs" --write "$root"
+
 archive() {
   source="$1"
   target="$2"
   tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
     --format=posix --pax-option=delete=atime,delete=ctime \
     -cf - -C "$source" node_modules production-package-lock.json production-tree.json \
+      verify-production-tree.mjs production-files.json \
     | gzip -n > "$target"
 }
 
@@ -152,6 +157,34 @@ archive "$root" "$first"
 roundtrip="$work/roundtrip"
 mkdir "$roundtrip"
 tar -xzf "$first" -C "$roundtrip"
+node "$roundtrip/verify-production-tree.mjs" --verify "$roundtrip"
+
+expect_tree_rejection() {
+  if node "$roundtrip/verify-production-tree.mjs" --verify "$roundtrip" >/dev/null 2>&1; then
+    echo "$1 was not rejected by the complete production-tree manifest" >&2
+    exit 1
+  fi
+}
+
+touch "$roundtrip/unexpected-extra-file"
+expect_tree_rejection 'an extra file'
+rm "$roundtrip/unexpected-extra-file"
+chmod 0644 "$roundtrip/node_modules/@gnolith/seedbed/dist/cli.js"
+expect_tree_rejection 'a changed executable mode'
+chmod 0755 "$roundtrip/node_modules/@gnolith/seedbed/dist/cli.js"
+rm "$roundtrip/node_modules/.bin/seedbed"
+ln -s ../@gnolith/taproot/dist/index.js "$roundtrip/node_modules/.bin/seedbed"
+expect_tree_rejection 'a changed symlink target'
+rm "$roundtrip/node_modules/.bin/seedbed"
+ln -s ../@gnolith/seedbed/dist/cli.js "$roundtrip/node_modules/.bin/seedbed"
+node "$roundtrip/verify-production-tree.mjs" --verify "$roundtrip"
+
+unsafe="$work/unsafe-path.tar.gz"
+tar -czf "$unsafe" --transform='s|^|../|' -C "$roundtrip" verify-production-tree.mjs
+if node "$roundtrip/verify-production-tree.mjs" --archive "$unsafe" >/dev/null 2>&1; then
+  echo 'an unsafe archive path was accepted' >&2
+  exit 1
+fi
 archive "$roundtrip" "$second"
 cmp "$first" "$second"
 mkdir -p "$(dirname "$output")"

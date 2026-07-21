@@ -26,10 +26,13 @@ try {
     const expectedClosure = process.env.SEEDBED_CLOSURE_SHA256;
     const label = docker(['image', 'inspect', image, '--format', '{{index .Config.Labels "org.gnolith.production-closure.sha256"}}']).stdout.trim();
     if (label !== expectedClosure) throw new Error(`image closure label ${label} does not match ${expectedClosure}`);
-    const reconstructed = docker(['run', '--rm', '--entrypoint', 'sh', image, '-c',
-      "tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=posix --pax-option=delete=atime,delete=ctime -cf - -C /opt/seedbed node_modules production-package-lock.json production-tree.json | gzip -n | sha256sum | cut -d ' ' -f 1",
-    ]).stdout.trim();
-    if (reconstructed !== expectedClosure) throw new Error(`image tree hash ${reconstructed} does not match ${expectedClosure}`);
+    const archive = docker(['run', '--rm', '--entrypoint', 'sha256sum', image,
+      '/opt/seedbed/production-closure.tar.gz',
+    ]).stdout.trim().split(/\s+/u)[0];
+    if (archive !== expectedClosure) throw new Error(`image closure archive ${archive} does not match ${expectedClosure}`);
+    docker(['run', '--rm', '--entrypoint', 'sh', image, '-c',
+      'cd /opt/seedbed && node verify-production-tree.mjs --verify .',
+    ]);
   }
   docker(['volume', 'create', volume]);
   const uid = docker(['run', '--rm', '--entrypoint', 'id', image, '-u']).stdout.trim();

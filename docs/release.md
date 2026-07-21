@@ -132,8 +132,11 @@ local endpoint. Docker receives only the resulting deterministic, SHA-256-addres
 closure. Its extraction step runs with BuildKit networking disabled and verifies the
 closure digest before exposing the Seedbed executable; the Dockerfile performs no npm
 or registry operation. Image acceptance checks the exact component tuple, closure
-label and reconstructed closure digest. The versioned image is pushed with provenance
-and SBOM before `latest` is updated.
+label and retained archive digest, and a complete portable manifest of extracted
+files, directories, modes, hashes, and in-root symlink targets. Archive paths are
+validated as safe and relative before extraction; the manifest also rejects extras.
+The
+versioned image is pushed with provenance and SBOM before `latest` is updated.
 
 If a release fails after an immutable artifact is public, fix forward with a new
 patch version and new tag. Never move or overwrite a released tag, npm version, or

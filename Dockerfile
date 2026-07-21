@@ -17,14 +17,17 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && install -d -o node -g node /opt/seedbed /var/lib/seedbed
 WORKDIR /opt/seedbed
-COPY ${PRODUCTION_CLOSURE} /tmp/production-closure.tar.gz
+COPY scripts/verify-production-tree.mjs /opt/seedbed/verify-production-tree.mjs
+COPY ${PRODUCTION_CLOSURE} /opt/seedbed/production-closure.tar.gz
 RUN --network=none test -n "${PRODUCTION_CLOSURE_SHA256}" \
-    && echo "${PRODUCTION_CLOSURE_SHA256}  /tmp/production-closure.tar.gz" | sha256sum --check \
-    && tar -xzf /tmp/production-closure.tar.gz -C /opt/seedbed \
+    && echo "${PRODUCTION_CLOSURE_SHA256}  /opt/seedbed/production-closure.tar.gz" | sha256sum --check \
+    && node /opt/seedbed/verify-production-tree.mjs --archive /opt/seedbed/production-closure.tar.gz \
+    && tar -xzf /opt/seedbed/production-closure.tar.gz -C /opt/seedbed \
     && test -f /opt/seedbed/production-package-lock.json \
     && test -f /opt/seedbed/production-tree.json \
-    && test -x /opt/seedbed/node_modules/.bin/seedbed \
-    && rm /tmp/production-closure.tar.gz
+    && cd /opt/seedbed \
+    && node verify-production-tree.mjs --verify . \
+    && test -x /opt/seedbed/node_modules/.bin/seedbed
 
 USER node:node
 ENV NODE_ENV=production \
