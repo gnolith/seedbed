@@ -21,11 +21,12 @@ jobs:
           checkout_exact() {
             name="$1"
             revision="$2"
-            git init ".handoffs/$name"
-            git -C ".handoffs/$name" remote add origin "https://github.com/gnolith/$name.git"
-            git -C ".handoffs/$name" fetch --depth=1 origin "$revision"
-            git -C ".handoffs/$name" checkout --detach FETCH_HEAD
-            test "$(git -C ".handoffs/$name" rev-parse HEAD)" = "$revision"
+            directory="$RUNNER_TEMP/handoffs/$name"
+            git init "$directory"
+            git -C "$directory" remote add origin "https://github.com/gnolith/$name.git"
+            git -C "$directory" fetch --depth=1 origin "$revision"
+            git -C "$directory" checkout --detach FETCH_HEAD
+            test "$(git -C "$directory" rev-parse HEAD)" = "$revision"
           }
           checkout_exact diamond 326da7e48d77cddc5a58e21cf65d872ecb9b3b74
           checkout_exact taproot efbdd4c815645d4b20c2c58dc19aacb3e12d45bb
@@ -34,16 +35,16 @@ jobs:
       - name: Build and verify exact package handoffs
         shell: bash
         run: |
-          npm ci --ignore-scripts --prefix .handoffs/diamond
-          npm pack ./.handoffs/diamond --pack-destination "$RUNNER_TEMP"
+          npm ci --ignore-scripts --prefix "$RUNNER_TEMP/handoffs/diamond"
+          npm pack "$RUNNER_TEMP/handoffs/diamond" --pack-destination "$RUNNER_TEMP"
           echo "ac8e34810a8504bd891b36a199973f2d65ef652555644813c7a36f1c7016c9d2  $RUNNER_TEMP/gnolith-diamond-0.4.0.tgz" | sha256sum --check
 
-          npm install --ignore-scripts --no-save --package-lock=false --prefix .handoffs/taproot "$RUNNER_TEMP/gnolith-diamond-0.4.0.tgz"
-          npm pack ./.handoffs/taproot --pack-destination "$RUNNER_TEMP"
+          npm install --ignore-scripts --no-save --package-lock=false --prefix "$RUNNER_TEMP/handoffs/taproot" "$RUNNER_TEMP/gnolith-diamond-0.4.0.tgz"
+          npm pack "$RUNNER_TEMP/handoffs/taproot" --pack-destination "$RUNNER_TEMP"
           echo "04ce966dbcf0d4bacd43a0f8a34e3b545cfefb55ea9b5fd178334f8afce9de6c  $RUNNER_TEMP/gnolith-taproot-0.2.0.tgz" | sha256sum --check
 
-          npm ci --ignore-scripts --prefix .handoffs/workshop
-          npm pack ./.handoffs/workshop --pack-destination "$RUNNER_TEMP"
+          npm ci --ignore-scripts --prefix "$RUNNER_TEMP/handoffs/workshop"
+          npm pack "$RUNNER_TEMP/handoffs/workshop" --pack-destination "$RUNNER_TEMP"
           # Workshop's generated source maps make its pack bytes platform-specific.
           # This is the deterministic Linux/npm 11.9.0 rebuild of the pinned commit.
           echo "916cde59f105c799e75fe81e0a02f4655371ac49cf3e6dccd585cfc661863e79  $RUNNER_TEMP/gnolith-workshop-0.2.2.tgz" | sha256sum --check
