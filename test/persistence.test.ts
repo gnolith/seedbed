@@ -49,7 +49,11 @@ describe('persistence coordinator', () => {
     const config = await fixtureConfig();
     const status = await initializeDatabase(config, fakeTaproot());
     expect(status.ready).toBe(true);
-    expect(status.components.map(({ name }) => name)).toEqual(['diamond', 'taproot', 'workshop']);
+    expect(status.components.map(({ name, version }) => ({ name, version }))).toEqual([
+      { name: 'diamond', version: '0.4.0' },
+      { name: 'taproot', version: '0.2.0' },
+      { name: 'workshop', version: '0.2.3' },
+    ]);
 
     const reopened = await requireReady(config, fakeTaproot());
     await reopened.prepare("INSERT INTO taproot_test (id) VALUES ('persistent')").run();
