@@ -54,10 +54,14 @@ jobs:
         run: |
           mkdir registry-artifact
           cd registry-artifact
-          npm pack "@gnolith/seedbed@${{ needs.npm.outputs.version }}"
-          mv gnolith-seedbed-*.tgz ../gnolith-seedbed-${{ needs.npm.outputs.version }}.tgz
+          npm pack "@gnolith/seedbed@${{ needs.npm.outputs.version }}" --json > pack.json
+          filename=$(node -p "require('./pack.json')[0].filename")
+          packed_integrity=$(node -p "require('./pack.json')[0].integrity")
+          registry_integrity=$(npm view "@gnolith/seedbed@${{ needs.npm.outputs.version }}" dist.integrity)
+          test "$packed_integrity" = "$registry_integrity"
+          mv "$filename" ../gnolith-seedbed-${{ needs.npm.outputs.version }}.tgz
           cd ..
-          npm view "@gnolith/seedbed@${{ needs.npm.outputs.version }}" dist.integrity --json > npm-integrity.json
+          printf '%s\n' "$registry_integrity" > npm-integrity.txt
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
@@ -83,14 +87,7 @@ jobs:
           docker pull "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}"
           test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{len .Config.ExposedPorts}}')" = "0"
           test "$(docker run --rm --entrypoint id "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" -u)" != "0"
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
-        with:
-          context: .
-          push: true
-          provenance: mode=max
-          sbom: true
-          build-args: |
-            SEEDBED_TARBALL=gnolith-seedbed-${{ needs.npm.outputs.version }}.tgz
-            REVISION=${{ github.sha }}
-          tags: ghcr.io/gnolith/seedbed:latest
-
+          test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "${{ needs.npm.outputs.version }}"
+          test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "${{ github.sha }}"
+      - shell: bash
+        run: docker buildx imagetools create --tag ghcr.io/gnolith/seedbed:latest "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}"
