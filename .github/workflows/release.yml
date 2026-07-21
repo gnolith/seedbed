@@ -11,6 +11,7 @@ jobs:
   npm:
     if: startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: read
       id-token: write
@@ -30,7 +31,18 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - run: npm ci
       - run: npm run check
-      - run: npm publish --access public --provenance
+      - name: Publish the first version with temporary bootstrap authentication
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-bootstrap.npmrc
+        shell: bash
+        run: |
+          umask 077
+          trap 'rm -f "$NPM_CONFIG_USERCONFIG"' EXIT
+          # npm expands the token from its environment when it reads this file.
+          # shellcheck disable=SC2016
+          printf '%s\n' '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "$NPM_CONFIG_USERCONFIG"
+          npm publish --access public --provenance
       - name: Verify the exact published process assembly
         env:
           SEEDBED_VERSION: ${{ steps.identity.outputs.version }}
