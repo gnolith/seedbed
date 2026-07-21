@@ -298,6 +298,34 @@ jobs:
       - uses: ./.github/actions/setup-node
       - run: npm config set registry https://registry.npmjs.org
       - run: npm ci --ignore-scripts
+      - name: Stage and verify the exact component artifacts
+        shell: bash
+        run: |
+          stage_component() {
+            package="$1"
+            version="$2"
+            filename="$3"
+            expected_sha256="$4"
+            metadata="$RUNNER_TEMP/${filename%.tgz}-metadata.json"
+            pack="$RUNNER_TEMP/${filename%.tgz}-pack.json"
+            npm view "$package@$version" --json > "$metadata"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).name" "$metadata")" = "$package"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$metadata")" = "$version"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.provenance?.predicateType || ''" "$metadata")" = 'https://slsa.dev/provenance/v1'
+            test -n "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.url || ''" "$metadata")"
+            npm pack "$package@$version" --json > "$pack"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))[0].filename" "$pack")" = "$filename"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))[0].integrity" "$pack")" = \
+              "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.integrity" "$metadata")"
+            echo "$expected_sha256  $filename" | sha256sum --check
+          }
+          stage_component '@gnolith/diamond' '0.4.0' 'gnolith-diamond-0.4.0.tgz' \
+            'ac8e34810a8504bd891b36a199973f2d65ef652555644813c7a36f1c7016c9d2'
+          stage_component '@gnolith/taproot' '0.2.0' 'gnolith-taproot-0.2.0.tgz' \
+            '04ce966dbcf0d4bacd43a0f8a34e3b545cfefb55ea9b5fd178334f8afce9de6c'
+          stage_component '@gnolith/workshop' '0.2.3' 'gnolith-workshop-0.2.3.tgz' \
+            '8fafde79477831b1bbe71da9fa0d55e9546e9845bd1689f756668e81341ac791'
+          npm audit signatures
       - id: identity
         shell: bash
         run: |
@@ -333,6 +361,9 @@ jobs:
             --push \
             --provenance=mode=max \
             --sbom=true \
+            --build-arg DIAMOND_TARBALL=gnolith-diamond-0.4.0.tgz \
+            --build-arg TAPROOT_TARBALL=gnolith-taproot-0.2.0.tgz \
+            --build-arg WORKSHOP_TARBALL=gnolith-workshop-0.2.3.tgz \
             --build-arg SEEDBED_TARBALL=gnolith-seedbed-${{ steps.identity.outputs.version }}.tgz \
             --build-arg REVISION=${{ github.sha }} \
             --tag ghcr.io/gnolith/seedbed:${{ steps.identity.outputs.version }} \
