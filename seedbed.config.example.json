@@ -1,0 +1,8 @@
+{
+  "databasePath": "./.seedbed/gnolith.sqlite",
+  "baseIri": "https://example.invalid/gnolith/",
+  "localOwnerId": "local-owner",
+  "logLevel": "info",
+  "shutdownTimeoutMs": 10000
+}
+
