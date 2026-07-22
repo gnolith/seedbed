@@ -237,12 +237,19 @@ describe('v0.2.2 immutable Release recovery', () => {
 
   it('keeps manual recovery capability-scoped and mutation-last', async () => {
     const source = await readFile(new URL('../.github/workflows/recover-v0.2.2-release.yml', import.meta.url), 'utf8');
+    const normalSource = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
     const workflow = parse(source) as RecoveryWorkflow;
+    const normalWorkflow = parse(normalSource) as RecoveryWorkflow;
     const recovery = workflow.jobs.recover;
     if (!recovery) throw new Error('manual v0.2.2 recovery job is missing');
     const text = JSON.stringify(recovery);
     expect(workflow.permissions).toEqual({ contents: 'read' });
-    expect(recovery.environment).toBe('release');
+    expect(workflow.concurrency).toEqual({ group: 'seedbed-release', 'cancel-in-progress': false });
+    expect(recovery.environment).toBe('release-recovery-v0.2.2');
+    expect(Object.values(normalWorkflow.jobs).filter(({ environment }) => environment !== undefined)
+      .map(({ environment }) => environment)).toEqual(['release']);
+    expect(Object.values(workflow.jobs).filter(({ environment }) => environment !== undefined)
+      .map(({ environment }) => environment)).toEqual(['release-recovery-v0.2.2']);
     expect(recovery.permissions).toEqual({
       actions: 'read', attestations: 'read', contents: 'write', packages: 'read',
     });
@@ -273,12 +280,17 @@ describe('v0.2.2 immutable Release recovery', () => {
     expect(text.match(/gh release create/g)).toHaveLength(1);
     expect(text).not.toContain('npm publish');
     expect(text).not.toContain('docker push');
+    expect(text).not.toContain('git push');
+    expect(text).not.toContain('gh attestation create');
+    expect(text).not.toContain('gh attestation sign');
     expect(text).not.toContain('gh release upload');
     expect(text).not.toContain('gh release edit');
     expect(text).not.toContain('git tag');
     expect(text).not.toContain('id-token');
     expect(text).not.toContain('packages: write');
     expect(text).not.toContain('actions/attest');
+    expect(source).not.toContain('secrets.');
+    expect(source).not.toContain('vars.');
     const releaseStep = recovery.steps.find(({ name }) => name?.includes('GitHub Release last'));
     expect(releaseStep?.run).toContain('verify-release-json');
     expect(releaseStep?.run?.match(/ls-remote --tags origin/g)).toHaveLength(2);
@@ -297,6 +309,7 @@ describe('v0.2.2 immutable Release recovery', () => {
 });
 
 type RecoveryWorkflow = {
+  concurrency?: { group: string; 'cancel-in-progress': boolean };
   permissions?: Record<string, string>;
   jobs: Record<string, {
     if?: string;

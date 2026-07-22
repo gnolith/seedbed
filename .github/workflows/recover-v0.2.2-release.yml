@@ -18,7 +18,7 @@ permissions:
 jobs:
   recover:
     if: github.ref == 'refs/heads/main' && inputs.tag == 'v0.2.2'
-    environment: release
+    environment: release-recovery-v0.2.2
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -36,13 +36,11 @@ jobs:
       - name: Prove remote tag identity and reviewed tooling before tagged checkout
         env:
           GH_TOKEN: ${{ github.token }}
-          IMMUTABLE_SETTING_EVIDENCE_TAG: ${{ vars.IMMUTABLE_RELEASES_VERIFIED_FOR }}
           RECOVERY_TAG: ${{ inputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
           test "$RECOVERY_TAG" = v0.2.2
-          test "$IMMUTABLE_SETTING_EVIDENCE_TAG" = "$RECOVERY_TAG"
           test "$(git -C recovery-tooling rev-parse HEAD)" = "${{ github.sha }}"
           git -C recovery-tooling fetch origin main --no-tags
           test "$(git -C recovery-tooling rev-parse origin/main)" = "${{ github.sha }}"
