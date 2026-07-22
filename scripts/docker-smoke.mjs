@@ -10,6 +10,30 @@ const baseEnvironment = ['-e', 'SEEDBED_BASE_IRI=https://docker.seedbed.test/ins
 let client;
 
 try {
+  const installed = JSON.parse(docker(['run', '--rm', '--entrypoint', 'node', image, '-e', `
+    const fs = require('fs');
+    const versions = {};
+    for (const name of ['diamond', 'taproot', 'workshop', 'seedbed']) {
+      versions[name] = JSON.parse(fs.readFileSync('/opt/seedbed/node_modules/@gnolith/' + name + '/package.json')).version;
+    }
+    process.stdout.write(JSON.stringify(versions));
+  `]).stdout);
+  const expectedVersions = { diamond: '0.4.0', taproot: '0.2.0', workshop: '0.2.3', seedbed: '0.1.1' };
+  if (JSON.stringify(installed) !== JSON.stringify(expectedVersions)) {
+    throw new Error(`image package tuple is ${JSON.stringify(installed)}; expected ${JSON.stringify(expectedVersions)}`);
+  }
+  if (process.env.SEEDBED_CLOSURE_SHA256) {
+    const expectedClosure = process.env.SEEDBED_CLOSURE_SHA256;
+    const label = docker(['image', 'inspect', image, '--format', '{{index .Config.Labels "org.gnolith.production-closure.sha256"}}']).stdout.trim();
+    if (label !== expectedClosure) throw new Error(`image closure label ${label} does not match ${expectedClosure}`);
+    const archive = docker(['run', '--rm', '--entrypoint', 'sha256sum', image,
+      '/opt/seedbed/production-closure.tar.gz',
+    ]).stdout.trim().split(/\s+/u)[0];
+    if (archive !== expectedClosure) throw new Error(`image closure archive ${archive} does not match ${expectedClosure}`);
+    docker(['run', '--rm', '--entrypoint', 'sh', image, '-c',
+      'cd /opt/seedbed && node verify-production-tree.mjs --verify .',
+    ]);
+  }
   docker(['volume', 'create', volume]);
   const uid = docker(['run', '--rm', '--entrypoint', 'id', image, '-u']).stdout.trim();
   if (uid === '0') throw new Error('image runs as root');

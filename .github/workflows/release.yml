@@ -298,6 +298,34 @@ jobs:
       - uses: ./.github/actions/setup-node
       - run: npm config set registry https://registry.npmjs.org
       - run: npm ci --ignore-scripts
+      - name: Stage and verify the exact component artifacts
+        shell: bash
+        run: |
+          stage_component() {
+            package="$1"
+            version="$2"
+            filename="$3"
+            expected_sha256="$4"
+            metadata="$RUNNER_TEMP/${filename%.tgz}-metadata.json"
+            pack="$RUNNER_TEMP/${filename%.tgz}-pack.json"
+            npm view "$package@$version" --json > "$metadata"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).name" "$metadata")" = "$package"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$metadata")" = "$version"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.provenance?.predicateType || ''" "$metadata")" = 'https://slsa.dev/provenance/v1'
+            test -n "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.url || ''" "$metadata")"
+            npm pack "$package@$version" --json > "$pack"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))[0].filename" "$pack")" = "$filename"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))[0].integrity" "$pack")" = \
+              "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.integrity" "$metadata")"
+            echo "$expected_sha256  $filename" | sha256sum --check
+          }
+          stage_component '@gnolith/diamond' '0.4.0' 'gnolith-diamond-0.4.0.tgz' \
+            'ac8e34810a8504bd891b36a199973f2d65ef652555644813c7a36f1c7016c9d2'
+          stage_component '@gnolith/taproot' '0.2.0' 'gnolith-taproot-0.2.0.tgz' \
+            '04ce966dbcf0d4bacd43a0f8a34e3b545cfefb55ea9b5fd178334f8afce9de6c'
+          stage_component '@gnolith/workshop' '0.2.3' 'gnolith-workshop-0.2.3.tgz' \
+            '8fafde79477831b1bbe71da9fa0d55e9546e9845bd1689f756668e81341ac791'
+          npm audit signatures
       - id: identity
         shell: bash
         run: |
@@ -319,6 +347,19 @@ jobs:
           mv "$filename" ../gnolith-seedbed-${{ steps.identity.outputs.version }}.tgz
           cd ..
           printf '%s\n' "$registry_integrity" > npm-integrity.txt
+      - id: closure
+        name: Build the locked content-addressed production closure
+        shell: bash
+        run: |
+          bash scripts/build-production-closure.sh \
+            gnolith-seedbed-${{ steps.identity.outputs.version }}.tgz \
+            "$(cat npm-integrity.txt)" \
+            gnolith-diamond-0.4.0.tgz \
+            gnolith-taproot-0.2.0.tgz \
+            gnolith-workshop-0.2.3.tgz
+          closure_sha=$(cut -d ' ' -f 1 gnolith-production-closure.tar.gz.sha256)
+          test -n "$closure_sha"
+          echo "sha256=$closure_sha" >> "$GITHUB_OUTPUT"
       - name: Verify the exact published process assembly
         env:
           SEEDBED_VERSION: ${{ steps.identity.outputs.version }}
@@ -333,7 +374,7 @@ jobs:
             --push \
             --provenance=mode=max \
             --sbom=true \
-            --build-arg SEEDBED_TARBALL=gnolith-seedbed-${{ steps.identity.outputs.version }}.tgz \
+            --build-arg PRODUCTION_CLOSURE_SHA256=${{ steps.closure.outputs.sha256 }} \
             --build-arg REVISION=${{ github.sha }} \
             --tag ghcr.io/gnolith/seedbed:${{ steps.identity.outputs.version }} \
             --label org.opencontainers.image.version=${{ steps.identity.outputs.version }} \
@@ -349,9 +390,11 @@ jobs:
           test "$(docker run --rm --entrypoint id "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" -u)" != "0"
           test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "${{ steps.identity.outputs.version }}"
           test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "${{ github.sha }}"
+          test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.gnolith.production-closure.sha256"}}')" = "${{ steps.closure.outputs.sha256 }}"
       - name: Functionally verify the immutable published image
         env:
           SEEDBED_TEST_IMAGE: ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}
+          SEEDBED_CLOSURE_SHA256: ${{ steps.closure.outputs.sha256 }}
         run: npm run test:docker
       - shell: bash
         run: docker buildx imagetools create --tag ghcr.io/gnolith/seedbed:latest "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}"

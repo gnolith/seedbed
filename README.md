@@ -23,6 +23,10 @@ advance an existing database. `doctor`, `mcp`, `tools`, `call`, and `sparql` ins
 readiness and refuse pending, unknown, newer, partially applied, checksum-divergent,
 or assembly-inconsistent state without changing it.
 
+Assembly releases use explicit predecessor-to-target transitions and retain the
+old marker until all package-owned migrations verify current. See
+[`docs/migrations.md`](docs/migrations.md) for the release and recovery contract.
+
 ## Commands
 
 ```text

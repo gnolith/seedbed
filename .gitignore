@@ -3,5 +3,7 @@ dist/
 coverage/
 .seedbed/
 *.tgz
+*.tar.gz
+*.tar.gz.sha256
 *.sqlite*
 

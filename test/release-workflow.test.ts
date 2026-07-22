@@ -143,6 +143,24 @@ describe('release credential boundary', () => {
     expect(imageJob).toMatch(/^  image:\r?\n    needs: publish/mu);
     expect(imageJob).not.toContain('needs.npm.outputs');
   });
+
+  it('stages verified exact component artifacts for the release image', () => {
+    for (const [name, version, sha256] of ([
+      ['diamond', '0.4.0', 'ac8e34810a8504bd891b36a199973f2d65ef652555644813c7a36f1c7016c9d2'],
+      ['taproot', '0.2.0', '04ce966dbcf0d4bacd43a0f8a34e3b545cfefb55ea9b5fd178334f8afce9de6c'],
+      ['workshop', '0.2.3', '8fafde79477831b1bbe71da9fa0d55e9546e9845bd1689f756668e81341ac791'],
+    ] as const)) {
+      expect(imageJob).toContain(`stage_component '@gnolith/${name}' '${version}' 'gnolith-${name}-${version}.tgz'`);
+      expect(imageJob).toContain(sha256);
+    }
+    expect(imageJob).toContain("dist.attestations?.provenance?.predicateType || ''");
+    expect(imageJob).toContain('npm audit signatures');
+    expect(imageJob).toContain('bash scripts/build-production-closure.sh');
+    expect(imageJob).toContain('"$(cat npm-integrity.txt)"');
+    expect(imageJob).toContain('--build-arg PRODUCTION_CLOSURE_SHA256=${{ steps.closure.outputs.sha256 }}');
+    expect(imageJob).toContain('org.gnolith.production-closure.sha256');
+    expect(imageJob).toContain('SEEDBED_CLOSURE_SHA256: ${{ steps.closure.outputs.sha256 }}');
+  });
 });
 
 function between(source: string, start: string, end: string): string {
