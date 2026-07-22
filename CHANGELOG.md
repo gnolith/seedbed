@@ -2,8 +2,10 @@
 
 ## Unreleased
 
-- Pin the native assembly to Diamond 0.4.1 and Taproot 0.4.0, with explicit
+- Pin the native assembly to Diamond 0.4.1, Taproot 0.4.0, and Workshop 0.4.0, with explicit
   migration from the released Seedbed 0.2.2 tuple.
+- Register Workshop Task, Memory, and Prompt search producers, advance durable
+  adoption headlessly, and prove authorized seven-kind search, hydration, and rebuild.
 - Compose Taproot Resource and Annotation ownership, bounded unified-search
   materialization, authorized search/hydration, and semantic administration.
 - Add SQLite and Qdrant vector attachments plus OpenAI- and Ollama-compatible

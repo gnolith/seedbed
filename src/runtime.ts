@@ -2,6 +2,7 @@ import type { NodeSqliteDatabase } from '@gnolith/diamond/node-sqlite';
 import { createWorkshopCore, createWorkshopToolDispatcher } from '@gnolith/workshop/core';
 import type { WorkshopToolDispatcher } from '@gnolith/workshop/core';
 import type { AuthorizationContext } from '@gnolith/workshop/protocol';
+import { createWorkshopSearchIntegrationV1, type D1DatabaseLike } from '@gnolith/workshop/server';
 import type { SeedbedConfig } from './config.js';
 import { ExitCode, SeedbedError } from './errors.js';
 import { OperationLifecycle } from './lifecycle.js';
@@ -24,6 +25,15 @@ export async function createSeedbedRuntime(config: SeedbedConfig, taproot: Tapro
   try {
     const bundle = await openAuthorization(database, config);
     const principal = await bundle.resolveContext(config.principalSelector, config.workspaceSelector);
+    const registrationContext = await bundle.resolveSearchAdminContext();
+    const searchIntegration = await createWorkshopSearchIntegrationV1({
+      db: database as unknown as D1DatabaseLike,
+      taproot: { baseIri: config.baseIri! },
+      hostCapability: bundle.hostCapability,
+      installationId: bundle.installationId,
+      registrationContext,
+    });
+    await searchIntegration.materialization.initialize(registrationContext);
     const core = createWorkshopCore({
       persistence: bundle.persistence,
       authorization: bundle.authority,
@@ -33,10 +43,11 @@ export async function createSeedbedRuntime(config: SeedbedConfig, taproot: Tapro
         health: async () => (await bundle.authority.getInstallationAuthorizationState()) !== null,
       },
       diamondHealth: () => true,
+      search: searchIntegration,
     });
     const workshopDispatcher = createWorkshopToolDispatcher(core);
     const resolvePrincipal = () => bundle.resolveContext(config.principalSelector!, config.workspaceSelector);
-    const taprootRuntime = await createSeedbedTaprootRuntime(database, config, bundle, workshopDispatcher, resolvePrincipal);
+    const taprootRuntime = await createSeedbedTaprootRuntime(database, config, bundle, workshopDispatcher, searchIntegration, resolvePrincipal);
     const dispatcher = taprootRuntime.dispatcher;
     const lifecycle = new OperationLifecycle();
     const drainTaproot = async () => {

@@ -3,8 +3,6 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import {
   TaprootContentRepositoryV1,
   createAuthorizedSearchServiceV1,
-  createSearchMaterializationAdminGuardV1,
-  createSemanticSearchAdminV1,
   createSqliteVectorIndexV1,
   createQdrantVectorIndexV1,
   createOpenAICompatibleEmbeddingProviderV1,
@@ -18,6 +16,7 @@ import {
 import type { NodeSqliteDatabase } from '@gnolith/diamond/node-sqlite';
 import { createSparqlHandler } from '@gnolith/diamond';
 import type { WorkshopToolCall, WorkshopToolDispatchContext, WorkshopToolDispatcher, WorkshopToolDefinition } from '@gnolith/workshop/core';
+import type { WorkshopSearchIntegrationV1 } from '@gnolith/workshop/server';
 import { normalizeWorkshopError, type WorkshopPrincipal } from '@gnolith/workshop/protocol';
 import type { ResourcePayloadV1 } from '@gnolith/taproot';
 import type { SeedbedAuthorityBundle } from './authorization.js';
@@ -39,6 +38,7 @@ export async function createSeedbedTaprootRuntime(
   config: SeedbedConfig,
   bundle: SeedbedAuthorityBundle,
   workshop: WorkshopToolDispatcher,
+  searchIntegration: WorkshopSearchIntegrationV1,
   resolvePrincipal: () => Promise<AuthorizationContext>,
 ): Promise<SeedbedTaprootRuntime> {
   const payloadStore = nativePayloadStore(config.blobPath ?? resolve(config.databasePath, '..', 'blobs'));
@@ -46,15 +46,9 @@ export async function createSeedbedTaprootRuntime(
     installationId: bundle.installationId,
     payloadStore,
   });
-  const semantic = createSemanticSearchAdminV1(db, { installationId: bundle.installationId });
-  const materialization = await createSearchMaterializationAdminGuardV1(
-    db,
-    { baseIri: config.baseIri! },
-    bundle.hostCapability,
-    { payloadStore },
-  );
+  const semantic = searchIntegration.semantic;
+  const materialization = searchIntegration.materialization;
   const initial = await resolvePrincipal();
-  if (initial.capabilities.includes('search:admin')) await materialization.initialize(initial);
   if (initial.capabilities.includes('search:admin')) {
     for (const attachment of config.semanticConfigurations ?? []) {
       const providerOptions = {
@@ -105,13 +99,46 @@ export async function createSeedbedTaprootRuntime(
 
   const taprootTools = toolDefinitions();
   const byName = new Map(taprootTools.map((tool) => [tool.name, tool]));
+  const workshopOnlyTools = workshop.tools.filter((tool) => !byName.has(tool.name));
   const backgroundAbort = new AbortController();
   let background: Promise<void> = Promise.resolve();
+  const adoptWorkshop = async (principal: AuthorizationContext): Promise<boolean> => {
+    const rows = await db.prepare(`SELECT source_kind, state
+      FROM taproot_unified_search_producer_adoptions
+      WHERE installation_id = ? AND source_kind IN ('task','memory','prompt')
+      ORDER BY source_kind`).bind(bundle.installationId).all<{ source_kind: 'task' | 'memory' | 'prompt'; state: string }>();
+    for (const row of rows.results.filter(({ state }) => state === 'backfilling')) {
+      await searchIntegration[row.source_kind].producer.adoptLegacyPage(principal, { limit: 100 });
+    }
+    const pending = await db.prepare(`SELECT COUNT(*) AS count
+      FROM taproot_unified_search_producer_adoptions
+      WHERE installation_id = ? AND source_kind IN ('task','memory','prompt') AND state != 'ready'`)
+      .bind(bundle.installationId).all<{ count: number }>();
+    return Number(pending.results[0]?.count ?? 0) === 0;
+  };
+  const advanceMaterialization = async (principal: AuthorizationContext) => {
+    const producersReady = await adoptWorkshop(principal);
+    let health = await materialization.health(principal);
+    if (producersReady && health.shadowCorpusGeneration === null
+      && health.blockedProducerKinds.some((kind) => kind === 'task' || kind === 'memory' || kind === 'prompt')) {
+      await materialization.startShadowRebuild(principal);
+    }
+    await materialization.run(principal, { maxJobs: 100, maxRebuildRoots: 100 });
+    health = await materialization.health(principal);
+    if (health.activeCorpusGeneration === 1 && health.shadowCorpusGeneration !== null
+      && health.pendingJobs === 0 && health.leasedJobs === 0 && health.deadJobs === 0) {
+      try {
+        await materialization.activateReadyShadow(principal);
+      } catch {
+        // The shadow corpus remains durable and the next bounded pass retries.
+      }
+    }
+  };
   const progress = async () => {
     if (backgroundAbort.signal.aborted) return;
     const principal = await resolvePrincipal();
     if (!principal.capabilities.includes('search:admin')) return;
-    await materialization.run(principal, { maxJobs: 100, maxRebuildRoots: 100 });
+    await advanceMaterialization(principal);
     const status = await semantic.status(principal);
     for (const plan of status.plans.filter(({ state }) => state === 'approved' || state === 'running')) {
       await semantic.resume(plan.planId, principal, backgroundAbort.signal);
@@ -122,7 +149,7 @@ export async function createSeedbedTaprootRuntime(
   }, 1_000);
   timer.unref();
   const dispatcher: WorkshopToolDispatcher = Object.freeze({
-    tools: Object.freeze([...workshop.tools, ...taprootTools]),
+    tools: Object.freeze([...workshopOnlyTools, ...taprootTools]),
     listTools(principal: WorkshopPrincipal | null) {
       const base = workshop.listTools(principal);
       if (!base.ok) return base;
@@ -130,7 +157,7 @@ export async function createSeedbedTaprootRuntime(
       return {
         ok: true as const,
         value: Object.freeze([
-          ...base.value,
+          ...base.value.filter((tool) => !byName.has(tool.name)),
           ...taprootTools.filter((tool) => principal.capabilities.includes(tool.capability)),
         ]),
       };
@@ -142,7 +169,7 @@ export async function createSeedbedTaprootRuntime(
           if (result.ok) {
             const refreshed = await resolvePrincipal();
             if (refreshed.capabilities.includes('search:admin')) {
-              await materialization.run(refreshed, { maxJobs: 100, maxRebuildRoots: 100 });
+              await advanceMaterialization(refreshed);
             }
           }
           return result;
@@ -163,7 +190,7 @@ export async function createSeedbedTaprootRuntime(
         if (call.name.startsWith('content_')) {
           const refreshed = await resolvePrincipal();
           if (refreshed.capabilities.includes('search:admin')) {
-            await materialization.run(refreshed, { maxJobs: 100, maxRebuildRoots: 100 });
+            await advanceMaterialization(refreshed);
           }
         }
         return { ok: true as const, value };
@@ -180,7 +207,7 @@ export async function createSeedbedTaprootRuntime(
     dispatcher,
     async drain(context: AuthorizationContext) {
       if (context.capabilities.includes('search:admin')) {
-        await materialization.run(context, { maxJobs: 100, maxRebuildRoots: 100 });
+        await advanceMaterialization(context);
         const status = await semantic.status(context);
         const signal = AbortSignal.timeout(config.shutdownTimeoutMs);
         for (const plan of status.plans.filter(({ state }) => state === 'approved' || state === 'running')) {
@@ -216,9 +243,9 @@ async function callTaprootTool(
   args: Record<string, unknown>,
   context: AuthorizationContext,
   content: TaprootContentRepositoryV1,
-  search: ReturnType<typeof createAuthorizedSearchServiceV1>,
+  search: WorkshopSearchIntegrationV1['service'],
   semantic: SemanticSearchAdminV1,
-  materialization: Awaited<ReturnType<typeof createSearchMaterializationAdminGuardV1>>,
+  materialization: WorkshopSearchIntegrationV1['materialization'],
   sparqlHandler: ReturnType<typeof createSparqlHandler>,
   signal?: AbortSignal,
 ): Promise<unknown> {

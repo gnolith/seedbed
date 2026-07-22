@@ -45,7 +45,7 @@ function fakeTaprootFor(
 const currentVersions = {
   diamond: '0.4.1',
   taproot: '0.4.0',
-  workshop: '0.3.3',
+  workshop: '0.4.0',
   seedbed: '0.3.0',
 } as const;
 
@@ -231,7 +231,7 @@ describe('persistence coordinator', () => {
     expect(status.components.map(({ name, version }) => ({ name, version }))).toEqual([
       { name: 'diamond', version: '0.4.1' },
       { name: 'taproot', version: '0.4.0' },
-      { name: 'workshop', version: '0.3.3' },
+      { name: 'workshop', version: '0.4.0' },
     ]);
 
     const reopened = await requireReady(config, fakeTaproot());
