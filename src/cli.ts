@@ -66,7 +66,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return ExitCode.success;
   }
   if (argv.includes('--version')) {
-    process.stdout.write('0.2.0\n');
+    process.stdout.write('0.2.1\n');
     return ExitCode.success;
   }
   const parsed = parseGlobal(argv);

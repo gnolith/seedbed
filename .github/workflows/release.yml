@@ -575,6 +575,7 @@ jobs:
           push-to-registry: true
       - name: Verify the signed image provenance identity
         env:
+          GH_TOKEN: ${{ github.token }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           RELEASE_COMMIT: ${{ github.sha }}
           RELEASE_REF: ${{ github.ref }}

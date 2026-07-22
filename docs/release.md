@@ -94,7 +94,7 @@ checkout and artifact actions.
 
 ## Dependency release inputs
 
-Seedbed 0.2.0 binds Workshop 0.3.3 to annotated `v0.3.3` and exact source commit
+Seedbed 0.2.1 binds Workshop 0.3.3 to annotated `v0.3.3` and exact source commit
 `6c6accddc1d84351c16486ba36b65f711e822c8c`. Its authoritative npm tarball has
 SHA-256 `c2bc2f3763a3d693662b584d0ed2270936644ab3d23ecd699f0f8b4a2ed0cdc3`
 and integrity
@@ -131,7 +131,7 @@ acceptance paths.
 The historical 0.1.1 production tree contains
 `@modelcontextprotocol/sdk@1.29.0 -> @hono/node-server@1.19.14`, affected by moderate
 advisory GHSA-frvp-7c67-39w9. Seedbed is an application/CLI distribution whose MCP
-surface is stdio-only, so 0.2.0 compiles only the SDK server, protocol, and stdio code
+surface is stdio-only, so 0.2.1 compiles only the SDK server, protocol, and stdio code
 reachable from `src/mcp.ts` into a package-owned artifact. The SDK is an exact build
 dependency rather than a published runtime dependency; Gnolith and Node/native
 dependencies remain external. Hono HTTP server code is neither reachable nor shipped.
@@ -151,7 +151,7 @@ development audit and stdio build/tests verify that hardening. The override is a
 from the published runtime and Docker closure manifests and can be removed with the
 SDK build dependency when upstream provides the stable stdio-only surface.
 
-## 0.2.0 candidate acceptance
+## 0.2.1 candidate acceptance
 
 The authorization candidate was exercised on 2026-07-22 against only the exact
 public Diamond 0.4.0, Taproot 0.3.0, and Workshop 0.3.3 registry tarballs. Registry
@@ -164,12 +164,32 @@ in a new process.
 The production closure was realized from an empty npm cache, verified against the
 committed SHA-512 lock, and reinstalled offline with the registry set to an invalid
 local endpoint. The Node 24 image accepted only the exact
-`0.4.0 / 0.3.0 / 0.3.3 / 0.2.0` tuple, ran as non-root, exposed no ports, and had no
+`0.4.0 / 0.3.0 / 0.3.3 / 0.2.1` tuple, ran as non-root, exposed no ports, and had no
 listening TCP or TCP6 sockets while MCP stdio was active. A replacement container
 reopened the same named volume and authorized data; replacement with a different
 root secret failed closed. SIGTERM drained in-flight writes and the database reopened
 ready. These are candidate gates, not release evidence: the tagged release workflow
 must rebuild, content-address, and reverify its own exact closure before publication.
+
+## Partial 0.2.0 publication evidence
+
+The protected `v0.2.0` tag is annotated and peels to main commit
+`7caa0a0e8545124f96c81ba8f2a264365e757ca7`. Release workflow run
+[`29911759348`](https://github.com/gnolith/seedbed/actions/runs/29911759348)
+completed the credential-free package gates and published
+`@gnolith/seedbed@0.2.0` through npm OIDC with integrity
+`sha512-hFYaaRs+G8zgChgC6XlYCFIhib15jf4I33ZLzPFiCLLretIV86oauY6575BxYMrNv3Vtsyg4G1ZQ/fswEo5iUQ==`
+and SLSA v1 provenance. It also published and accepted the exact versioned image
+`ghcr.io/gnolith/seedbed@sha256:62c0ff3b16865dd37177e8fffdf55d216fb79bd1038ccb12f57a20349053f411`,
+extracted its SPDX SBOM, and created one signed GitHub artifact attestation.
+
+The next verification step stopped because GitHub CLI requires its Actions token in
+`GH_TOKEN`; the token was available to the job but was not mapped into that step.
+Consequently `latest` remained at its prior digest and no `v0.2.0` GitHub Release was
+created. Never move, delete, overwrite, reuse, or manually complete the `v0.2.0`
+identities. Version `0.2.1` is the reviewed fix-forward and maps `${{ github.token }}`
+only into the signed-attestation verification step before any `latest` or Release
+mutation.
 
 ## Failed 0.1.0 publication evidence
 

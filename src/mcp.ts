@@ -12,7 +12,7 @@ import type { SeedbedRuntime } from './runtime.js';
 
 export function createMcpServer(runtime: SeedbedRuntime): Server {
   const server = new Server(
-    { name: '@gnolith/seedbed', version: '0.2.0' },
+    { name: '@gnolith/seedbed', version: '0.2.1' },
     { capabilities: { tools: {} } },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => {
