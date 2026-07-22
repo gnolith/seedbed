@@ -73,6 +73,13 @@ describe('release remote preflights', () => {
     ], '0.2.0')).toThrow();
   });
 
+  it('treats the partial 0.2.0 image as independent from the 0.2.1 fix-forward', () => {
+    expect(classifyGhcrVersions(200, [
+      { id: 20, metadata: { container: { tags: ['0.2.0'] } } },
+      { id: 11, metadata: { container: { tags: ['0.1.1', 'latest'] } } },
+    ], '0.2.1')).toEqual({ state: 'absent', latestVersion: '0.1.1' });
+  });
+
   it('accepts only absent or immutable exact GitHub Releases', () => {
     expect(classifyGitHubRelease(404, {}, { tag: 'v0.2.0' })).toEqual({ state: 'absent' });
     expect(classifyGitHubRelease(200, { id: 9, tag_name: 'v0.2.0', draft: false, prerelease: false, immutable: true }, { tag: 'v0.2.0' }))

@@ -29,7 +29,7 @@ try {
     }
     process.stdout.write(JSON.stringify(versions));
   `]).stdout);
-  const expectedVersions = { diamond: '0.4.0', taproot: '0.3.0', workshop: '0.3.3', seedbed: '0.2.0' };
+  const expectedVersions = { diamond: '0.4.0', taproot: '0.3.0', workshop: '0.3.3', seedbed: '0.2.1' };
   if (JSON.stringify(installed) !== JSON.stringify(expectedVersions)) {
     throw new Error(`image package tuple is ${JSON.stringify(installed)}; expected ${JSON.stringify(expectedVersions)}`);
   }

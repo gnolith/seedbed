@@ -213,6 +213,7 @@ describe('release credential boundary', () => {
     expect(imageJob).toContain('--signer-workflow gnolith/seedbed/.github/workflows/release.yml');
     expect(imageJob).toContain('RELEASE_REF: ${{ github.ref }}');
     expect(imageJob).toContain('RELEASE_COMMIT: ${{ github.sha }}');
+    expect(imageJob).toContain('GH_TOKEN: ${{ github.token }}');
     expect(imageJob).toContain('--source-ref "$RELEASE_REF"');
     expect(imageJob).toContain('--source-digest "$RELEASE_COMMIT"');
     expect(releaseJob).toContain('needs.image.outputs.evidence_artifact_id');

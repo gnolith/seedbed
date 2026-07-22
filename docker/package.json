@@ -1,6 +1,6 @@
 {
   "name": "@gnolith/seedbed-production-closure",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Reviewed production-only dependency closure for the Seedbed image.",
   "license": "MIT",

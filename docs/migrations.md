@@ -51,7 +51,7 @@ installation database.
 
 The authorization assembly transition accepts exactly
 `Diamond 0.4.0 / Taproot 0.2.0 / Workshop 0.2.3 / Seedbed 0.1.1` and targets
-`Diamond 0.4.0 / Taproot 0.3.0 / Workshop 0.3.3 / Seedbed 0.2.0`. The committed
+`Diamond 0.4.0 / Taproot 0.3.0 / Workshop 0.3.3 / Seedbed 0.2.1`. The committed
 manifest and lock must use the public immutable Workshop 0.3.3 artifact; local,
 workspace, file, and Git dependency specifiers are forbidden. Pre-authorization
 Taproot and Workshop records remain quarantined after schema migration. Only
