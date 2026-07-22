@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtemp, unlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { createItem, TaprootContentRepositoryV1 } from '@gnolith/taproot';
 import { describe, expect, it } from 'vitest';
 import { bootstrapAuthorization, openAuthorization } from '../src/authorization.js';
@@ -91,6 +92,7 @@ describe('native semantic executor', () => {
 
       const snapshot = join(directory, 'semantic.seedbed-snapshot.gz');
       await expect(createInstallationSnapshot(config, taproot, snapshot)).resolves.toMatchObject({ valid: true, manifest: { secretsExported: false } });
+      expect(gunzipSync(await readFile(snapshot)).includes(Buffer.from('semantic-provider-secret'))).toBe(false);
 
       runtime = await createSeedbedRuntime(config, taproot);
       try {
