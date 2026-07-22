@@ -341,10 +341,9 @@ async function callTaprootTool(
     case 'semantic_exclude': await semantic.exclude(requiredString(args.configurationId, 'configurationId'), requiredInteger(args.generation, 'generation'), requiredString(args.derivedId, 'derivedId'), requiredString(args.reason, 'reason'), context); return { excluded: true };
     case 'semantic_retire': await semantic.retire(requiredString(args.configurationId, 'configurationId'), context); return { retired: true };
     case 'semantic_delete': await semantic.deleteEmbeddings(requiredString(args.configurationId, 'configurationId'), context); return { deleted: true };
-    case 'sparql_query': {
-      for (const capability of ['read', 'knowledge:policy']) {
-        if (!context.capabilities.includes(capability)) throw new Error(`Exact ${capability} capability is required for SPARQL administration`);
-      }
+    case 'validate_sparql':
+    case 'dry_run_sparql':
+    case 'query_sparql': {
       const query = requiredString(args.query, 'query');
       const request = new Request(`https://seedbed.invalid/sparql?query=${encodeURIComponent(query)}`, {
         method: 'GET', headers: { accept: typeof args.accept === 'string' ? args.accept : 'application/sparql-results+json' },
@@ -353,6 +352,7 @@ async function callTaprootTool(
       const response = await sparqlHandler(request);
       const body = await response.text();
       if (!response.ok) throw new Error(`SPARQL query failed with status ${response.status}`);
+      if (name !== 'query_sparql') return { valid: true, dryRun: name === 'dry_run_sparql', mediaType: response.headers.get('content-type') };
       return { mediaType: response.headers.get('content-type'), body };
     }
     default: throw new Error(`Unknown Taproot tool ${name}`);
@@ -364,14 +364,15 @@ function toolDefinitions(): readonly WorkshopToolDefinition[] {
   const write = ['content_resource_create', 'content_resource_update', 'content_resource_delete', 'content_annotation_create', 'content_annotation_update', 'content_annotation_delete'] as const;
   const knowledgeWrite = [...knowledgeWriteToolNames] as const;
   const admin = ['search_admin_health', 'search_admin_run', 'search_admin_retry_dead', 'search_admin_rebuild', 'search_admin_activate', 'semantic_status', 'semantic_select', 'semantic_reconnect', 'semantic_estimate', 'semantic_approve', 'semantic_run', 'semantic_resume', 'semantic_pause', 'semantic_stop', 'semantic_retry', 'semantic_exclude', 'semantic_retire', 'semantic_delete'] as const;
-  const make = (name: string, capability: 'read' | 'knowledge-write' | 'search:admin' | 'admin'): WorkshopToolDefinition => ({
+  const make = (name: string, capability: 'read' | 'knowledge:write' | 'search:admin'): WorkshopToolDefinition => ({
     name,
     title: name.replaceAll('_', ' '),
     description: `Seedbed Taproot ${name.replaceAll('_', ' ')} operation`,
-    capability,
+    capability: capability as WorkshopToolDefinition['capability'],
     inputSchema: { type: 'object', properties: {}, additionalProperties: true },
   });
-  return Object.freeze([...read.map((name) => make(name, 'read')), ...write.map((name) => make(name, 'knowledge-write')), ...knowledgeWrite.map((name) => make(name, 'knowledge-write')), ...admin.map((name) => make(name, 'search:admin')), make('sparql_query', 'admin')]);
+  const sparql = ['validate_sparql', 'dry_run_sparql', 'query_sparql'] as const;
+  return Object.freeze([...read.map((name) => make(name, 'read')), ...write.map((name) => make(name, 'knowledge:write')), ...knowledgeWrite.map((name) => make(name, 'knowledge:write')), ...admin.map((name) => make(name, 'search:admin')), ...sparql.map((name) => make(name, 'read'))]);
 }
 
 const knowledgeWriteToolNames = new Set([

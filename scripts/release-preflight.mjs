@@ -132,7 +132,7 @@ export function createReleaseEvidence(input) {
   for (const name of required) if (!input[name]) throw new Error(`missing ${name}`);
   const components = input.seedbedVersion === '0.2.2'
     ? { diamond: '0.4.0', taproot: '0.3.0', workshop: '0.3.3' }
-    : { diamond: '0.4.1', taproot: '0.4.0', workshop: '0.4.0' };
+    : { diamond: '0.4.1', taproot: '0.4.1', workshop: '0.4.1' };
   return {
     schemaVersion: 1,
     package: { name: '@gnolith/seedbed', version: input.seedbedVersion, sha256: input.npmSha256, integrity: input.npmIntegrity },

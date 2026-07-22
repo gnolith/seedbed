@@ -49,12 +49,13 @@ columns, types, defaults, primary/unique indexes, checks, foreign keys, index
 definitions, triggers, and views. Creating the reference never mutates the
 installation database.
 
-The authorization assembly transition accepts exactly
-`Diamond 0.4.0 / Taproot 0.2.0 / Workshop 0.2.3 / Seedbed 0.1.1` and the released
-`Diamond 0.4.0 / Taproot 0.3.0 / Workshop 0.3.3 / Seedbed 0.2.2` tuples, and targets
-`Diamond 0.4.1 / Taproot 0.4.0 / Workshop 0.4.0 / Seedbed 0.3.0`. The committed
-manifest and lock use the public immutable Workshop 0.4.0 artifact; local,
-workspace, file, and Git dependency specifiers are forbidden. Pre-authorization
+The assembly transition accepts exactly
+`Diamond 0.4.0 / Taproot 0.2.0 / Workshop 0.2.3 / Seedbed 0.1.1`, the released
+`Diamond 0.4.0 / Taproot 0.3.0 / Workshop 0.3.3 / Seedbed 0.2.2`, and
+`Diamond 0.4.1 / Taproot 0.4.0 / Workshop 0.4.0 / Seedbed 0.3.0` tuples, and targets
+`Diamond 0.4.1 / Taproot 0.4.1 / Workshop 0.4.1 / Seedbed 0.3.1`. The committed
+manifest and lock use public immutable artifacts and resolve exactly one deduplicated
+Diamond 0.4.1 runtime; local, workspace, file, and Git dependency specifiers are forbidden. Pre-authorization
 Taproot and Workshop records remain quarantined after schema migration. Only
 explicit `auth bootstrap` or bounded `auth backfill` maintenance may establish
 their authorization state.

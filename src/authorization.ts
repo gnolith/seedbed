@@ -445,7 +445,7 @@ function workshopAuthority(
       }
       if (domains.size !== 1) throw workshopDenied();
       const domain = [...domains][0];
-      if (domain === 'task' || domain === 'memory') return batchMany(cursor, context, state, statements);
+      if (domain === 'task' || domain === 'memory' || domain === 'prompt') return batchMany(cursor, context, state, statements);
       throw workshopDenied();
     },
   };
