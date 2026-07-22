@@ -174,6 +174,7 @@ jobs:
       - name: Create the absent immutable GitHub Release last or verify an exact immutable result
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: gnolith/seedbed
           GH_TOKEN: ${{ github.token }}
           RECOVERY_TAG: ${{ inputs.tag }}
         shell: bash
@@ -203,8 +204,11 @@ jobs:
             test "${remote_tag[1]%%$'\t'*}" = 74737bec42368df4f006adcac5fe215edc732094
             test "$(git -C recovery-tooling rev-parse 'af24354dffe56a09ddcf302633d50d5ad53ed2eb:.github/workflows/release.yml')" = a1ab8cbb6a0e13c1e0e7a1e029f5989b18f7eaaa
             test "$(gh api repos/gnolith/seedbed/releases/latest --jq .tag_name)" = v0.1.1
-            gh release create "$RECOVERY_TAG" "${release_assets[@]}" --verify-tag \
-              --title 'Seedbed 0.2.2' --notes-from-tag --latest
+            (
+              cd "$GITHUB_WORKSPACE/recovery-tooling"
+              gh release create "$RECOVERY_TAG" "${release_assets[@]}" --verify-tag \
+                --title 'Seedbed 0.2.2' --notes-from-tag --latest
+            )
           elif test "$release_state" = match; then
             draft_count=$(node recovery-tooling/scripts/release-recovery.mjs fetch-draft-count \
               "$RECOVERY_TAG" 'https://api.github.com/repos/gnolith/seedbed/releases')

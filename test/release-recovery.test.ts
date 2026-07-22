@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -435,7 +435,7 @@ describe('v0.2.2 immutable Release recovery', () => {
     expect(releaseStep?.run).toContain('verify-release-json');
     expect(releaseStep?.run?.match(/ls-remote --tags origin/g)).toHaveLength(2);
     expect(releaseStep?.run?.match(/releases\/latest --jq \.tag_name/g)).toHaveLength(4);
-    expect(releaseStep?.run).toMatch(/test "\$\(gh api repos\/gnolith\/seedbed\/releases\/latest --jq \.tag_name\)" = v0\.1\.1\s+gh release create/u);
+    expect(releaseStep?.run).toMatch(/test "\$\(gh api repos\/gnolith\/seedbed\/releases\/latest --jq \.tag_name\)" = v0\.1\.1\s+\(\s+cd "\$GITHUB_WORKSPACE\/recovery-tooling"\s+gh release create/u);
     expect(releaseStep?.run?.trimEnd()).toMatch(/rev-parse 'af24354dffe56a09ddcf302633d50d5ad53ed2eb:\.github\/workflows\/release\.yml'\)" = a1ab8cbb6a0e13c1e0e7a1e029f5989b18f7eaaa$/u);
     expect(releaseStep?.env).toEqual(expect.objectContaining({
       GH_TOKEN: '${{ github.token }}', GITHUB_TOKEN: '${{ github.token }}',
@@ -444,6 +444,184 @@ describe('v0.2.2 immutable Release recovery', () => {
     for (const step of recovery.steps.filter(({ shell }) => shell === 'bash')) {
       const syntax = spawnSync('bash', ['-n'], { encoding: 'utf8', input: step.run });
       expect(syntax.status, `${step.name}: ${syntax.stderr}`).toBe(0);
+    }
+  });
+
+  it('runs the exact Release boundary in the trusted checkout with explicit repository routing', async () => {
+    const source = await readFile(new URL('../.github/workflows/recover-v0.2.2-release.yml', import.meta.url), 'utf8');
+    const workflow = parse(source) as RecoveryWorkflow;
+    const releaseStep = workflow.jobs.recover?.steps.find(({ name }) => name?.includes('GitHub Release last'));
+    if (!releaseStep?.run) throw new Error('Release-last step is missing');
+    expect(releaseStep.env).toEqual(expect.objectContaining({
+      GH_REPO: 'gnolith/seedbed',
+      GH_TOKEN: '${{ github.token }}',
+      GITHUB_TOKEN: '${{ github.token }}',
+    }));
+    const lines = releaseStep.run.split(/\r?\n/u);
+    const createCommandIndex = lines.findIndex((line) => line.includes('gh release create "$RECOVERY_TAG"'));
+    const createStart = lines.slice(0, createCommandIndex).findLastIndex((line) => line.trim() === '(');
+    const createEndOffset = lines.slice(createCommandIndex).findIndex((line) => line.trim() === ')');
+    const createBlock = lines.slice(createStart, createCommandIndex + createEndOffset + 1).join('\n');
+    const verifyCommand = lines.find((line) => line.trim() === 'gh release verify "$RECOVERY_TAG"')?.trim();
+    const viewCommand = lines.find((line) => line.trim().startsWith('gh release view "$RECOVERY_TAG"'))?.trim();
+    const verifyAssetsCommand = lines.find((line) => line.trim().startsWith('for asset in "${release_assets[@]}"'))?.trim();
+    expect(createStart).toBeGreaterThanOrEqual(0);
+    expect(createBlock).toContain('cd "$GITHUB_WORKSPACE/recovery-tooling"');
+    expect(createBlock).toContain('--verify-tag');
+    expect(createBlock).toContain("--title 'Seedbed 0.2.2' --notes-from-tag --latest");
+    expect(verifyCommand).toBeDefined();
+    expect(viewCommand).toBeDefined();
+    expect(verifyAssetsCommand).toBeDefined();
+
+    const root = await mkdtemp(join(tmpdir(), 'seedbed-release-boundary-'));
+    const toBashPath = (value: string): string => /^[A-Za-z]:[\\/]/u.test(value)
+      ? `/mnt/${value[0]!.toLowerCase()}${value.slice(2).replaceAll('\\', '/')}`
+      : value;
+    const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\"'\"'`)}'`;
+    try {
+      const workspace = join(root, 'workspace');
+      const checkout = join(workspace, 'recovery-tooling');
+      const runnerTemp = join(root, 'runner-temp');
+      const assets = join(root, 'assets');
+      const mockBin = join(root, 'mock-bin');
+      const mockGh = join(mockBin, 'gh');
+      const logPath = join(root, 'gh.log');
+      const expectedAssetsPath = join(root, 'expected-assets.txt');
+      await mkdir(checkout, { recursive: true });
+      expect(spawnSync('git', ['-C', workspace, 'rev-parse', '--is-inside-work-tree']).status).not.toBe(0);
+      await mkdir(runnerTemp);
+      await mkdir(assets);
+      await mkdir(mockBin);
+      await writeFile(join(checkout, 'README.md'), 'trusted recovery checkout\n');
+      const git = (...args: string[]) => spawnSync('git', args, { cwd: checkout, encoding: 'utf8' });
+      expect(git('init').status).toBe(0);
+      expect(git('config', 'user.name', 'Recovery Test').status).toBe(0);
+      expect(git('config', 'user.email', 'recovery@example.invalid').status).toBe(0);
+      expect(git('add', 'README.md').status).toBe(0);
+      expect(git('commit', '-m', 'fixture').status).toBe(0);
+      expect(git('tag', '-a', 'v0.2.2', '-m', 'Seedbed 0.2.2').status).toBe(0);
+      const assetNames = getV022ReleaseAssetNames('v0.2.2');
+      for (const name of assetNames) await writeFile(join(assets, name), name);
+      await writeFile(expectedAssetsPath, `${assetNames.join('\n')}\n`);
+      await writeFile(mockGh, [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        'test "${GH_REPO-}" = gnolith/seedbed',
+        'test -n "${GH_TOKEN-}"',
+        'test -n "${GITHUB_TOKEN-}"',
+        '{ printf "PWD=%s\\tGH_REPO=%s\\tGH_TOKEN=%s\\tGITHUB_TOKEN=%s" "$PWD" "$GH_REPO" "$GH_TOKEN" "$GITHUB_TOKEN"; for arg in "$@"; do printf "\\tARG=%s" "$arg"; done; printf "\\n"; } >> "$GH_LOG"',
+        'if test "${1-} ${2-}" = "release create"; then',
+        '  test "${3-}" = v0.2.2',
+        '  git rev-parse --is-inside-work-tree >/dev/null',
+        '  git rev-parse "v0.2.2^{tag}" >/dev/null',
+        '  shift 3',
+        '  declare -a assets=()',
+        '  verify=false; notes=false; latest=false; title=',
+        '  while (($#)); do',
+        '    case "$1" in',
+        '      --verify-tag) verify=true ;;',
+        '      --notes-from-tag) notes=true ;;',
+        '      --latest) latest=true ;;',
+        '      --title) shift; title="${1-}" ;;',
+        '      --*) exit 71 ;;',
+        '      *) assets+=("$1") ;;',
+        '    esac',
+        '    shift',
+        '  done',
+        '  test "$verify" = true; test "$notes" = true; test "$latest" = true',
+        '  test "$title" = "Seedbed 0.2.2"; test "${#assets[@]}" = 7',
+        '  actual=$(mktemp)',
+        '  for asset in "${assets[@]}"; do test -f "$asset"; basename "$asset"; done | sort > "$actual"',
+        '  cmp "$MOCK_EXPECTED_ASSETS" "$actual"',
+        'elif test "${1-} ${2-}" = "release verify"; then',
+        '  test "$#" = 3; test "$3" = v0.2.2',
+        'elif test "${1-} ${2-}" = "release view"; then',
+        '  test "$#" = 7; test "$3" = v0.2.2; test "$4 $5 $6 $7" = "--json assets --jq .assets[].name"',
+        '  cat "$MOCK_EXPECTED_ASSETS"',
+        'elif test "${1-} ${2-}" = "release verify-asset"; then',
+        '  test "$#" = 4; test "$3" = v0.2.2; test -f "$4"',
+        'else',
+        '  exit 72',
+        'fi',
+      ].join('\n'));
+      await chmod(mockGh, 0o755);
+
+      type BoundaryOptions = {
+        repo?: string | null;
+        workspace?: string;
+        assets?: string;
+        create?: string;
+      };
+      const runBoundary = (options: BoundaryOptions = {}) => {
+        const repo = options.repo === undefined ? releaseStep.env?.GH_REPO : options.repo;
+        const selectedWorkspace = options.workspace ?? workspace;
+        const selectedAssets = options.assets ?? assets;
+        const selectedCreate = options.create ?? createBlock;
+        return spawnSync('bash', [], {
+          encoding: 'utf8',
+          input: [
+            'set -euo pipefail',
+            "trap 'cd /' EXIT",
+            `export PATH=${shellQuote(toBashPath(mockBin))}:"$PATH"`,
+            `export GH_LOG=${shellQuote(toBashPath(logPath))}`,
+            `export MOCK_EXPECTED_ASSETS=${shellQuote(toBashPath(expectedAssetsPath))}`,
+            repo === null ? 'unset GH_REPO' : `export GH_REPO=${shellQuote(String(repo))}`,
+            'export GH_TOKEN=workflow-token',
+            'export GITHUB_TOKEN=workflow-token',
+            'export RECOVERY_TAG=v0.2.2',
+            `export GITHUB_WORKSPACE=${shellQuote(toBashPath(selectedWorkspace))}`,
+            `export RUNNER_TEMP=${shellQuote(toBashPath(runnerTemp))}`,
+            `assets=${shellQuote(toBashPath(selectedAssets))}`,
+            'mapfile -t release_assets < <(find "$assets" -maxdepth 1 -type f -printf "%p\\n" | sort)',
+            'cd "$GITHUB_WORKSPACE"',
+            selectedCreate,
+            verifyCommand,
+            viewCommand,
+            verifyAssetsCommand,
+            'cd /',
+          ].filter(Boolean).join('\n'),
+        });
+      };
+
+      const exact = runBoundary();
+      expect(exact.status, exact.stderr).toBe(0);
+      const calls = (await readFile(logPath, 'utf8')).trim().split('\n');
+      expect(calls).toHaveLength(10);
+      expect(calls[0]).toContain(`PWD=${toBashPath(checkout)}`);
+      for (const call of calls) {
+        expect(call).toContain('GH_REPO=gnolith/seedbed');
+        expect(call).toContain('GH_TOKEN=workflow-token');
+        expect(call).toContain('GITHUB_TOKEN=workflow-token');
+      }
+      for (const call of calls.slice(1)) expect(call).toContain(`PWD=${toBashPath(workspace)}`);
+      expect(calls[0]).toContain('ARG=--verify-tag');
+      expect(calls[0]).toContain('ARG=Seedbed 0.2.2');
+      expect(calls[0]).toContain('ARG=--notes-from-tag');
+      expect(calls[0]).toContain('ARG=--latest');
+
+      expect(runBoundary({ repo: null }).status).not.toBe(0);
+      expect(runBoundary({ repo: 'attacker/example' }).status).not.toBe(0);
+      const missingWorkspace = join(root, 'missing-workspace');
+      await mkdir(missingWorkspace);
+      expect(runBoundary({ workspace: missingWorkspace }).status).not.toBe(0);
+      expect(git('tag', '-d', 'v0.2.2').status).toBe(0);
+      expect(runBoundary().status).not.toBe(0);
+      expect(git('tag', '-a', 'v0.2.2', '-m', 'Seedbed 0.2.2').status).toBe(0);
+      expect(runBoundary({
+        create: createBlock.replace('cd "$GITHUB_WORKSPACE/recovery-tooling"', 'cd "$GITHUB_WORKSPACE"'),
+      }).status).not.toBe(0);
+      expect(runBoundary({ create: createBlock.replace('--verify-tag', '') }).status).not.toBe(0);
+      expect(runBoundary({ create: createBlock.replace("'Seedbed 0.2.2'", "'Wrong title'") }).status).not.toBe(0);
+      expect(runBoundary({
+        create: createBlock.replace('--notes-from-tag', "--notes 'Wrong body'"),
+      }).status).not.toBe(0);
+      const driftAssets = join(root, 'drift-assets');
+      await mkdir(driftAssets);
+      for (const name of assetNames.slice(0, 6)) await writeFile(join(driftAssets, name), name);
+      await writeFile(join(driftAssets, 'wrong-asset.json'), 'wrong');
+      expect(runBoundary({ assets: driftAssets }).status).not.toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });
