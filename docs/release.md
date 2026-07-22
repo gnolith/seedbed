@@ -282,6 +282,18 @@ normalizes only the expected API fields and compares exact ID sets and scalar va
 it still rejects duplicate, extra, missing, or changed jobs and artifacts, and retains
 all exact artifact byte, digest, size, and expiry checks.
 
+The following authorized one-shot recovery, workflow run
+[`29923893580`](https://github.com/gnolith/seedbed/actions/runs/29923893580), passed
+the corrected frozen run, job, artifact, and raw ZIP checks. It also verified the
+published npm metadata, tarball hash and retained bytes, installed integrity and
+version, 545 registry signatures, and 16 attestations. The step then failed closed
+before provenance validation because it changed into a temporary npm directory and
+invoked `recovery-tooling/scripts/release-recovery.mjs` through a relative path. GHCR,
+staging, and Release steps were skipped; no public identity changed. Never rerun that
+failed attempt. The reviewed correction derives an absolute tooling path from
+`github.workspace`, and an executable regression invokes the same validator from a
+foreign temporary working directory.
+
 ## Failed 0.1.0 publication evidence
 
 The `v0.1.0` source tag points to commit

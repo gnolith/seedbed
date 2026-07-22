@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import {
@@ -307,6 +308,7 @@ describe('v0.2.2 immutable Release recovery', () => {
     const trustIndex = recovery.steps.findIndex(({ name }) => name?.includes('Prove remote tag identity'));
     const tagCheckoutIndex = recovery.steps.findIndex(({ name }) => name?.includes('now-proven immutable tagged source'));
     const setupIndex = recovery.steps.findIndex(({ uses }) => uses === './recovery-tooling/.github/actions/setup-node');
+    const npmStep = recovery.steps.find(({ name }) => name?.includes('Verify exact npm integrity'));
     const releaseStep = recovery.steps.find(({ name }) => name?.includes('GitHub Release last'));
     const releaseIndex = recovery.steps.indexOf(releaseStep!);
     expect(trustIndex).toBeGreaterThan(0);
@@ -333,6 +335,39 @@ describe('v0.2.2 immutable Release recovery', () => {
       encoding: 'utf8', input: immutableGuardScript,
     });
     expect(missingEvidence.status).not.toBe(0);
+    expect(npmStep?.env?.RECOVERY_TOOLING)
+      .toBe('${{ github.workspace }}/recovery-tooling/scripts/release-recovery.mjs');
+    expect(npmStep?.run).toContain(
+      'node "$RECOVERY_TOOLING" verify-npm-provenance "$RECOVERY_TAG" "$attestation_response"',
+    );
+    expect(npmStep?.run).toContain(
+      'node "$RECOVERY_TOOLING" verify-npm-metadata "$RECOVERY_TAG" "$metadata"',
+    );
+    expect(npmStep?.run).not.toContain('node recovery-tooling/scripts/release-recovery.mjs');
+    const foreignCwd = await mkdtemp(join(tmpdir(), 'seedbed-recovery-foreign-cwd-'));
+    try {
+      const definition = getV022RecoveryPlan('v0.2.2');
+      const metadataPath = join(foreignCwd, 'npm-metadata.json');
+      await writeFile(metadataPath, JSON.stringify({
+        name: '@gnolith/seedbed', version: definition.version, dist: {
+          integrity: definition.npmIntegrity, shasum: definition.npmShasum,
+          tarball: definition.npmTarballUrl, fileCount: definition.npmFileCount,
+          unpackedSize: definition.npmUnpackedSize,
+          attestations: {
+            url: definition.npmAttestationsUrl,
+            provenance: { predicateType: 'https://slsa.dev/provenance/v1' },
+          },
+          signatures: [{ keyid: definition.npmSignatureKeyId, sig: definition.npmSignature }],
+        },
+      }));
+      const toolingPath = fileURLToPath(new URL('../scripts/release-recovery.mjs', import.meta.url));
+      const foreignInvocation = spawnSync(process.execPath, [
+        toolingPath, 'verify-npm-metadata', 'v0.2.2', metadataPath,
+      ], { cwd: foreignCwd, encoding: 'utf8' });
+      expect(foreignInvocation.status, foreignInvocation.stderr).toBe(0);
+    } finally {
+      await rm(foreignCwd, { recursive: true, force: true });
+    }
     for (const step of recovery.steps.filter(({ uses }) => uses?.startsWith('actions/checkout@'))) {
       expect(step.with?.['persist-credentials']).toBe(false);
     }
