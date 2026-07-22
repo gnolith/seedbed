@@ -271,6 +271,17 @@ Release step were skipped; no public identity changed. Never rerun that failed
 attempt or bypass its gate. The reviewed workflow replaces only that impossible API
 probe with the fixed maintainer-attested repository variable described above.
 
+The next authorized one-shot recovery, workflow run
+[`29922503518`](https://github.com/gnolith/seedbed/actions/runs/29922503518), passed
+the main, maintainer-variable, tag, source, and frozen-plan gates, then failed closed
+while checking the original run's jobs. The four job IDs, names, statuses, and
+conclusions were exact, but the workflow compared JSON strings whose object keys had
+different insertion orders. npm, GHCR, staging, and Release steps were skipped, so no
+public identity changed. Never rerun that failed attempt. The reviewed correction
+normalizes only the expected API fields and compares exact ID sets and scalar values;
+it still rejects duplicate, extra, missing, or changed jobs and artifacts, and retains
+all exact artifact byte, digest, size, and expiry checks.
+
 ## Failed 0.1.0 publication evidence
 
 The `v0.1.0` source tag points to commit

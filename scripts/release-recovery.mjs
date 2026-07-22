@@ -96,6 +96,62 @@ export function getV022ReleaseCopies(tag) {
   return releaseCopies.map(([source, name]) => [source, name]);
 }
 
+export function validateV022RecoveryApiSnapshot(tag, run, jobs, artifacts) {
+  const definition = getV022RecoveryPlan(tag);
+  if (String(run?.id) !== definition.runId || String(run?.workflow_id) !== definition.workflowId ||
+      run?.event !== 'push' || run?.status !== 'completed' || run?.conclusion !== 'failure' ||
+      run?.run_attempt !== 1 || run?.head_branch !== definition.tag || run?.head_sha !== definition.commit ||
+      run?.path !== '.github/workflows/release.yml') {
+    throw new Error('frozen release run identity mismatch');
+  }
+
+  if (!Array.isArray(jobs) || jobs.length !== definition.jobs.length) {
+    throw new Error('unexpected frozen release job count');
+  }
+  const jobsById = new Map();
+  for (const job of jobs) {
+    const id = String(job?.id);
+    if (jobsById.has(id)) throw new Error(`duplicate frozen release job id: ${id}`);
+    jobsById.set(id, {
+      id,
+      name: job?.name,
+      status: job?.status,
+      conclusion: job?.conclusion,
+    });
+  }
+  for (const expected of definition.jobs) {
+    const actual = jobsById.get(expected.id);
+    if (!actual || actual.name !== expected.name || actual.status !== 'completed' ||
+        actual.conclusion !== expected.conclusion) {
+      throw new Error(`frozen release job identity mismatch: ${expected.id}`);
+    }
+    jobsById.delete(expected.id);
+  }
+  if (jobsById.size !== 0) throw new Error('unexpected frozen release job identity');
+
+  if (!Array.isArray(artifacts) || artifacts.length !== definition.artifacts.length) {
+    throw new Error('unexpected retained artifact count');
+  }
+  const artifactsById = new Map();
+  for (const artifact of artifacts) {
+    const id = String(artifact?.id);
+    if (artifactsById.has(id)) throw new Error(`duplicate retained artifact id: ${id}`);
+    artifactsById.set(id, artifact);
+  }
+  for (const expected of definition.artifacts) {
+    const artifact = artifactsById.get(expected.id);
+    if (!artifact || artifact.name !== expected.name || artifact.digest !== expected.digest ||
+        artifact.size_in_bytes !== expected.size || artifact.expired !== false ||
+        artifact.expires_at !== expected.expiresAt || String(artifact.workflow_run?.id) !== definition.runId ||
+        artifact.workflow_run?.head_branch !== definition.tag ||
+        artifact.workflow_run?.head_sha !== definition.commit) {
+      throw new Error(`retained artifact metadata mismatch: ${expected.id}`);
+    }
+    artifactsById.delete(expected.id);
+  }
+  if (artifactsById.size !== 0) throw new Error('unexpected retained artifact identity');
+}
+
 export function validateV022NpmMetadata(tag, metadata) {
   getV022RecoveryPlan(tag);
   if (metadata?.name !== '@gnolith/seedbed' || metadata?.version !== plan.version ||
@@ -342,7 +398,7 @@ function writeOutputs() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [command, tag, first, second] = process.argv.slice(2);
+  const [command, tag, first, second, third] = process.argv.slice(2);
   if (command === 'plan') process.stdout.write(`${JSON.stringify(getV022RecoveryPlan(tag), null, 2)}\n`);
   else if (command === 'github-output') { getV022RecoveryPlan(tag); writeOutputs(); }
   else if (command === 'verify-npm-metadata') {
@@ -364,8 +420,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   } else if (command === 'verify-inventory') {
     validateV022RecoveryInventory(tag, await inventoryDirectory(first));
     process.stdout.write('retained v0.2.2 artifact inventory verified\n');
+  } else if (command === 'verify-api-snapshot') {
+    const run = JSON.parse(await readFile(first, 'utf8'));
+    const jobs = JSON.parse(await readFile(second, 'utf8'))?.jobs;
+    const artifacts = JSON.parse(await readFile(third, 'utf8'))?.artifacts;
+    validateV022RecoveryApiSnapshot(tag, run, jobs, artifacts);
+    process.stdout.write('frozen v0.2.2 run, jobs, and artifacts verified\n');
   } else if (command === 'stage') {
     const names = await stageV022RecoveryAssets(tag, first, second);
     process.stdout.write(`${JSON.stringify(names)}\n`);
-  } else throw new Error('usage: release-recovery <plan|github-output|verify-npm-metadata|verify-npm-provenance|release-decision|verify-release-json|count-drafts|fetch-draft-count|verify-inventory|stage> v0.2.2 [...]');
+  } else throw new Error('usage: release-recovery <plan|github-output|verify-npm-metadata|verify-npm-provenance|release-decision|verify-release-json|count-drafts|fetch-draft-count|verify-inventory|verify-api-snapshot|stage> v0.2.2 [...]');
 }
