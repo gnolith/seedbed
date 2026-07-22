@@ -112,13 +112,14 @@ jobs:
           EXPECTED_INTEGRITY: ${{ steps.identity.outputs.npm_integrity }}
           EXPECTED_SHA256: ${{ steps.identity.outputs.npm_sha256 }}
           EXPECTED_VERSION: ${{ steps.identity.outputs.version }}
+          RECOVERY_TOOLING: ${{ github.workspace }}/recovery-tooling/scripts/release-recovery.mjs
           RECOVERY_TAG: ${{ inputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
           metadata="$RUNNER_TEMP/npm-metadata.json"
           npm view "@gnolith/seedbed@$EXPECTED_VERSION" --json > "$metadata"
-          node recovery-tooling/scripts/release-recovery.mjs verify-npm-metadata "$RECOVERY_TAG" "$metadata"
+          node "$RECOVERY_TOOLING" verify-npm-metadata "$RECOVERY_TAG" "$metadata"
           attestations_url='https://registry.npmjs.org/-/npm/v1/attestations/@gnolith%2fseedbed@0.2.2'
           registry="$RUNNER_TEMP/registry"
           mkdir "$registry"
@@ -139,7 +140,7 @@ jobs:
           attestation_response="$RUNNER_TEMP/npm-attestations.json"
           curl --fail --silent --show-error --location --connect-timeout 5 --max-time 15 \
             --output "$attestation_response" "$attestations_url"
-          node recovery-tooling/scripts/release-recovery.mjs verify-npm-provenance "$RECOVERY_TAG" "$attestation_response"
+          node "$RECOVERY_TOOLING" verify-npm-provenance "$RECOVERY_TAG" "$attestation_response"
       - name: Verify exact GHCR runtime, SBOM, signed attestation, and non-downgraded latest
         env:
           CLOSURE_SHA256: ${{ steps.identity.outputs.closure_sha256 }}
