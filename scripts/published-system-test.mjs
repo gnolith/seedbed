@@ -16,13 +16,20 @@ try {
   npm(['install', '--ignore-scripts', `@gnolith/seedbed@${version}`]);
   const cli = join(fixture, 'node_modules', '@gnolith', 'seedbed', 'dist', 'cli.js');
   const database = join(fixture, 'data', 'gnolith.sqlite');
+  const blobs = join(fixture, 'data', 'blobs');
   const secret = join(fixture, 'root.key');
   await writeFile(secret, Buffer.alloc(32, 0x51), { mode: 0o600 });
-  const globals = [cli, '--database', database, '--base-iri', 'https://published.seedbed.test/instance/', '--root-secret-file', secret, '--principal', 'agent', '--workspace', 'workspace', '--log-level', 'silent'];
+  const globals = [cli, '--database', database, '--blobs', blobs, '--base-iri', 'https://published.seedbed.test/instance/', '--root-secret-file', secret, '--principal', 'agent', '--workspace', 'workspace', '--log-level', 'silent'];
   expectJson(run(process.execPath, [...globals, 'init']).stdout, (value) => value.ready === true, 'published init');
   expectJson(run(process.execPath, [...globals, 'auth', 'bootstrap']).stdout, (value) => value.bootstrapped === true, 'published authorization bootstrap');
   expectJson(run(process.execPath, [...globals, 'call', 'upsert_memory', '--arguments', '{"slug":"published-restart","description":"Published restart","content":"Durable"}']).stdout, (value) => value.value?.slug === 'published-restart', 'published memory write');
   expectJson(run(process.execPath, [...globals, 'call', 'get_memory', '--arguments', '{"slug":"published-restart"}']).stdout, (value) => value.value?.slug === 'published-restart', 'published restart read');
+  const snapshot = join(fixture, 'published.seedbed-snapshot.gz');
+  expectJson(run(process.execPath, [...globals, 'snapshot', 'create', '--output', snapshot]).stdout, (value) => value.valid === true && value.manifest?.secretsExported === false, 'published snapshot create');
+  expectJson(run(process.execPath, [...globals, 'snapshot', 'verify', '--input', snapshot]).stdout, (value) => value.valid === true, 'published snapshot verify');
+  const restoreGlobals = [cli, '--database', join(fixture, 'restore', 'gnolith.sqlite'), '--blobs', join(fixture, 'restore', 'blobs'), '--base-iri', 'https://published.seedbed.test/instance/', '--root-secret-file', secret, '--principal', 'agent', '--workspace', 'workspace', '--log-level', 'silent'];
+  expectJson(run(process.execPath, [...restoreGlobals, 'snapshot', 'restore', '--input', snapshot]).stdout, (value) => value.valid === true, 'published snapshot restore');
+  expectJson(run(process.execPath, [...restoreGlobals, 'call', 'get_memory', '--arguments', '{"slug":"published-restart"}']).stdout, (value) => value.value?.slug === 'published-restart', 'published restored read');
 
   const transport = new StdioClientTransport({ command: process.execPath, args: [...globals, 'mcp', '--stdio'], cwd: fixture, stderr: 'pipe' });
   const client = new Client({ name: 'seedbed-published-test', version: '1.0.0' });

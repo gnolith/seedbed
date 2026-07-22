@@ -1,5 +1,4 @@
-import { mkdir, stat } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { stat } from 'node:fs/promises';
 import {
   applyNamespacedMigrations,
   checksumMigration,
@@ -17,6 +16,7 @@ import { requireBaseIri } from './config.js';
 import { ExitCode, SeedbedError } from './errors.js';
 import type { WorkshopPersistence } from '@gnolith/workshop/core';
 import { seedbedAuthorizationMigration } from './authorization.js';
+import { createNativeInstallationAdapter } from './adapter.js';
 
 export const ASSEMBLY_NAMESPACE = '@gnolith/seedbed';
 export const ASSEMBLY_ID = '0001-assembly-v1';
@@ -151,8 +151,7 @@ const currentMigrationPlan: ComponentMigrationPlan = {
 };
 
 export async function openDatabase(config: SeedbedConfig): Promise<NodeSqliteDatabase> {
-  await mkdir(dirname(config.databasePath), { recursive: true });
-  return new NodeSqliteDatabase(config.databasePath, { busyTimeoutMs: 5_000 });
+  return createNativeInstallationAdapter(config).open();
 }
 
 export async function databaseExists(path: string): Promise<boolean> {

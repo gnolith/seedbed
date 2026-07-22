@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add an explicit native installation adapter and future host-binding ports, plus
+  search-admin-gated consistent snapshot/inspect/verify/restore for the complete
+  SQLite installation and local blobs. Snapshots carry per-object integrity and
+  package identity but never secret selectors or credential material; restore
+  stages and validates everything before making the canonical database visible.
 - Add installation-bound authorization state with durable principals, workspaces,
   memberships, exact grants, immutable audit records, and Taproot-owned revisions.
 - Require an exact 32-byte root secret from a protected file or inherited descriptor;

@@ -21,6 +21,8 @@ describe('configuration', () => {
       cwd,
     );
     expect(config.databasePath).toBe(join(cwd, 'from-cli.sqlite'));
+    expect(config.blobPath).toBe(join(cwd, '.seedbed', 'blobs'));
+    expect(config.busyTimeoutMs).toBe(5_000);
     expect(config.baseIri).toBe('https://env.example');
     expect(config.principalSelector).toBe('cli-owner');
     expect(config.logLevel).toBe('warn');
@@ -32,6 +34,7 @@ describe('configuration', () => {
     await mkdir(cwd, { recursive: true });
     const config = await loadConfig({}, {}, cwd);
     expect(config.databasePath).toBe(join(cwd, '.seedbed', 'gnolith.sqlite'));
+    expect(config.blobPath).toBe(join(cwd, '.seedbed', 'blobs'));
   });
 
   it.each(['relative', 'ftp://example.com/x', 'https://u:p@example.com/x', 'https://example.com/x?query=1', 'https://example.com/x#fragment'])(
@@ -59,4 +62,11 @@ describe('configuration', () => {
   it('rejects simultaneous root-secret selectors', async () => {
     await expect(loadConfig({ rootSecretFile: './secret', rootSecretFd: 3 }, {}, process.cwd())).rejects.toMatchObject({ code: 'invalid_root_secret' });
   });
+
+  it.each([-1, 300_001, 1.5, 'not-a-number'])(
+    'rejects invalid SQLite busy timeout %s',
+    async (busyTimeoutMs) => {
+      await expect(loadConfig({ busyTimeoutMs }, {}, process.cwd())).rejects.toMatchObject({ code: 'invalid_config' });
+    },
+  );
 });

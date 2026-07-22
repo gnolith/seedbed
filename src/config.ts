@@ -5,6 +5,8 @@ import { canonicalizeTaprootBaseIri } from '@gnolith/taproot';
 
 export interface SeedbedConfig {
   databasePath: string;
+  blobPath?: string;
+  busyTimeoutMs?: number;
   baseIri?: string;
   rootSecretFile?: string;
   rootSecretFd?: number;
@@ -16,6 +18,8 @@ export interface SeedbedConfig {
 
 export interface ConfigOverrides {
   databasePath?: string;
+  blobPath?: string;
+  busyTimeoutMs?: number | string;
   baseIri?: string;
   rootSecretFile?: string;
   rootSecretFd?: number | string;
@@ -67,6 +71,27 @@ export async function loadConfig(
   const databasePath = isAbsolute(databaseValue)
     ? databaseValue
     : resolve(cwd, databaseValue);
+  const blobValue = first(
+    cli.blobPath,
+    environment.SEEDBED_BLOB_PATH,
+    file.blobPath,
+    './.seedbed/blobs',
+  )!;
+  const blobPath = isAbsolute(blobValue) ? blobValue : resolve(cwd, blobValue);
+  const busyTimeoutRaw = first(
+    cli.busyTimeoutMs,
+    environment.SEEDBED_BUSY_TIMEOUT_MS,
+    file.busyTimeoutMs,
+    5_000,
+  );
+  const busyTimeoutMs = Number(busyTimeoutRaw);
+  if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0 || busyTimeoutMs > 300_000) {
+    throw new SeedbedError(
+      'busyTimeoutMs must be an integer from 0 through 300000',
+      ExitCode.configuration,
+      'invalid_config',
+    );
+  }
   const baseIriValue = optional(first(cli.baseIri, environment.SEEDBED_BASE_IRI, file.baseIri));
   const baseIri = baseIriValue === undefined ? undefined : validateBaseIri(baseIriValue);
 
@@ -114,6 +139,8 @@ export async function loadConfig(
 
   return {
     databasePath,
+    blobPath,
+    busyTimeoutMs,
     ...(baseIri === undefined ? {} : { baseIri }),
     ...(rootSecretFile === undefined ? {} : { rootSecretFile }),
     ...(rootSecretFd === undefined ? {} : { rootSecretFd }),

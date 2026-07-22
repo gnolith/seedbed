@@ -48,9 +48,10 @@ try {
   if (missing.status !== 4) throw new Error(`doctor missing-database exit was ${missing.status}`);
 
   const databasePath = join(runtimeFixture, 'data', 'gnolith.sqlite');
+  const blobPath = join(runtimeFixture, 'data', 'blobs');
   const secretPath = join(runtimeFixture, 'root.key');
   await writeFile(secretPath, Buffer.alloc(32, 0x50), { mode: 0o600 });
-  const globals = [cli, '--database', databasePath, '--base-iri', 'https://packed.seedbed.test/instance/', '--root-secret-file', secretPath, '--principal', 'agent', '--workspace', 'workspace', '--log-level', 'silent'];
+  const globals = [cli, '--database', databasePath, '--blobs', blobPath, '--base-iri', 'https://packed.seedbed.test/instance/', '--root-secret-file', secretPath, '--principal', 'agent', '--workspace', 'workspace', '--log-level', 'silent'];
   const initialized = json(run(process.execPath, [...globals, 'init'], runtimeFixture).stdout);
   if (!initialized.ready) throw new Error('packed init was not ready');
   const bootstrapped = json(run(process.execPath, [...globals, 'auth', 'bootstrap'], runtimeFixture).stdout);
@@ -63,6 +64,19 @@ try {
   if (created.value?.slug !== 'packed-restart') throw new Error('packed memory write failed');
   const reopened = json(run(process.execPath, [...globals, 'call', 'get_memory', '--arguments', '{"slug":"packed-restart"}'], runtimeFixture).stdout);
   if (reopened.value?.slug !== 'packed-restart') throw new Error('data did not survive process restart');
+
+  const snapshotPath = join(runtimeFixture, 'installation.seedbed-snapshot.gz');
+  const snapshot = json(run(process.execPath, [...globals, 'snapshot', 'create', '--output', snapshotPath], runtimeFixture).stdout);
+  if (!snapshot.valid || snapshot.manifest?.secretsExported !== false) throw new Error('packed snapshot creation failed');
+  const verifiedSnapshot = json(run(process.execPath, [...globals, 'snapshot', 'verify', '--input', snapshotPath], runtimeFixture).stdout);
+  if (!verifiedSnapshot.valid || verifiedSnapshot.manifest?.installationId !== snapshot.manifest?.installationId) throw new Error('packed snapshot verification failed');
+  const restoredDatabasePath = join(runtimeFixture, 'restored', 'gnolith.sqlite');
+  const restoredBlobPath = join(runtimeFixture, 'restored', 'blobs');
+  const restoredGlobals = [cli, '--database', restoredDatabasePath, '--blobs', restoredBlobPath, '--base-iri', 'https://packed.seedbed.test/instance/', '--root-secret-file', secretPath, '--principal', 'agent', '--workspace', 'workspace', '--log-level', 'silent'];
+  const restoredSnapshot = json(run(process.execPath, [...restoredGlobals, 'snapshot', 'restore', '--input', snapshotPath], runtimeFixture).stdout);
+  if (restoredSnapshot.manifest?.installationId !== snapshot.manifest?.installationId) throw new Error('packed snapshot identity changed on restore');
+  const restoredMemory = json(run(process.execPath, [...restoredGlobals, 'call', 'get_memory', '--arguments', '{"slug":"packed-restart"}'], runtimeFixture).stdout);
+  if (restoredMemory.value?.slug !== 'packed-restart') throw new Error('packed snapshot did not restore canonical behavior');
 
   const status = json(run(process.execPath, [...globals, 'auth', 'status'], runtimeFixture).stdout);
   const manifestPath = join(runtimeFixture, 'principal-authorization.json');

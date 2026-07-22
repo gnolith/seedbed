@@ -43,6 +43,10 @@ seedbed auth status
 seedbed auth apply --manifest ./principal-authorization.json
 seedbed auth backfill taproot --manifest <path>
 seedbed auth backfill workshop --domain <task|memory>
+seedbed snapshot create --output ./installation.seedbed-snapshot.gz
+seedbed snapshot inspect --input ./installation.seedbed-snapshot.gz
+seedbed snapshot verify --input ./installation.seedbed-snapshot.gz
+seedbed snapshot restore --input ./installation.seedbed-snapshot.gz
 seedbed mcp --stdio
 seedbed tools
 seedbed call <tool-name> [--arguments '{"key":"value"}']
@@ -88,6 +92,8 @@ Precedence is CLI, then `SEEDBED_*` environment variables, then
 | Setting | CLI | Environment | Default |
 | --- | --- | --- | --- |
 | SQLite path | `--database` | `SEEDBED_DATABASE_PATH` | `./.seedbed/gnolith.sqlite` |
+| local blob path | `--blobs` | `SEEDBED_BLOB_PATH` | `./.seedbed/blobs` |
+| SQLite busy timeout | `--busy-timeout-ms` | `SEEDBED_BUSY_TIMEOUT_MS` | `5000` |
 | stable base IRI | `--base-iri` | `SEEDBED_BASE_IRI` | none |
 | root-secret file selector | `--root-secret-file` | `SEEDBED_ROOT_SECRET_FILE` | none |
 | inherited secret descriptor | `--root-secret-fd` | `SEEDBED_ROOT_SECRET_FD` | none |
@@ -98,6 +104,22 @@ Precedence is CLI, then `SEEDBED_*` environment variables, then
 Exactly one root-secret selector is required for authorization. Seedbed derives
 non-extractable, installation-bound and domain-separated keys with HKDF-SHA-256.
 Changing the secret, installation, or base IRI fails closed across restarts.
+
+## Snapshot and restore
+
+Snapshot maintenance requires an authorized principal with exact `search:admin`.
+`snapshot create` uses SQLite's consistent `VACUUM INTO` boundary, includes every
+local blob with byte length and SHA-256 metadata, and writes a compressed portable
+envelope with an exclusive create. Root secrets, credential bytes, access tokens,
+and secret selectors are never included. Keep those separately in an OS secret
+facility.
+
+`snapshot verify` checks the database and every blob before any restore write.
+`snapshot restore` accepts only an empty target installation, validates the exact
+package schema, stable base IRI, root-secret binding, installation identity, and
+administrator authorization in staging, installs blobs first, and exposes the
+canonical database last. A failed or interrupted restore removes staging state
+without replacing a valid installation.
 
 ## Docker
 

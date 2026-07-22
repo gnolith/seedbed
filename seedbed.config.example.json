@@ -1,5 +1,7 @@
 {
   "databasePath": "./.seedbed/gnolith.sqlite",
+  "blobPath": "./.seedbed/blobs",
+  "busyTimeoutMs": 5000,
   "baseIri": "https://example.invalid/gnolith/",
   "rootSecretFile": "/run/secrets/seedbed-root",
   "principalSelector": "owner",

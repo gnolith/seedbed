@@ -8,6 +8,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 const image = process.env.SEEDBED_TEST_IMAGE ?? 'seedbed:test';
 const volume = `seedbed-test-${randomUUID()}`;
+const restoreVolume = `seedbed-restore-${randomUUID()}`;
 const secretVolume = `seedbed-secret-${randomUUID()}`;
 const wrongSecretVolume = `seedbed-wrong-secret-${randomUUID()}`;
 const container = `seedbed-signal-${randomUUID()}`;
@@ -46,6 +47,7 @@ try {
     ]);
   }
   docker(['volume', 'create', volume]);
+  docker(['volume', 'create', restoreVolume]);
   docker(['volume', 'create', secretVolume]);
   docker(['volume', 'create', wrongSecretVolume]);
   const uid = docker(['run', '--rm', '--entrypoint', 'id', image, '-u']).stdout.trim();
@@ -61,6 +63,15 @@ try {
   docker(['run', '--rm', ...mount, ...secretMount, ...baseEnvironment, image, 'call', 'upsert_memory', '--arguments', '{"slug":"docker-restart","description":"Docker restart","content":"Durable"}']);
   const reopened = docker(['run', '--rm', ...mount, ...secretMount, ...baseEnvironment, image, 'call', 'get_memory', '--arguments', '{"slug":"docker-restart"}']);
   if (!reopened.stdout.includes('docker-restart')) throw new Error('replacement container did not retain authorized content');
+  const snapshotPath = '/var/lib/seedbed/portable.seedbed-snapshot.gz';
+  const snapshotted = docker(['run', '--rm', ...mount, ...secretMount, ...baseEnvironment, image, 'snapshot', 'create', '--output', snapshotPath]);
+  if (!JSON.parse(snapshotted.stdout).valid) throw new Error('container snapshot creation failed');
+  docker(['run', '--rm', ...mount, ...secretMount, ...baseEnvironment, image, 'snapshot', 'verify', '--input', snapshotPath]);
+  const restoreMount = ['-v', `${restoreVolume}:/var/lib/seedbed`, '-v', `${volume}:/snapshot-source:ro`];
+  const restored = docker(['run', '--rm', ...restoreMount, ...secretMount, ...baseEnvironment, image, 'snapshot', 'restore', '--input', '/snapshot-source/portable.seedbed-snapshot.gz']);
+  if (!JSON.parse(restored.stdout).valid) throw new Error('container snapshot restore failed');
+  const restoredMemory = docker(['run', '--rm', '-v', `${restoreVolume}:/var/lib/seedbed`, ...secretMount, ...baseEnvironment, image, 'call', 'get_memory', '--arguments', '{"slug":"docker-restart"}']);
+  if (!restoredMemory.stdout.includes('docker-restart')) throw new Error('restored container lost canonical content');
   const wrongMount = ['-v', `${wrongSecretVolume}:/run/secrets:ro`];
   const rejected = docker(['run', '--rm', ...mount, ...wrongMount, ...baseEnvironment, image, 'call', 'get_memory', '--arguments', '{"slug":"docker-restart"}'], false);
   if (rejected.status === 0 || !rejected.stderr.includes('Root secret does not match')) throw new Error('replacement container accepted the wrong root secret');
@@ -92,6 +103,7 @@ try {
   await client?.close().catch(() => undefined);
   docker(['rm', '--force', container], false);
   docker(['volume', 'rm', volume], false);
+  docker(['volume', 'rm', restoreVolume], false);
   docker(['volume', 'rm', secretVolume], false);
   docker(['volume', 'rm', wrongSecretVolume], false);
   await rm(fixture, { recursive: true, force: true });
