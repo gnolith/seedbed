@@ -8,14 +8,15 @@ import {
   migrateDiamondStore,
   readAppliedMigrations,
 } from '@gnolith/diamond';
+import { isExactPreAuthorizationTaprootSchema, taprootMigrations } from '@gnolith/taproot';
 import { NodeSqliteDatabase } from '@gnolith/diamond/node-sqlite';
 import { applyWorkshopMigrations } from '@gnolith/workshop/migrations';
 import { workshopMigrations } from '@gnolith/workshop/migrations';
 import type { SeedbedConfig } from './config.js';
 import { requireBaseIri } from './config.js';
 import { ExitCode, SeedbedError } from './errors.js';
-import type { KnowledgeService } from '@gnolith/workshop/protocol';
 import type { WorkshopPersistence } from '@gnolith/workshop/core';
+import { seedbedAuthorizationMigration } from './authorization.js';
 
 export const ASSEMBLY_NAMESPACE = '@gnolith/seedbed';
 export const ASSEMBLY_ID = '0001-assembly-v1';
@@ -39,7 +40,6 @@ export interface TaprootAssembly {
   readonly version: string;
   migrate(db: NodeSqliteDatabase, baseIri: string): Promise<void>;
   inspect(db: NodeSqliteDatabase, baseIri: string): Promise<{ ready: boolean; detail?: string }>;
-  createKnowledgeService(db: NodeSqliteDatabase, baseIri: string): KnowledgeService;
 }
 
 export interface MigrationVersions {
@@ -88,22 +88,49 @@ export interface MigrationTestHooks {
 
 const versions: MigrationVersions = {
   diamond: '0.4.0',
-  taproot: '0.2.0',
-  workshop: '0.2.3',
-  seedbed: '0.1.1',
+  taproot: '0.3.0',
+  workshop: '0.3.3',
+  seedbed: '0.2.0',
 };
 
 const workshopKnownMigrations = workshopMigrations.map(({ id, sql }) => ({
   id,
   statements: sql.split(/;\s*(?:\r?\n|$)/u).map((statement) => statement.trim()).filter(Boolean),
 }));
+const predecessorWorkshopMigrations = workshopKnownMigrations.slice(0, 3);
+const predecessorTaprootMigrations = taprootMigrations.slice(0, 3);
 
 const currentMigrationPlan: ComponentMigrationPlan = {
   target: versions,
   // A future Seedbed release must add each exact released predecessor and its
   // read-only package-owned verifiers here. Unknown package sets remain
   // fail-closed rather than being inferred from semver.
-  allowedPredecessors: [],
+  allowedPredecessors: [{
+    versions: { diamond: '0.4.0', taproot: '0.2.0', workshop: '0.2.3', seedbed: '0.1.1' },
+    diamond: {
+      migrations: diamondMigrations,
+      async verify(db) {
+        const inspection = await inspectStoreSchema(db);
+        return inspection.valid ? { ready: true } : { ready: false, detail: inspection.errors.join('; ') };
+      },
+    },
+    taproot: {
+      async verify(db) {
+        try {
+          await verifyNamespace(db, '@gnolith/taproot', predecessorTaprootMigrations);
+          return await isExactPreAuthorizationTaprootSchema(db)
+            ? { ready: true }
+            : { ready: false, detail: 'Taproot is not the exact pre-authorization predecessor schema' };
+        } catch (error) {
+          return { ready: false, detail: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    },
+    workshop: {
+      migrations: predecessorWorkshopMigrations,
+      verify: verifyPredecessorWorkshopSchema,
+    },
+  }],
   diamond: {
     migrations: diamondMigrations,
     migrate: migrateDiamondStore,
@@ -218,6 +245,9 @@ async function runMigrations(
   await verifyNamespace(db, '@gnolith/workshop', plan.workshop.migrations);
   await requireComponentVerification('Workshop', await plan.workshop.verify(db));
   await hooks.afterComponent?.('workshop');
+  await applyNamespacedMigrations(db, ASSEMBLY_NAMESPACE, seedbedMigrations);
+  await verifyNamespace(db, ASSEMBLY_NAMESPACE, seedbedMigrations);
+  await requireComponentVerification('Seedbed', await verifyCurrentSeedbedSchema(db));
 }
 
 export async function inspectReadiness(
@@ -250,10 +280,8 @@ async function inspectReadinessWithPlan(
     await verifyNamespace(db, '@gnolith/workshop', plan.workshop.migrations);
     await requireComponentVerification('Workshop', await plan.workshop.verify(db));
     components[2] = { ...components[2]!, ready: true };
-    await verifyNamespace(db, ASSEMBLY_NAMESPACE, [{
-      id: ASSEMBLY_ID,
-      statements: [assemblyTableStatement],
-    }]);
+    await verifyNamespace(db, ASSEMBLY_NAMESPACE, seedbedMigrations);
+    await requireComponentVerification('Seedbed', await verifyCurrentSeedbedSchema(db));
     const marker = await readAssemblyMarker(db);
     if (marker === null) {
       assembly = 'missing';
@@ -345,7 +373,6 @@ async function verifyAssemblyForMigration(
       'assembly_inconsistent',
     );
   }
-  await verifyNamespace(db, ASSEMBLY_NAMESPACE, [{ id: ASSEMBLY_ID, statements: [assemblyTableStatement] }]);
   const marker = await readAssemblyMarker(db);
   if (!marker) {
     throw new SeedbedError(
@@ -363,6 +390,7 @@ async function verifyAssemblyForMigration(
   }
   const markerVersions = versionsFromMarker(marker);
   if (sameVersions(markerVersions, plan.target)) {
+    await verifyNamespace(db, ASSEMBLY_NAMESPACE, seedbedMigrations);
     return { kind: 'existing', marker, source: 'target' };
   }
   const predecessor = plan.allowedPredecessors.find((candidate) => sameVersions(markerVersions, candidate.versions));
@@ -372,6 +400,12 @@ async function verifyAssemblyForMigration(
       ExitCode.persistence,
       'assembly_version_mismatch',
     );
+  }
+  const predecessorSeedbed = [seedbedMigrations[0]];
+  const oldFailure = await captureVerification(() => verifyNamespace(db, ASSEMBLY_NAMESPACE, predecessorSeedbed));
+  const targetFailure = await captureVerification(() => verifyNamespace(db, ASSEMBLY_NAMESPACE, seedbedMigrations));
+  if (oldFailure && targetFailure) {
+    throw new SeedbedError('Seedbed authorization migration is neither exact predecessor nor exact target state', ExitCode.persistence, 'assembly_inconsistent');
   }
   return { kind: 'existing', marker, source: predecessor };
 }
@@ -485,10 +519,7 @@ async function writeAssemblyMarker(
   target: MigrationVersions,
   expectation: AssemblyExpectation = { kind: 'absent' },
 ): Promise<void> {
-  await applyNamespacedMigrations(db, ASSEMBLY_NAMESPACE, [{
-    id: ASSEMBLY_ID,
-    statements: [assemblyTableStatement],
-  }]);
+  await applyNamespacedMigrations(db, ASSEMBLY_NAMESPACE, seedbedMigrations);
   const now = new Date().toISOString();
   const result = expectation.kind !== 'existing'
     ? await db.prepare(`INSERT INTO seedbed_assembly (
@@ -599,6 +630,11 @@ export async function verifyCurrentWorkshopSchema(
     : { ready: false, detail: describeSchemaDifference(actual, canonical) };
 }
 
+async function verifyPredecessorWorkshopSchema(db: NodeSqliteDatabase): Promise<{ ready: boolean; detail?: string }> {
+  const [actual, canonical] = await Promise.all([captureWorkshopSchema(db), canonicalPredecessorWorkshopSchema()]);
+  return actual === canonical ? { ready: true } : { ready: false, detail: describeSchemaDifference(actual, canonical) };
+}
+
 function describeSchemaDifference(actual: string, canonical: string): string {
   let index = 0;
   while (index < actual.length && index < canonical.length && actual[index] === canonical[index]) index += 1;
@@ -607,6 +643,7 @@ function describeSchemaDifference(actual: string, canonical: string): string {
 }
 
 let canonicalWorkshopSchemaPromise: Promise<string> | undefined;
+let canonicalPredecessorWorkshopSchemaPromise: Promise<string> | undefined;
 
 function canonicalWorkshopSchema(): Promise<string> {
   canonicalWorkshopSchemaPromise ??= (async () => {
@@ -619,6 +656,69 @@ function canonicalWorkshopSchema(): Promise<string> {
     }
   })();
   return canonicalWorkshopSchemaPromise;
+}
+
+function canonicalPredecessorWorkshopSchema(): Promise<string> {
+  canonicalPredecessorWorkshopSchemaPromise ??= (async () => {
+    const reference = new NodeSqliteDatabase(':memory:');
+    try {
+      await applyNamespacedMigrations(reference, '@gnolith/workshop', predecessorWorkshopMigrations);
+      return await captureWorkshopSchema(reference);
+    } finally {
+      await reference.close();
+    }
+  })();
+  return canonicalPredecessorWorkshopSchemaPromise;
+}
+
+let canonicalSeedbedSchemaPromise: Promise<string> | undefined;
+
+async function verifyCurrentSeedbedSchema(db: NodeSqliteDatabase): Promise<{ ready: boolean; detail?: string }> {
+  const [actual, canonical] = await Promise.all([captureOwnedSchema(db, 'seedbed_'), canonicalSeedbedSchema()]);
+  return actual === canonical ? { ready: true } : { ready: false, detail: describeSchemaDifference(actual, canonical) };
+}
+
+function canonicalSeedbedSchema(): Promise<string> {
+  canonicalSeedbedSchemaPromise ??= (async () => {
+    const reference = new NodeSqliteDatabase(':memory:');
+    try {
+      await applyNamespacedMigrations(reference, ASSEMBLY_NAMESPACE, seedbedMigrations);
+      return await captureOwnedSchema(reference, 'seedbed_');
+    } finally {
+      await reference.close();
+    }
+  })();
+  return canonicalSeedbedSchemaPromise;
+}
+
+async function captureOwnedSchema(db: NodeSqliteDatabase, prefix: string): Promise<string> {
+  const pattern = `${prefix}*`;
+  const master = await db.prepare(`SELECT type, name, tbl_name, sql FROM sqlite_master
+    WHERE type IN ('table', 'index', 'trigger', 'view')
+      AND (name GLOB ? OR tbl_name GLOB ?)
+    ORDER BY type, name`).bind(pattern, pattern).all<SqliteMasterRow>();
+  const tables: Record<string, unknown> = {};
+  for (const table of master.results.filter(({ type, name }) => type === 'table' && name.startsWith(prefix))) {
+    const identifier = quoteSqliteIdentifier(table.name);
+    const columns = await db.prepare(`PRAGMA table_xinfo(${identifier})`).all<Record<string, unknown>>();
+    const foreignKeys = await db.prepare(`PRAGMA foreign_key_list(${identifier})`).all<Record<string, unknown>>();
+    const indexList = await db.prepare(`PRAGMA index_list(${identifier})`).all<Record<string, unknown>>();
+    const indexes: Record<string, unknown> = {};
+    for (const index of indexList.results) {
+      const name = String(index.name);
+      indexes[name] = (await db.prepare(`PRAGMA index_xinfo(${quoteSqliteIdentifier(name)})`).all<Record<string, unknown>>()).results.map(normalizePragmaRow);
+    }
+    tables[table.name] = {
+      columns: columns.results.map(normalizePragmaRow),
+      foreignKeys: foreignKeys.results.map(normalizePragmaRow),
+      indexList: indexList.results.map(normalizePragmaRow),
+      indexes,
+    };
+  }
+  return JSON.stringify({
+    objects: master.results.map((row) => ({ type: row.type, name: row.name, table: row.tbl_name, sql: normalizeSchemaSql(row.sql) })),
+    tables,
+  });
 }
 
 interface SqliteMasterRow {
@@ -694,6 +794,11 @@ const assemblyTableStatement = `CREATE TABLE seedbed_assembly (
     seedbed_version TEXT NOT NULL,
     updated_at TEXT NOT NULL
   ) STRICT`;
+
+const seedbedMigrations = [
+  { id: ASSEMBLY_ID, statements: [assemblyTableStatement] },
+  seedbedAuthorizationMigration,
+] as const;
 
 async function readAssemblyMarker(db: NodeSqliteDatabase): Promise<AssemblyRow | null> {
   if (!(await tableExists(db, 'seedbed_assembly'))) return null;

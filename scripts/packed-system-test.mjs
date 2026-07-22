@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -19,44 +19,89 @@ for (const [name, specifier] of Object.entries(packageJson.dependencies)) {
 runNpm(['run', 'build']);
 const pack = runNpm(['pack', '--json']);
 const [{ filename }] = JSON.parse(pack.stdout);
+const archiveEntries = run('tar', ['-tzf', resolve(filename)]).stdout;
+if (/hono|node_modules\/@modelcontextprotocol/iu.test(archiveEntries)) throw new Error('packed artifact contains a forbidden runtime dependency path');
 const fixture = await mkdtemp(join(tmpdir(), 'seedbed-packed-'));
 try {
+  const cache = join(fixture, 'npm-cache');
   runNpm(['init', '--yes'], fixture);
   const tarballs = [resolve(filename), ...required.map((name) => resolve(process.env[name]))];
-  runNpm(['install', '--ignore-scripts', ...tarballs], fixture);
-  const cli = join(fixture, 'node_modules', '@gnolith', 'seedbed', 'dist', 'cli.js');
-  const help = run(process.execPath, [cli, '--help'], fixture);
+  runNpm(['install', '--ignore-scripts', '--cache', cache, ...tarballs], fixture);
+  const audit = runNpm(['audit', '--omit=dev', '--json'], fixture);
+  const auditReport = JSON.parse(audit.stdout);
+  if (auditReport.metadata?.vulnerabilities?.total !== 0) {
+    throw new Error(`packed consumer production audit reported ${String(auditReport.metadata?.vulnerabilities?.total)} vulnerabilities`);
+  }
+  const consumerLock = await readFile(join(fixture, 'package-lock.json'), 'utf8');
+  if (/@hono\/node-server|@modelcontextprotocol\/sdk/iu.test(consumerLock)) throw new Error('packed consumer runtime lock contains SDK or Hono');
+  const runtimeFixture = join(fixture, 'offline-consumer');
+  await mkdir(runtimeFixture);
+  await copyFile(join(fixture, 'package.json'), join(runtimeFixture, 'package.json'));
+  await copyFile(join(fixture, 'package-lock.json'), join(runtimeFixture, 'package-lock.json'));
+  runNpm(['ci', '--ignore-scripts', '--offline', '--registry=http://127.0.0.1:9', '--cache', cache], runtimeFixture);
+  const offlineAudit = JSON.parse(runNpm(['audit', '--omit=dev', '--json', '--offline', '--registry=http://127.0.0.1:9', '--cache', cache], runtimeFixture).stdout);
+  if (offlineAudit.metadata?.vulnerabilities?.total !== 0) throw new Error('offline packed consumer production audit was not zero');
+  const cli = join(runtimeFixture, 'node_modules', '@gnolith', 'seedbed', 'dist', 'cli.js');
+  const help = run(process.execPath, [cli, '--help'], runtimeFixture);
   if (!help.stdout.includes('mcp --stdio') || /\bserve\b/u.test(help.stdout)) throw new Error('packed CLI surface is invalid');
-  const missing = run(process.execPath, [cli, '--local-owner', 'local-owner', 'doctor'], fixture, false);
+  const missing = run(process.execPath, [cli, 'doctor'], runtimeFixture, false);
   if (missing.status !== 4) throw new Error(`doctor missing-database exit was ${missing.status}`);
 
-  const databasePath = join(fixture, 'data', 'gnolith.sqlite');
-  const globals = [cli, '--database', databasePath, '--base-iri', 'https://packed.seedbed.test/instance/', '--local-owner', 'local-owner', '--log-level', 'silent'];
-  const initialized = json(run(process.execPath, [...globals, 'init'], fixture).stdout);
+  const databasePath = join(runtimeFixture, 'data', 'gnolith.sqlite');
+  const secretPath = join(runtimeFixture, 'root.key');
+  await writeFile(secretPath, Buffer.alloc(32, 0x50), { mode: 0o600 });
+  const globals = [cli, '--database', databasePath, '--base-iri', 'https://packed.seedbed.test/instance/', '--root-secret-file', secretPath, '--principal', 'agent', '--workspace', 'workspace', '--log-level', 'silent'];
+  const initialized = json(run(process.execPath, [...globals, 'init'], runtimeFixture).stdout);
   if (!initialized.ready) throw new Error('packed init was not ready');
+  const bootstrapped = json(run(process.execPath, [...globals, 'auth', 'bootstrap'], runtimeFixture).stdout);
+  if (!bootstrapped.bootstrapped) throw new Error('packed authorization bootstrap failed');
   await Promise.all([
-    runAsync(process.execPath, [...globals, 'migrate'], fixture),
-    runAsync(process.execPath, [...globals, 'migrate'], fixture),
+    runAsync(process.execPath, [...globals, 'migrate'], runtimeFixture),
+    runAsync(process.execPath, [...globals, 'migrate'], runtimeFixture),
   ]);
-  const created = json(run(process.execPath, [...globals, 'call', 'create_item', '--arguments', '{}'], fixture).stdout);
-  if (created.value?.entityId !== 'Q1') throw new Error('packed create_item did not create Q1');
-  const reopened = json(run(process.execPath, [...globals, 'call', 'get_entity', '--arguments', '{"entityId":"Q1"}'], fixture).stdout);
-  if (reopened.value?.entity?.id !== 'Q1') throw new Error('data did not survive process restart');
-  const sparql = json(run(process.execPath, [...globals, 'sparql', 'SELECT ?s WHERE { ?s ?p ?o } LIMIT 1'], fixture).stdout);
-  if (sparql.value?.type !== 'bindings' || sparql.value.data?.length !== 1) throw new Error('packed SPARQL query failed');
+  const created = json(run(process.execPath, [...globals, 'call', 'upsert_memory', '--arguments', '{"slug":"packed-restart","description":"Packed restart","content":"Durable"}'], runtimeFixture).stdout);
+  if (created.value?.slug !== 'packed-restart') throw new Error('packed memory write failed');
+  const reopened = json(run(process.execPath, [...globals, 'call', 'get_memory', '--arguments', '{"slug":"packed-restart"}'], runtimeFixture).stdout);
+  if (reopened.value?.slug !== 'packed-restart') throw new Error('data did not survive process restart');
+
+  const status = json(run(process.execPath, [...globals, 'auth', 'status'], runtimeFixture).stdout);
+  const manifestPath = join(runtimeFixture, 'principal-authorization.json');
+  await writeFile(manifestPath, JSON.stringify({
+    version: 1,
+    expectedAuthorizationRevision: status.authorization.authorizationRevision,
+    principal: 'reader',
+    enabled: true,
+    workspaces: ['workspace'],
+    capabilities: ['read'],
+  }));
+  const applied = json(run(process.execPath, [...globals, 'auth', 'apply', '--manifest', manifestPath], runtimeFixture).stdout);
+  const readerGlobals = [cli, '--database', databasePath, '--base-iri', 'https://packed.seedbed.test/instance/', '--root-secret-file', secretPath, '--principal', 'reader', '--workspace', 'workspace', '--log-level', 'silent'];
+  const readerValue = json(run(process.execPath, [...readerGlobals, 'call', 'get_memory', '--arguments', '{"slug":"packed-restart"}'], runtimeFixture).stdout);
+  if (readerValue.value?.slug !== 'packed-restart') throw new Error('declaratively granted packed reader could not read');
+  await writeFile(manifestPath, JSON.stringify({
+    version: 1,
+    expectedAuthorizationRevision: applied.authorizationRevision,
+    principal: 'reader',
+    enabled: false,
+    workspaces: [],
+    capabilities: [],
+  }));
+  run(process.execPath, [...globals, 'auth', 'apply', '--manifest', manifestPath], runtimeFixture);
+  const revokedReader = run(process.execPath, [...readerGlobals, 'call', 'get_memory', '--arguments', '{"slug":"packed-restart"}'], runtimeFixture, false);
+  if (revokedReader.status !== 5) throw new Error(`revoked packed reader exited ${revokedReader.status}`);
 
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [...globals, 'mcp', '--stdio'],
-    cwd: fixture,
+    cwd: runtimeFixture,
     stderr: 'pipe',
   });
   const client = new Client({ name: 'seedbed-packed-test', version: '1.0.0' });
   await client.connect(transport);
   const listed = await client.listTools();
-  if (!listed.tools.some(({ name }) => name === 'get_entity')) throw new Error('MCP tool discovery omitted get_entity');
-  const called = await client.callTool({ name: 'get_entity', arguments: { entityId: 'Q1' } });
-  if (called.isError || called.structuredContent?.entity?.id !== 'Q1') throw new Error('MCP get_entity failed after restart');
+  if (!listed.tools.some(({ name }) => name === 'get_memory') || listed.tools.some(({ name }) => name === 'query_sparql')) throw new Error('MCP tool discovery surface is invalid');
+  const called = await client.callTool({ name: 'get_memory', arguments: { slug: 'packed-restart' } });
+  if (called.isError || called.structuredContent?.slug !== 'packed-restart') throw new Error('MCP get_memory failed after restart');
   await client.close();
 } finally {
   await rm(fixture, { recursive: true, force: true });

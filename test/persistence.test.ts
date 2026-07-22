@@ -5,7 +5,6 @@ import { applyNamespacedMigrations, checksumMigration, diamondMigrations, inspec
 import type { NodeSqliteDatabase } from '@gnolith/diamond/node-sqlite';
 import { workshopMigrations } from '@gnolith/workshop/migrations';
 import { describe, expect, it } from 'vitest';
-import type { KnowledgeService } from '@gnolith/workshop/protocol';
 import {
   initializeDatabase,
   migrateDatabase,
@@ -21,7 +20,7 @@ import type { SeedbedConfig } from '../src/config.js';
 const taprootMigration = { id: '0001-test-taproot', statements: ['CREATE TABLE taproot_test (id TEXT PRIMARY KEY) STRICT'] } as const;
 
 function fakeTaproot(): TaprootAssembly {
-  return fakeTaprootFor('0.2.0', [taprootMigration]);
+  return fakeTaprootFor('0.3.0', [taprootMigration]);
 }
 
 function fakeTaprootFor(
@@ -40,17 +39,14 @@ function fakeTaprootFor(
         ? { ready: true }
         : { ready: false, detail: 'Taproot test migration is pending or inconsistent' };
     },
-    createKnowledgeService(): KnowledgeService {
-      return { call: async () => ({}) };
-    },
   };
 }
 
 const currentVersions = {
   diamond: '0.4.0',
-  taproot: '0.2.0',
-  workshop: '0.2.3',
-  seedbed: '0.1.1',
+  taproot: '0.3.0',
+  workshop: '0.3.3',
+  seedbed: '0.2.0',
 } as const;
 
 const futureVersions = {
@@ -62,15 +58,15 @@ const futureVersions = {
 
 const futureDiamondMigration = {
   id: '9998-seedbed-fixture-diamond',
-  statements: ['CREATE TABLE seedbed_fixture_diamond (id TEXT PRIMARY KEY) STRICT'],
+  statements: ['CREATE TABLE fixture_diamond (id TEXT PRIMARY KEY) STRICT'],
 } as const;
 const futureTaprootMigration = {
   id: '9998-seedbed-fixture-taproot',
-  statements: ['CREATE TABLE seedbed_fixture_taproot (id TEXT PRIMARY KEY) STRICT'],
+  statements: ['CREATE TABLE fixture_taproot (id TEXT PRIMARY KEY) STRICT'],
 } as const;
 const futureWorkshopMigration = {
   id: '9998-seedbed-fixture-workshop',
-  statements: ['CREATE TABLE seedbed_fixture_workshop (id TEXT PRIMARY KEY) STRICT'],
+  statements: ['CREATE TABLE fixture_workshop (id TEXT PRIMARY KEY) STRICT'],
 } as const;
 
 const currentWorkshopMigrations = workshopMigrations.map(({ id, sql }) => ({
@@ -104,7 +100,7 @@ function futurePlan(events: string[] = []): ComponentMigrationPlan {
         events.push('migrate:diamond');
         await applyNamespacedMigrations(db, '@gnolith/diamond', diamond);
       },
-      verify: (db) => fixtureTableReady(db, 'seedbed_fixture_diamond'),
+      verify: (db) => fixtureTableReady(db, 'fixture_diamond'),
     },
     workshop: {
       migrations: workshop,
@@ -114,7 +110,7 @@ function futurePlan(events: string[] = []): ComponentMigrationPlan {
       },
       async verify(db) {
         const current = await verifyCurrentWorkshopSchema(db);
-        return current.ready ? fixtureTableReady(db, 'seedbed_fixture_workshop') : current;
+        return current.ready ? fixtureTableReady(db, 'fixture_workshop') : current;
       },
     },
   };
@@ -153,6 +149,9 @@ async function readMarker(config: SeedbedConfig): Promise<Record<string, string>
 
 async function removeAssemblyMetadata(db: NodeSqliteDatabase): Promise<void> {
   await db.prepare("DELETE FROM _gnolith_migrations WHERE namespace = '@gnolith/seedbed'").run();
+  for (const table of ['seedbed_authorization_audit', 'seedbed_capability_grants', 'seedbed_workspace_memberships', 'seedbed_workspaces', 'seedbed_principals', 'seedbed_installation']) {
+    await db.prepare(`DROP TABLE IF EXISTS ${table}`).run();
+  }
   await db.prepare('DROP TABLE seedbed_assembly').run();
 }
 
@@ -202,7 +201,7 @@ const workshopStructuralDrifts = [
 async function expectNoFutureComponentMutation(config: SeedbedConfig): Promise<void> {
   const db = await openDatabase(config);
   try {
-    for (const table of ['seedbed_fixture_diamond', 'seedbed_fixture_taproot', 'seedbed_fixture_workshop']) {
+    for (const table of ['fixture_diamond', 'fixture_taproot', 'fixture_workshop']) {
       await expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
         .bind(table).all()).resolves.toMatchObject({ results: [] });
     }
@@ -219,7 +218,6 @@ async function fixtureConfig(): Promise<SeedbedConfig> {
   return {
     databasePath: join(directory, 'gnolith.sqlite'),
     baseIri: 'https://example.test/instance/',
-    localOwnerId: 'owner',
     logLevel: 'silent',
     shutdownTimeoutMs: 1_000,
   };
@@ -232,8 +230,8 @@ describe('persistence coordinator', () => {
     expect(status.ready).toBe(true);
     expect(status.components.map(({ name, version }) => ({ name, version }))).toEqual([
       { name: 'diamond', version: '0.4.0' },
-      { name: 'taproot', version: '0.2.0' },
-      { name: 'workshop', version: '0.2.3' },
+      { name: 'taproot', version: '0.3.0' },
+      { name: 'workshop', version: '0.3.3' },
     ]);
 
     const reopened = await requireReady(config, fakeTaproot());
@@ -289,6 +287,15 @@ describe('persistence coordinator', () => {
     await db.close();
 
     await expect(requireReady(config, fakeTaproot())).rejects.toMatchObject({ code: 'persistence_not_ready' });
+  });
+
+  it('rejects Seedbed authorization-table drift behind an intact ledger and marker', async () => {
+    const config = await fixtureConfig();
+    await initializeDatabase(config, fakeTaproot());
+    const db = await openDatabase(config);
+    await db.prepare('DROP TABLE seedbed_capability_grants').run();
+    await expect(requireReady(config, fakeTaproot())).rejects.toMatchObject({ code: 'persistence_not_ready' });
+    await db.close();
   });
 
   for (const drift of workshopStructuralDrifts) {
@@ -538,8 +545,8 @@ describe('persistence coordinator', () => {
       .rejects.toThrow('Checksum drift detected');
     expect(events).toEqual([]);
     const verify = await openDatabase(config);
-    await expect(verify.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'seedbed_fixture_diamond'").first()).resolves.toBeNull();
-    await expect(verify.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'seedbed_fixture_taproot'").first()).resolves.toBeNull();
+    await expect(verify.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'fixture_diamond'").first()).resolves.toBeNull();
+    await expect(verify.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'fixture_taproot'").first()).resolves.toBeNull();
     await verify.close();
   });
 
@@ -589,7 +596,7 @@ describe('persistence coordinator', () => {
     await reached;
     const concurrent = await openDatabase(config);
     await concurrent.prepare("UPDATE seedbed_assembly SET seedbed_version = 'temporary', updated_at = '2026-07-21T23:59:58.000Z' WHERE singleton = 1").run();
-    await concurrent.prepare("UPDATE seedbed_assembly SET seedbed_version = '0.1.1', updated_at = '2026-07-21T23:59:59.000Z' WHERE singleton = 1").run();
+    await concurrent.prepare("UPDATE seedbed_assembly SET seedbed_version = '0.2.0', updated_at = '2026-07-21T23:59:59.000Z' WHERE singleton = 1").run();
     await concurrent.close();
     resumeMigration();
 

@@ -22,7 +22,8 @@ The coordinator advances components in this fixed order:
    immutable base IRI.
 4. Workshop applies its own migrations; Seedbed verifies its exact ordered
    migration IDs and checksums.
-5. Seedbed conditionally updates the assembly marker from the previously read
+5. Seedbed applies and verifies its installation-authorization migration.
+6. Seedbed conditionally updates the assembly marker from the previously read
    tuple and marker timestamp to the exact target tuple. A stale or ABA-changed
    marker cannot be overwritten.
 
@@ -47,6 +48,25 @@ in-memory database. The comparison covers owned tables and SQL definitions,
 columns, types, defaults, primary/unique indexes, checks, foreign keys, index
 definitions, triggers, and views. Creating the reference never mutates the
 installation database.
+
+The authorization assembly transition accepts exactly
+`Diamond 0.4.0 / Taproot 0.2.0 / Workshop 0.2.3 / Seedbed 0.1.1` and targets
+`Diamond 0.4.0 / Taproot 0.3.0 / Workshop 0.3.3 / Seedbed 0.2.0`. The committed
+manifest and lock must use the public immutable Workshop 0.3.3 artifact; local,
+workspace, file, and Git dependency specifiers are forbidden. Pre-authorization
+Taproot and Workshop records remain quarantined after schema migration. Only
+explicit `auth bootstrap` or bounded `auth backfill` maintenance may establish
+their authorization state.
+
+Fresh authorization bootstrap uses a fixed, bounded host-only manifest context
+only while Seedbed has no durable principals and Taproot is at pristine
+authorization revision/search generation `1/1`. Taproot requires exact
+`knowledge:write` and `knowledge:policy` to perform the installation advance;
+these are distinct from Workshop `knowledge-write`. The same atomic batch creates
+the first Seedbed principal, workspace membership, exact grants, and immutable
+audit row, then advances Taproot. The manifest context is discarded and is never
+accepted by runtime or transport code. `search:admin` remains an orthogonal,
+explicit maintenance capability and is not implied by generic `admin`.
 
 Before shipping a new assembly tuple, its blocking tests must simulate the
 released predecessor without relying on unreleased packages and cover:

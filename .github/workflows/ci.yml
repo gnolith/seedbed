@@ -29,10 +29,10 @@ jobs:
             test "$(git -C "$directory" rev-parse HEAD)" = "$revision"
           }
           checkout_exact diamond 326da7e48d77cddc5a58e21cf65d872ecb9b3b74
-          checkout_exact taproot efbdd4c815645d4b20c2c58dc19aacb3e12d45bb
-          checkout_exact workshop bf168ebd21cc0c4529fc721c1e1ab9b498b4ddd5
-          test "$(git ls-remote https://github.com/gnolith/workshop.git 'refs/tags/v0.2.3^{}' | cut -f1)" = \
-            "bf168ebd21cc0c4529fc721c1e1ab9b498b4ddd5"
+          checkout_exact taproot 9b7eb5de694e6020ce8466e01687b8077fbf915c
+          checkout_exact workshop 6c6accddc1d84351c16486ba36b65f711e822c8c
+          test "$(git ls-remote https://github.com/gnolith/workshop.git 'refs/tags/v0.3.3^{}' | cut -f1)" = \
+            "6c6accddc1d84351c16486ba36b65f711e822c8c"
       - uses: ./.github/actions/setup-node
       - name: Build and verify exact package handoffs
         shell: bash
@@ -43,35 +43,35 @@ jobs:
 
           npm install --ignore-scripts --no-save --package-lock=false --prefix "$RUNNER_TEMP/handoffs/taproot" "$RUNNER_TEMP/gnolith-diamond-0.4.0.tgz"
           npm pack "$RUNNER_TEMP/handoffs/taproot" --pack-destination "$RUNNER_TEMP"
-          echo "04ce966dbcf0d4bacd43a0f8a34e3b545cfefb55ea9b5fd178334f8afce9de6c  $RUNNER_TEMP/gnolith-taproot-0.2.0.tgz" | sha256sum --check
+          echo "2faf3d9bce7811da3fd61629a4cd8b63bb0a6de861d77347030b216ff3ccc347  $RUNNER_TEMP/gnolith-taproot-0.3.0.tgz" | sha256sum --check
       - name: Download and verify the exact Workshop release artifact
         shell: bash
         run: |
-          expected_integrity='sha512-WRuAhNyM5xoj6XQyLGSCcDinkPaWSiPi/74VuvY4gR1swpz9pCrZBSVJBA5Cc9Kff6RxulC6gJqPYrsRhrCqGw=='
+          expected_integrity='sha512-IXIExUsrVUv74a2ajci6Zml0LUSnumiUwRpfhNhxAiT1ApnIwqpwc3OB1GWi/Ny9GXo3U90e6vlmjMV9cYRSEg=='
           registry_response="$RUNNER_TEMP/workshop-registry.json"
           curl --fail --silent --show-error --location \
             --output "$registry_response" \
-            'https://registry.npmjs.org/@gnolith%2fworkshop/0.2.3'
+            'https://registry.npmjs.org/@gnolith%2fworkshop/0.3.3'
           test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).name" "$registry_response")" = '@gnolith/workshop'
-          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$registry_response")" = '0.2.3'
+          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$registry_response")" = '0.3.3'
           test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.integrity" "$registry_response")" = "$expected_integrity"
           attestations_url=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.url || ''" "$registry_response")
-          test "$attestations_url" = 'https://registry.npmjs.org/-/npm/v1/attestations/@gnolith%2fworkshop@0.2.3'
+          test "$attestations_url" = 'https://registry.npmjs.org/-/npm/v1/attestations/@gnolith%2fworkshop@0.3.3'
           test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.provenance?.predicateType || ''" "$registry_response")" = 'https://slsa.dev/provenance/v1'
           test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.signatures?.length || 0" "$registry_response")" -gt 0
 
           cd "$RUNNER_TEMP"
-          npm pack '@gnolith/workshop@0.2.3' --json > workshop-pack.json
-          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))[0].filename" workshop-pack.json)" = 'gnolith-workshop-0.2.3.tgz'
+          npm pack '@gnolith/workshop@0.3.3' --json > workshop-pack.json
+          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))[0].filename" workshop-pack.json)" = 'gnolith-workshop-0.3.3.tgz'
           test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))[0].integrity" workshop-pack.json)" = "$expected_integrity"
-          echo '8fafde79477831b1bbe71da9fa0d55e9546e9845bd1689f756668e81341ac791  gnolith-workshop-0.2.3.tgz' | sha256sum --check
-          expected_sha512_hex=$(sha512sum gnolith-workshop-0.2.3.tgz | cut -d ' ' -f 1)
+          echo 'c2bc2f3763a3d693662b584d0ed2270936644ab3d23ecd699f0f8b4a2ed0cdc3  gnolith-workshop-0.3.3.tgz' | sha256sum --check
+          expected_sha512_hex=$(sha512sum gnolith-workshop-0.3.3.tgz | cut -d ' ' -f 1)
 
           audit_dir="$RUNNER_TEMP/workshop-signature-audit"
           mkdir "$audit_dir"
           cd "$audit_dir"
           npm init --yes >/dev/null
-          npm install --ignore-scripts --save-exact '@gnolith/workshop@0.2.3'
+          npm install --ignore-scripts --save-exact '@gnolith/workshop@0.3.3'
           test "$(node -p "JSON.parse(require('fs').readFileSync('package-lock.json', 'utf8')).packages['node_modules/@gnolith/workshop'].integrity")" = "$expected_integrity"
           npm audit signatures | tee "$RUNNER_TEMP/workshop-signature-audit.txt"
           grep -Eq '[1-9][0-9]* packages? (has|have) (a )?verified attestations?' "$RUNNER_TEMP/workshop-signature-audit.txt"
@@ -94,18 +94,18 @@ jobs:
           if (statement.predicateType !== 'https://slsa.dev/provenance/v1') throw new Error('unexpected predicate type');
           const subjects = statement.subject ?? [];
           if (subjects.length !== 1) throw new Error('expected one provenance subject');
-          if (subjects[0].name !== 'pkg:npm/%40gnolith/workshop@0.2.3') throw new Error('unexpected provenance subject');
+          if (subjects[0].name !== 'pkg:npm/%40gnolith/workshop@0.3.3') throw new Error('unexpected provenance subject');
           if (subjects[0].digest?.sha512 !== sha512) throw new Error('provenance subject digest mismatch');
           const build = statement.predicate?.buildDefinition;
           if (build?.buildType !== 'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1') throw new Error('unexpected provenance build type');
           const workflow = build.externalParameters?.workflow;
           if (workflow?.repository !== 'https://github.com/gnolith/workshop') throw new Error('unexpected provenance repository');
           if (workflow?.path !== '.github/workflows/release.yml') throw new Error('unexpected provenance workflow');
-          if (workflow?.ref !== 'refs/tags/v0.2.3') throw new Error('unexpected provenance ref');
+          if (workflow?.ref !== 'refs/tags/v0.3.3') throw new Error('unexpected provenance ref');
           const source = (build.resolvedDependencies ?? []).filter(
-            ({ uri }) => uri === 'git+https://github.com/gnolith/workshop@refs/tags/v0.2.3',
+            ({ uri }) => uri === 'git+https://github.com/gnolith/workshop@refs/tags/v0.3.3',
           );
-          if (source.length !== 1 || source[0].digest?.gitCommit !== 'bf168ebd21cc0c4529fc721c1e1ab9b498b4ddd5') {
+          if (source.length !== 1 || source[0].digest?.gitCommit !== '6c6accddc1d84351c16486ba36b65f711e822c8c') {
             throw new Error('unexpected provenance source commit');
           }
           NODE
@@ -113,30 +113,30 @@ jobs:
         run: >-
           npm install --ignore-scripts --no-save --package-lock=false
           "$RUNNER_TEMP/gnolith-diamond-0.4.0.tgz"
-          "$RUNNER_TEMP/gnolith-taproot-0.2.0.tgz"
-          "$RUNNER_TEMP/gnolith-workshop-0.2.3.tgz"
+          "$RUNNER_TEMP/gnolith-taproot-0.3.0.tgz"
+          "$RUNNER_TEMP/gnolith-workshop-0.3.3.tgz"
       - run: npm run check
-      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run security:runtime-check
       - name: Test the exact packed assembly
         env:
           DIAMOND_TGZ: ${{ runner.temp }}/gnolith-diamond-0.4.0.tgz
-          TAPROOT_TGZ: ${{ runner.temp }}/gnolith-taproot-0.2.0.tgz
-          WORKSHOP_TGZ: ${{ runner.temp }}/gnolith-workshop-0.2.3.tgz
+          TAPROOT_TGZ: ${{ runner.temp }}/gnolith-taproot-0.3.0.tgz
+          WORKSHOP_TGZ: ${{ runner.temp }}/gnolith-workshop-0.3.3.tgz
         run: npm run test:packed
       - name: Build the image from the same exact artifacts
         shell: bash
         run: |
           npm pack
           cp "$RUNNER_TEMP"/gnolith-diamond-0.4.0.tgz .
-          cp "$RUNNER_TEMP"/gnolith-taproot-0.2.0.tgz .
-          cp "$RUNNER_TEMP"/gnolith-workshop-0.2.3.tgz .
-          seedbed_integrity="sha512-$(openssl dgst -sha512 -binary gnolith-seedbed-0.1.1.tgz | openssl base64 -A)"
+          cp "$RUNNER_TEMP"/gnolith-taproot-0.3.0.tgz .
+          cp "$RUNNER_TEMP"/gnolith-workshop-0.3.3.tgz .
+          seedbed_integrity="sha512-$(openssl dgst -sha512 -binary gnolith-seedbed-0.2.0.tgz | openssl base64 -A)"
           bash scripts/build-production-closure.sh \
-            gnolith-seedbed-0.1.1.tgz \
+            gnolith-seedbed-0.2.0.tgz \
             "$seedbed_integrity" \
             gnolith-diamond-0.4.0.tgz \
-            gnolith-taproot-0.2.0.tgz \
-            gnolith-workshop-0.2.3.tgz
+            gnolith-taproot-0.3.0.tgz \
+            gnolith-workshop-0.3.3.tgz
           closure_sha=$(cut -d ' ' -f 1 gnolith-production-closure.tar.gz.sha256)
           docker build \
             --build-arg PRODUCTION_CLOSURE_SHA256="$closure_sha" \

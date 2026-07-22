@@ -1,6 +1,6 @@
 {
   "name": "@gnolith/seedbed",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Headless local process assembly for Gnolith.",
   "type": "module",
   "private": false,
@@ -52,26 +52,33 @@
     "SUPPORT.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:packed": "node scripts/packed-system-test.mjs",
     "test:docker": "node scripts/docker-smoke.mjs",
     "test:published": "node scripts/published-system-test.mjs",
-    "check": "npm run typecheck && npm test && npm run build && npm run pack:check",
+    "check": "npm run typecheck && npm test && npm run build && npm run bundle:verify && npm run security:runtime-check && npm run pack:check",
+    "security:runtime-check": "node scripts/audit-zero.mjs --full && node scripts/audit-zero.mjs",
+    "bundle:inventory": "node scripts/bundled-runtime-inventory.mjs --write",
+    "bundle:verify": "node scripts/bundled-runtime-inventory.mjs --verify",
     "pack:check": "npm pack --dry-run",
-    "prepack": "npm run build"
+    "prepack": "npm run build && npm run bundle:verify"
   },
   "dependencies": {
     "@gnolith/diamond": "0.4.0",
-    "@gnolith/taproot": "0.2.0",
-    "@gnolith/workshop": "0.2.3",
-    "@modelcontextprotocol/sdk": "1.29.0"
+    "@gnolith/taproot": "0.3.0",
+    "@gnolith/workshop": "0.3.3"
+  },
+  "overrides": {
+    "@hono/node-server": "2.0.11"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@types/node": "24.0.0",
     "@vitest/coverage-v8": "3.2.6",
+    "esbuild": "0.28.1",
     "typescript": "5.9.2",
     "vitest": "3.2.6",
     "yaml": "2.9.0"

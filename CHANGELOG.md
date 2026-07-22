@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Add installation-bound authorization state with durable principals, workspaces,
+  memberships, exact grants, immutable audit records, and Taproot-owned revisions.
+- Require an exact 32-byte root secret from a protected file or inherited descriptor;
+  derive non-extractable installation, host-write, and cursor keys with HKDF.
+- Replace the fixed local owner and raw SPARQL surface with explicit one-time bootstrap,
+  authorization administration, bounded backfills, and guarded Task/Memory operations.
+- Add revision-bound, file-driven principal updates that atomically replace enabled
+  state, workspace memberships, and exact grants, including complete revocation,
+  while preventing removal of the last durable grant administrator.
+- Add native headless, packed-package, Docker replacement-volume, stale-context,
+  rollback, and concurrent-bootstrap acceptance coverage.
+- Upgrade the assembly to Taproot 0.3.0 and Workshop 0.3.3. This breaking pre-1.0
+  authorization boundary will be released as Seedbed 0.2.0.
+- Compile the exact MCP SDK 1.29.0 stdio server surface into an audited, tree-shaken
+  runtime artifact, externalizing Gnolith/native dependencies and excluding Hono HTTP
+  code; ship an exact integrity/license/input SBOM and parsed zero-vulnerability
+  production and reproducible packed-consumer audit gates.
 - Upgrade Vitest and its V8 coverage provider to 3.2.6 to remediate
   GHSA-5xrq-8626-4rwp in development tooling.
 - Replace the temporary npm bootstrap token path with OIDC-only trusted publishing.

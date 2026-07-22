@@ -1,15 +1,19 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { authorize } from '@gnolith/workshop/server';
 import { describe, expect, it, vi } from 'vitest';
 import { createMcpServer } from '../src/mcp.js';
 import { OperationLifecycle } from '../src/lifecycle.js';
-import { createLocalPrincipal, LOCAL_PROCESS_CAPABILITIES, type SeedbedRuntime } from '../src/runtime.js';
+import type { SeedbedRuntime } from '../src/runtime.js';
+
+const principal = Object.freeze({
+  installationId: 'installation', principalId: 'fixture-agent', activeWorkspaceId: 'workspace',
+  workspaceIds: Object.freeze(['workspace']), capabilities: Object.freeze(['read']), authorizationRevision: 1,
+});
 
 function runtime(callTool?: SeedbedRuntime['dispatcher']['callTool']): SeedbedRuntime {
   return {
     database: { close: vi.fn(async () => undefined) } as unknown as SeedbedRuntime['database'],
-    principal: createLocalPrincipal('local-owner'),
+    principal,
     lifecycle: new OperationLifecycle(),
     dispatcher: {
       tools: [],
@@ -19,7 +23,7 @@ function runtime(callTool?: SeedbedRuntime['dispatcher']['callTool']): SeedbedRu
       },
       callTool: callTool ?? (async (call, context) => {
         if (!context.principal) return { ok: false, failure: { kind: 'unauthenticated', error: { code: 'unauthenticated', message: 'Authentication is required', status: 401 } } };
-        return { ok: true, value: { name: call.name, arguments: call.arguments, principal: context.principal.id } };
+        return { ok: true, value: { name: call.name, arguments: call.arguments, principal: context.principal.principalId } };
       }),
     },
     async drain() {
@@ -42,7 +46,7 @@ describe('official MCP SDK integration', () => {
     const listed = await client.listTools();
     expect(listed.tools.map(({ name }) => name)).toEqual(['echo']);
     const called = await client.callTool({ name: 'echo', arguments: { value: 42 } });
-    expect(called.structuredContent).toEqual({ name: 'echo', arguments: { value: 42 }, principal: 'local-owner' });
+    expect(called.structuredContent).toEqual({ name: 'echo', arguments: { value: 42 }, principal: 'fixture-agent' });
     await client.close();
     await server.close();
   });
@@ -60,10 +64,7 @@ describe('official MCP SDK integration', () => {
   });
 
   it('drains a delayed call, rejects new work, and excludes administrative authority', async () => {
-    expect(LOCAL_PROCESS_CAPABILITIES).not.toContain('admin');
-    const principal = createLocalPrincipal('local-owner');
-    expect(authorize(principal, 'read')).toBe(principal);
-    expect(() => authorize(principal, 'admin')).toThrow(/admin capability/u);
+    expect(principal.capabilities).toEqual(['read']);
     let release!: () => void;
     let started!: () => void;
     const callStarted = new Promise<void>((resolve) => { started = resolve; });

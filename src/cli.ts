@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import {
+  applyTaprootAuthorizationBackfill,
+  inspectTaprootAuthorizationReadiness,
+  planTaprootAuthorizationBackfill,
+  type AuthorizationBackfillEntityInput,
+} from '@gnolith/taproot';
+import { backfillWorkshopAuthorizationBatch, inspectWorkshopAuthorizationReadiness } from '@gnolith/workshop/server';
 import { loadConfig, type ConfigOverrides } from './config.js';
 import { ExitCode, SeedbedError } from './errors.js';
 import { createLogger } from './logger.js';
@@ -14,6 +21,13 @@ import {
 } from './persistence.js';
 import { createSeedbedRuntime } from './runtime.js';
 import { loadTaprootAssembly } from './taproot-bridge.js';
+import {
+  bootstrapAuthorization,
+  openAuthorization,
+  replacePrincipalAuthorization,
+  type PrincipalAuthorizationUpdate,
+} from './authorization.js';
+import { requireBaseIri } from './config.js';
 
 const help = `Usage: seedbed [global options] <command> [command options]
 
@@ -21,17 +35,23 @@ Headless commands:
   init                         initialize a brand-new database
   migrate                      explicitly advance an existing database
   doctor                       print persistence readiness as JSON
+  auth bootstrap               establish installation, principal, workspace, and exact grants
+  auth status                  inspect Taproot and Workshop authorization quarantine
+  auth apply --manifest <path>   declaratively replace one principal's authorization
+  auth backfill taproot --manifest <path>
+  auth backfill workshop --domain <task|memory>
   mcp --stdio                  run MCP over stdin/stdout
   tools                        list authorized tools as JSON
   call <name> [--arguments J]  call one tool and print JSON
-  sparql <query>               execute a read-only SPARQL query and print JSON
-  sparql --file <path>         read the query from a file
 
 Global options:
   --config <path>
   --database <path>
   --base-iri <absolute-http(s)-url>
-  --local-owner <principal-id>
+  --root-secret-file <path>    selector for an exact 32-byte secret file
+  --root-secret-fd <number>    selector for an inherited secret descriptor
+  --principal <selector>
+  --workspace <selector>
   --log-level <silent|error|warn|info|debug>
   --shutdown-timeout-ms <milliseconds>
   --help
@@ -46,7 +66,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return ExitCode.success;
   }
   if (argv.includes('--version')) {
-    process.stdout.write('0.1.1\n');
+    process.stdout.write('0.2.0\n');
     return ExitCode.success;
   }
   const parsed = parseGlobal(argv);
@@ -74,6 +94,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         await db.close();
       }
     }
+    case 'auth':
+      return runAuthorizationCommand(parsed.args, config, taproot);
     case 'mcp':
       if (parsed.args.length !== 1 || parsed.args[0] !== '--stdio') usage('mcp requires exactly --stdio');
       await runMcpStdio(await createSeedbedRuntime(config, taproot), logger);
@@ -105,21 +127,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         await runtime.close();
       }
     }
-    case 'sparql': {
-      const query = await parseSparql(parsed.args);
-      const runtime = await createSeedbedRuntime(config, taproot);
-      try {
-        const result = await runtime.lifecycle.run(() => runtime.dispatcher.callTool(
-          { name: 'query_sparql', arguments: { sparql: query } },
-          { principal: runtime.principal, requestId: randomUUID() },
-        ));
-        if (!result.ok) throw dispatchError(result.failure.kind, result.failure.error.message);
-        printJson({ ok: true, value: result.value });
-        return ExitCode.success;
-      } finally {
-        await runtime.close();
-      }
-    }
     default:
       usage(`Unknown command ${parsed.command}`);
   }
@@ -138,7 +145,10 @@ function parseGlobal(argv: string[]): ParsedArguments {
       case '--config': config.configPath = value; break;
       case '--database': config.databasePath = value; break;
       case '--base-iri': config.baseIri = value; break;
-      case '--local-owner': config.localOwnerId = value; break;
+      case '--root-secret-file': config.rootSecretFile = value; break;
+      case '--root-secret-fd': config.rootSecretFd = value; break;
+      case '--principal': config.principalSelector = value; break;
+      case '--workspace': config.workspaceSelector = value; break;
       case '--log-level': config.logLevel = value; break;
       case '--shutdown-timeout-ms': config.shutdownTimeoutMs = value; break;
       default: usage(`Unknown global option ${option}`);
@@ -164,10 +174,105 @@ function parseCall(args: string[]): { name: string; argumentsValue: Record<strin
   }
 }
 
-async function parseSparql(args: string[]): Promise<string> {
-  if (args.length === 2 && args[0] === '--file') return readFile(args[1]!, 'utf8');
-  if (args.length === 0) usage('sparql requires a query or --file <path>');
-  return args.join(' ');
+async function runAuthorizationCommand(
+  args: string[],
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  taproot: Awaited<ReturnType<typeof loadTaprootAssembly>>,
+): Promise<number> {
+  const subcommand = args[0];
+  if (!config.principalSelector || !config.workspaceSelector) usage('auth commands require --principal and --workspace selectors');
+  const db = await openDatabase(config);
+  try {
+    if (subcommand === 'bootstrap') {
+      if (args.length !== 1) usage('auth bootstrap accepts no command arguments');
+      await bootstrapAuthorization(db, config, config.principalSelector, config.workspaceSelector);
+      printJson({ bootstrapped: true, principalSelector: config.principalSelector, workspaceSelector: config.workspaceSelector });
+      return ExitCode.success;
+    }
+    const bundle = await openAuthorization(db, config);
+    const context = await bundle.resolveContext(config.principalSelector, config.workspaceSelector);
+    if (subcommand === 'status') {
+      if (args.length !== 1) usage('auth status accepts no command arguments');
+      requireSearchAdministration(context);
+      const [authorization, taprootStatus, workshopStatus] = await Promise.all([
+        bundle.authorizationGuard.readCurrentState(),
+        inspectTaprootAuthorizationReadiness(db, { baseIri: requireBaseIri(config) }, bundle.hostCapability, context),
+        inspectWorkshopAuthorizationReadiness(bundle.persistence),
+      ]);
+      printJson({ installationId: bundle.installationId, authorization, taproot: taprootStatus, workshop: workshopStatus });
+      return taprootStatus.ready && workshopStatus.ready ? ExitCode.success : ExitCode.authorization;
+    }
+    if (subcommand === 'apply') {
+      if (args.length !== 3 || args[1] !== '--manifest') usage('auth apply --manifest <path>');
+      const update = parsePrincipalAuthorizationManifest(await readFile(args[2]!, 'utf8'));
+      const applied = await replacePrincipalAuthorization(
+        db,
+        config,
+        config.principalSelector,
+        config.workspaceSelector,
+        update,
+      );
+      printJson({ applied: true, ...applied });
+      return ExitCode.success;
+    }
+    if (subcommand === 'backfill' && args[1] === 'workshop') {
+      if (args.length !== 4 || args[2] !== '--domain' || !['task', 'memory'].includes(args[3]!)) usage('auth backfill workshop --domain <task|memory>');
+      requireSearchAdministration(context);
+      const result = await backfillWorkshopAuthorizationBatch(bundle.persistence, bundle.authority, context, { domain: args[3] as 'task' | 'memory' });
+      printJson(result);
+      return ExitCode.success;
+    }
+    if (subcommand === 'backfill' && args[1] === 'taproot') {
+      if (args.length !== 4 || args[2] !== '--manifest') usage('auth backfill taproot --manifest <path>');
+      requireSearchAdministration(context);
+      const raw: unknown = JSON.parse(await readFile(args[3]!, 'utf8'));
+      if (!Array.isArray(raw)) usage('Taproot backfill manifest must be a JSON array');
+      const plan = await planTaprootAuthorizationBackfill(db, { baseIri: requireBaseIri(config) }, bundle.hostCapability, context, raw as AuthorizationBackfillEntityInput[]);
+      const result = await applyTaprootAuthorizationBackfill(db, { baseIri: requireBaseIri(config) }, bundle.hostCapability, context, plan.planId);
+      printJson(result);
+      return ExitCode.success;
+    }
+    usage('auth requires bootstrap, apply, status, or backfill');
+  } finally {
+    await db.close();
+  }
+}
+
+function parsePrincipalAuthorizationManifest(source: string): PrincipalAuthorizationUpdate {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(source);
+  } catch (error) {
+    usage(`Invalid authorization manifest JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!raw || Array.isArray(raw) || typeof raw !== 'object') usage('Authorization manifest must be a JSON object');
+  const value = raw as Record<string, unknown>;
+  const keys = Object.keys(value).sort();
+  const expectedKeys = ['capabilities', 'enabled', 'expectedAuthorizationRevision', 'principal', 'version', 'workspaces'];
+  if (JSON.stringify(keys) !== JSON.stringify(expectedKeys)) usage(`Authorization manifest must contain exactly: ${expectedKeys.join(', ')}`);
+  if (value.version !== 1) usage('Authorization manifest version must be 1');
+  if (!Number.isSafeInteger(value.expectedAuthorizationRevision) || (value.expectedAuthorizationRevision as number) < 1) {
+    usage('Authorization manifest expectedAuthorizationRevision must be a positive safe integer');
+  }
+  if (typeof value.principal !== 'string') usage('Authorization manifest principal must be a string');
+  if (typeof value.enabled !== 'boolean') usage('Authorization manifest enabled must be a boolean');
+  if (!Array.isArray(value.workspaces) || value.workspaces.some((entry) => typeof entry !== 'string')) {
+    usage('Authorization manifest workspaces must be an array of strings');
+  }
+  if (!Array.isArray(value.capabilities) || value.capabilities.some((entry) => typeof entry !== 'string')) {
+    usage('Authorization manifest capabilities must be an array of strings');
+  }
+  return {
+    expectedAuthorizationRevision: value.expectedAuthorizationRevision as number,
+    principalSelector: value.principal,
+    enabled: value.enabled,
+    workspaceSelectors: value.workspaces as string[],
+    capabilities: value.capabilities as string[],
+  };
+}
+
+function requireSearchAdministration(context: { capabilities: readonly string[] }): void {
+  if (!context.capabilities.includes('search:admin')) throw new SeedbedError('Exact search:admin capability is required', ExitCode.authorization, 'forbidden');
 }
 
 function dispatchError(kind: string, message: string): SeedbedError {

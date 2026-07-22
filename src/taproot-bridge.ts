@@ -1,14 +1,12 @@
 import {
-  TaprootRepository,
   applyTaprootMigrations,
   canonicalizeTaprootBaseIri,
   inspectTaprootPersistence,
 } from '@gnolith/taproot';
-import { createTaprootKnowledgeService, type TaprootRepositoryLike } from '@gnolith/workshop/server';
 import type { TaprootAssembly } from './persistence.js';
 
 const taprootAssembly: TaprootAssembly = {
-  version: '0.2.0',
+  version: '0.3.0',
   async migrate(db, baseIri) {
     await applyTaprootMigrations(db, { baseIri });
   },
@@ -25,12 +23,6 @@ const taprootAssembly: TaprootAssembly = {
       };
     }
     return { ready: true };
-  },
-  createKnowledgeService(db, baseIri) {
-    const repository = new TaprootRepository(db, { baseIri });
-    // Workshop intentionally publishes a structural repository port so the
-    // packages remain independently versioned.
-    return createTaprootKnowledgeService(repository as unknown as TaprootRepositoryLike);
   },
 };
 
