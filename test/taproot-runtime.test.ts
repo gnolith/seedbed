@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createItem } from '@gnolith/taproot';
+import { createItem, TaprootContentRepositoryV1 } from '@gnolith/taproot';
 import type { SeedbedConfig } from '../src/config.js';
 import { bootstrapAuthorization, openAuthorization } from '../src/authorization.js';
 import { initializeDatabase, openDatabase } from '../src/persistence.js';
@@ -64,6 +64,18 @@ describe('Taproot content and authorized search assembly', () => {
       await expect(call('content_resource_hydrate', { id: 'resource-escape' })).resolves.toMatchObject({ ok: false, failure: { kind: 'operation' } });
       const sparql = await call('sparql_query', { query: 'SELECT ?label WHERE { <https://search.seedbed.test/installation/entity/Q1> <http://www.w3.org/2000/01/rdf-schema#label> ?label }' });
       expect(sparql).toMatchObject({ ok: true, value: { mediaType: expect.stringContaining('application/sparql-results+json'), body: expect.stringContaining('Basalt sample') } });
+
+      const direct = new TaprootContentRepositoryV1(runtime.database, { installationId: runtime.principal.installationId });
+      const current = await openAuthorization(runtime.database, config).then((bundle) => bundle.resolveContext('owner', 'workspace'));
+      const idleText = 'background-only chrysotile projection';
+      await direct.createResource({ id: 'resource-background', itemId, payload: { kind: 'inline-text', text: idleText }, mediaType: 'text/plain', integrity: { algorithm: 'sha256', digest: createHash('sha256').update(idleText).digest('hex'), byteLength: Buffer.byteLength(idleText) } }, { context: current, attribution: { id: 'owner', kind: 'human' }, workspaceId: 'workspace', ownerPrincipalId: 'owner', visibility: { version: 1, clauses: [] }, expectedAuthorizationRevision: current.authorizationRevision });
+      let backgroundFound = false;
+      for (let attempt = 0; attempt < 20 && !backgroundFound; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const result = await call('search', { text: 'chrysotile', kinds: ['resource'], limit: 5 });
+        backgroundFound = result.ok && (result.value as { results: Array<{ sourceId: string }> }).results.some(({ sourceId }) => sourceId === 'resource-background');
+      }
+      expect(backgroundFound).toBe(true);
     } finally {
       await runtime.close();
     }

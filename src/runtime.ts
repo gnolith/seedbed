@@ -58,6 +58,7 @@ export async function createSeedbedRuntime(config: SeedbedConfig, taproot: Tapro
       async close() {
         await lifecycle.drain(config.shutdownTimeoutMs);
         await drainTaproot();
+        await taprootRuntime.close();
         await database.close();
       },
     };

@@ -31,6 +31,7 @@ export interface SeedbedTaprootRuntime {
   readonly semantic: SemanticSearchAdminV1;
   readonly dispatcher: WorkshopToolDispatcher;
   drain(context: AuthorizationContext): Promise<void>;
+  close(): Promise<void>;
 }
 
 export async function createSeedbedTaprootRuntime(
@@ -104,6 +105,22 @@ export async function createSeedbedTaprootRuntime(
 
   const taprootTools = toolDefinitions();
   const byName = new Map(taprootTools.map((tool) => [tool.name, tool]));
+  const backgroundAbort = new AbortController();
+  let background: Promise<void> = Promise.resolve();
+  const progress = async () => {
+    if (backgroundAbort.signal.aborted) return;
+    const principal = await resolvePrincipal();
+    if (!principal.capabilities.includes('search:admin')) return;
+    await materialization.run(principal, { maxJobs: 100, maxRebuildRoots: 100 });
+    const status = await semantic.status(principal);
+    for (const plan of status.plans.filter(({ state }) => state === 'approved' || state === 'running')) {
+      await semantic.resume(plan.planId, principal, backgroundAbort.signal);
+    }
+  };
+  const timer = setInterval(() => {
+    background = background.then(progress).catch(() => undefined);
+  }, 1_000);
+  timer.unref();
   const dispatcher: WorkshopToolDispatcher = Object.freeze({
     tools: Object.freeze([...workshop.tools, ...taprootTools]),
     listTools(principal: WorkshopPrincipal | null) {
@@ -164,7 +181,16 @@ export async function createSeedbedTaprootRuntime(
     async drain(context: AuthorizationContext) {
       if (context.capabilities.includes('search:admin')) {
         await materialization.run(context, { maxJobs: 100, maxRebuildRoots: 100 });
+        const status = await semantic.status(context);
+        for (const plan of status.plans.filter(({ state }) => state === 'approved' || state === 'running')) {
+          await semantic.resume(plan.planId, context, backgroundAbort.signal);
+        }
       }
+    },
+    async close() {
+      clearInterval(timer);
+      backgroundAbort.abort(new Error('Seedbed runtime is closing'));
+      await background;
     },
   });
 }
