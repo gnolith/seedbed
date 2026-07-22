@@ -6,7 +6,10 @@ import { canonicalizeTaprootBaseIri } from '@gnolith/taproot';
 export interface SeedbedConfig {
   databasePath: string;
   baseIri?: string;
-  localOwnerId: string;
+  rootSecretFile?: string;
+  rootSecretFd?: number;
+  principalSelector?: string;
+  workspaceSelector?: string;
   logLevel: 'silent' | 'error' | 'warn' | 'info' | 'debug';
   shutdownTimeoutMs: number;
 }
@@ -14,7 +17,10 @@ export interface SeedbedConfig {
 export interface ConfigOverrides {
   databasePath?: string;
   baseIri?: string;
-  localOwnerId?: string;
+  rootSecretFile?: string;
+  rootSecretFd?: number | string;
+  principalSelector?: string;
+  workspaceSelector?: string;
   logLevel?: string;
   shutdownTimeoutMs?: number | string;
   configPath?: string;
@@ -64,18 +70,18 @@ export async function loadConfig(
   const baseIriValue = optional(first(cli.baseIri, environment.SEEDBED_BASE_IRI, file.baseIri));
   const baseIri = baseIriValue === undefined ? undefined : validateBaseIri(baseIriValue);
 
-  const localOwnerId = first(
-    cli.localOwnerId,
-    environment.SEEDBED_LOCAL_OWNER_ID,
-    file.localOwnerId,
-  )?.trim();
-  if (!localOwnerId || localOwnerId.length > 256) {
-    throw new SeedbedError(
-      'An explicit localOwnerId is required and must be at most 256 characters; use --local-owner or SEEDBED_LOCAL_OWNER_ID',
-      ExitCode.configuration,
-      'invalid_principal',
-    );
+  const rootSecretFileValue = optional(first(cli.rootSecretFile, environment.SEEDBED_ROOT_SECRET_FILE, file.rootSecretFile));
+  const rootSecretFile = rootSecretFileValue === undefined ? undefined : (isAbsolute(rootSecretFileValue) ? rootSecretFileValue : resolve(cwd, rootSecretFileValue));
+  const rootSecretFdRaw = first(cli.rootSecretFd, environment.SEEDBED_ROOT_SECRET_FD, file.rootSecretFd);
+  const rootSecretFd = rootSecretFdRaw === undefined ? undefined : Number(rootSecretFdRaw);
+  if (rootSecretFd !== undefined && (!Number.isSafeInteger(rootSecretFd) || rootSecretFd < 3)) {
+    throw new SeedbedError('rootSecretFd must be an inherited descriptor number of at least 3', ExitCode.configuration, 'invalid_root_secret');
   }
+  if (rootSecretFile !== undefined && rootSecretFd !== undefined) {
+    throw new SeedbedError('Configure only one root-secret selector', ExitCode.configuration, 'invalid_root_secret');
+  }
+  const principalSelector = optional(first(cli.principalSelector, environment.SEEDBED_PRINCIPAL_SELECTOR, file.principalSelector));
+  const workspaceSelector = optional(first(cli.workspaceSelector, environment.SEEDBED_WORKSPACE_SELECTOR, file.workspaceSelector));
 
   const logLevelValue = first(
     cli.logLevel,
@@ -109,7 +115,10 @@ export async function loadConfig(
   return {
     databasePath,
     ...(baseIri === undefined ? {} : { baseIri }),
-    localOwnerId,
+    ...(rootSecretFile === undefined ? {} : { rootSecretFile }),
+    ...(rootSecretFd === undefined ? {} : { rootSecretFd }),
+    ...(principalSelector === undefined ? {} : { principalSelector }),
+    ...(workspaceSelector === undefined ? {} : { workspaceSelector }),
     logLevel: logLevelValue as SeedbedConfig['logLevel'],
     shutdownTimeoutMs,
   };

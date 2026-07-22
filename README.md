@@ -7,25 +7,30 @@ HTTP server, listening socket, UI, or implicit migration.
 ## Requirements
 
 - Node.js 24
-- public `@gnolith/diamond`, `@gnolith/taproot`, and `@gnolith/workshop` versions
+- public exact `@gnolith/diamond`, `@gnolith/taproot`, and `@gnolith/workshop` versions
+- a restart-stable file or inherited descriptor containing exactly 32 random bytes
 
 ## Start
 
+Create the root-secret file with an operating-system secret manager or a CSPRNG,
+and restrict it to the Seedbed process account. Never place the bytes in a command,
+environment variable, JSON configuration, log, or MCP argument.
+
 ```sh
-npm install --global @gnolith/seedbed@0.1.1
-seedbed --base-iri https://example.com/my-gnolith/ --local-owner local-owner init
-seedbed --base-iri https://example.com/my-gnolith/ --local-owner local-owner doctor
-seedbed --base-iri https://example.com/my-gnolith/ --local-owner local-owner mcp --stdio
+seedbed --base-iri https://example.com/my-gnolith/ --root-secret-file /run/secrets/seedbed-root init
+seedbed --base-iri https://example.com/my-gnolith/ --root-secret-file /run/secrets/seedbed-root \
+  --principal owner --workspace primary auth bootstrap
+seedbed --base-iri https://example.com/my-gnolith/ --root-secret-file /run/secrets/seedbed-root \
+  --principal owner --workspace primary auth status
+seedbed --base-iri https://example.com/my-gnolith/ --root-secret-file /run/secrets/seedbed-root \
+  --principal owner --workspace primary mcp --stdio
 ```
 
-`init` is only for a new database. `migrate` is the only normal command that may
-advance an existing database. `doctor`, `mcp`, `tools`, `call`, and `sparql` inspect
-readiness and refuse pending, unknown, newer, partially applied, checksum-divergent,
-or assembly-inconsistent state without changing it.
-
-Assembly releases use explicit predecessor-to-target transitions and retain the
-old marker until all package-owned migrations verify current. See
-[`docs/migrations.md`](docs/migrations.md) for the release and recovery contract.
+`init` only creates a new package assembly. `migrate` is the only normal command
+that advances package schemas. Authorization remains quarantined until the explicit,
+one-time `auth bootstrap` atomically creates the first durable grants and advances
+Taproot's sole authorization/search generation. An identical bootstrap retry is
+idempotent; a different second bootstrap is rejected.
 
 ## Commands
 
@@ -33,55 +38,84 @@ old marker until all package-owned migrations verify current. See
 seedbed init
 seedbed migrate
 seedbed doctor
+seedbed auth bootstrap
+seedbed auth status
+seedbed auth apply --manifest ./principal-authorization.json
+seedbed auth backfill taproot --manifest <path>
+seedbed auth backfill workshop --domain <task|memory>
 seedbed mcp --stdio
 seedbed tools
 seedbed call <tool-name> [--arguments '{"key":"value"}']
-seedbed sparql 'SELECT * WHERE { ?s ?p ?o } LIMIT 10'
-seedbed sparql --file query.rq
 ```
 
-Structured command results are one-line JSON on stdout. Diagnostics and JSON logs
-go only to stderr. Exit codes are `0` success, `2` usage, `3` configuration, `4`
+Principal authorization changes are strict host-only manifests and never MCP tools.
+They replace the principal's enabled flag, complete workspace set, and complete
+capability set in one Taproot authorization advance. Bind every change to the
+revision reported by `auth status`:
+
+```json
+{
+  "version": 1,
+  "expectedAuthorizationRevision": 2,
+  "principal": "agent",
+  "enabled": true,
+  "workspaces": ["primary"],
+  "capabilities": ["read", "task-write"]
+}
+```
+
+To revoke a principal, set `enabled` to `false` and both arrays to empty. Stale
+manifests fail without writes. Seedbed also rejects any update that would remove
+the final enabled principal holding exact `admin`, `knowledge:write`, and
+`knowledge:policy`, preventing an unrecoverable authorization lockout.
+
+There is no raw SPARQL command. Legacy authorization rows remain invisible until
+an explicit, bounded host-only backfill. Maintenance requires exact `search:admin`;
+principal changes additionally require exact `admin`, Taproot `knowledge:write`, and
+Taproot `knowledge:policy`. These Taproot capabilities are required by its guarded
+installation advance and are distinct from Workshop's `knowledge-write`; generic
+`admin` implies none of them.
+
+Structured results are one-line JSON on stdout. Diagnostics and JSON logs go only
+to stderr. Exit codes are `0` success, `2` usage, `3` configuration, `4`
 persistence/readiness, `5` authorization, and `6` operation failure.
 
 ## Configuration
 
 Precedence is CLI, then `SEEDBED_*` environment variables, then
-`seedbed.config.json` in the working directory, then defaults.
+`seedbed.config.json`, then defaults.
 
 | Setting | CLI | Environment | Default |
 | --- | --- | --- | --- |
 | SQLite path | `--database` | `SEEDBED_DATABASE_PATH` | `./.seedbed/gnolith.sqlite` |
-| stable base IRI | `--base-iri` | `SEEDBED_BASE_IRI` | none; required for `init` and runtime |
-| owner principal | `--local-owner` | `SEEDBED_LOCAL_OWNER_ID` | none; required |
+| stable base IRI | `--base-iri` | `SEEDBED_BASE_IRI` | none |
+| root-secret file selector | `--root-secret-file` | `SEEDBED_ROOT_SECRET_FILE` | none |
+| inherited secret descriptor | `--root-secret-fd` | `SEEDBED_ROOT_SECRET_FD` | none |
+| principal selector | `--principal` | `SEEDBED_PRINCIPAL_SELECTOR` | none |
+| workspace selector | `--workspace` | `SEEDBED_WORKSPACE_SELECTOR` | none |
 | log level | `--log-level` | `SEEDBED_LOG_LEVEL` | `info` |
-| drain timeout | `--shutdown-timeout-ms` | `SEEDBED_SHUTDOWN_TIMEOUT_MS` | `10000` |
 
-The base IRI must be an absolute HTTP(S) URL and becomes immutable database identity.
-The local owner is explicit and receives only the granular `read`, `task-write`,
-`knowledge-write`, and `memory-write` capabilities. Administrative authority is
-not granted. Missing or invalid identity fails safely.
+Exactly one root-secret selector is required for authorization. Seedbed derives
+non-extractable, installation-bound and domain-separated keys with HKDF-SHA-256.
+Changing the secret, installation, or base IRI fails closed across restarts.
 
 ## Docker
 
-The image runs as the unprivileged `node` user, uses `tini`, declares no exposed
-port, defaults to `mcp --stdio`, and stores SQLite at
-`/var/lib/seedbed/gnolith.sqlite`.
+The image runs as the unprivileged `node` user, uses `tini`, exposes no port,
+defaults to MCP stdio, and stores SQLite at `/var/lib/seedbed/gnolith.sqlite`.
+Mount the root secret read-only; do not pass its bytes as an environment value. On
+Linux it must be owned so the image's non-root `node` user can read it while group
+and other permission bits remain clear (for example, owner-readable mode `0400`).
 
 ```sh
 docker volume create seedbed-data
 docker run --rm -i \
   -v seedbed-data:/var/lib/seedbed \
+  -v /host/secret/seedbed-root:/run/secrets/seedbed-root:ro \
   -e SEEDBED_BASE_IRI=https://example.com/my-gnolith/ \
-  -e SEEDBED_LOCAL_OWNER_ID=local-owner \
-  ghcr.io/gnolith/seedbed:0.1.1 init
-
-docker run --rm -i \
-  -v seedbed-data:/var/lib/seedbed \
-  -e SEEDBED_BASE_IRI=https://example.com/my-gnolith/ \
-  -e SEEDBED_LOCAL_OWNER_ID=local-owner \
-  ghcr.io/gnolith/seedbed:0.1.1 mcp --stdio
+  -e SEEDBED_ROOT_SECRET_FILE=/run/secrets/seedbed-root \
+  ghcr.io/gnolith/seedbed:0.2.0 init
 ```
 
-See [release documentation](docs/release.md) for trusted-publisher and recovery
-details.
+See [`docs/migrations.md`](docs/migrations.md) for exact transition and recovery
+rules and [`docs/release.md`](docs/release.md) for trusted publishing.

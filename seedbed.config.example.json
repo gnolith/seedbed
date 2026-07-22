@@ -1,7 +1,9 @@
 {
   "databasePath": "./.seedbed/gnolith.sqlite",
   "baseIri": "https://example.invalid/gnolith/",
-  "localOwnerId": "local-owner",
+  "rootSecretFile": "/run/secrets/seedbed-root",
+  "principalSelector": "owner",
+  "workspaceSelector": "primary",
   "logLevel": "info",
   "shutdownTimeoutMs": 10000
 }

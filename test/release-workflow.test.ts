@@ -147,8 +147,8 @@ describe('release credential boundary', () => {
   it('stages verified exact component artifacts for the release image', () => {
     for (const [name, version, sha256] of ([
       ['diamond', '0.4.0', 'ac8e34810a8504bd891b36a199973f2d65ef652555644813c7a36f1c7016c9d2'],
-      ['taproot', '0.2.0', '04ce966dbcf0d4bacd43a0f8a34e3b545cfefb55ea9b5fd178334f8afce9de6c'],
-      ['workshop', '0.2.3', '8fafde79477831b1bbe71da9fa0d55e9546e9845bd1689f756668e81341ac791'],
+      ['taproot', '0.3.0', '2faf3d9bce7811da3fd61629a4cd8b63bb0a6de861d77347030b216ff3ccc347'],
+      ['workshop', '0.3.3', 'c2bc2f3763a3d693662b584d0ed2270936644ab3d23ecd699f0f8b4a2ed0cdc3'],
     ] as const)) {
       expect(imageJob).toContain(`stage_component '@gnolith/${name}' '${version}' 'gnolith-${name}-${version}.tgz'`);
       expect(imageJob).toContain(sha256);

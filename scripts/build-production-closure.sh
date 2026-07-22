@@ -51,6 +51,18 @@ echo 'materializing the integrity-locked production cache'
 npm ci --ignore-scripts --no-audit --no-fund --cache "$cache" --prefix "$root"
 echo 'verifying registry signatures for the locked production graph'
 npm --prefix "$root" audit signatures
+audit_report="$work/production-audit.json"
+set +e
+npm --prefix "$root" audit --omit=dev --json > "$audit_report"
+audit_status=$?
+set -e
+node - "$audit_report" "$audit_status" <<'NODE'
+const fs = require('fs');
+const [path, status] = process.argv.slice(2);
+const report = JSON.parse(fs.readFileSync(path, 'utf8'));
+const total = report.metadata?.vulnerabilities?.total;
+if (status !== '0' || total !== 0) throw new Error(`production audit failed closed (status ${status}, total ${String(total)})`);
+NODE
 rm -rf "$root/node_modules"
 # Prove that the fresh cache is a complete offline realization of the lock.
 echo 'reinstalling the complete production graph with offline mode and an invalid registry'
@@ -123,8 +135,8 @@ const path = require('path');
 const root = process.argv[2];
 const expected = {
   diamond: '0.4.0',
-  taproot: '0.2.0',
-  workshop: '0.2.3',
+  taproot: '0.3.0',
+  workshop: '0.3.3',
   seedbed: JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version,
 };
 for (const [name, version] of Object.entries(expected)) {

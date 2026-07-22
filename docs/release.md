@@ -62,6 +62,21 @@ checkout and artifact actions.
 
 ## Dependency release inputs
 
+Seedbed 0.2.0 binds Workshop 0.3.3 to annotated `v0.3.3` and exact source commit
+`6c6accddc1d84351c16486ba36b65f711e822c8c`. Its authoritative npm tarball has
+SHA-256 `c2bc2f3763a3d693662b584d0ed2270936644ab3d23ecd699f0f8b4a2ed0cdc3`
+and integrity
+`sha512-IXIExUsrVUv74a2ajci6Zml0LUSnumiUwRpfhNhxAiT1ApnIwqpwc3OB1GWi/Ny9GXo3U90e6vlmjMV9cYRSEg==`.
+The successful tag-driven release workflow published through OIDC, verified the
+sole matching SLSA statement and exact registry bytes, then created the immutable
+GitHub Release last. Seedbed consumes only that registry artifact.
+
+Workshop
+`v0.3.2` exists as an immutable GitHub source Release, but its release run stopped
+before npm publication because the tagged release gate ran before artifact
+preparation. No `@gnolith/workshop@0.3.2` package exists, and Seedbed must never
+substitute that source tag or a local repack for the 0.3.3 registry artifact.
+
 Seedbed 0.1.1 binds Workshop 0.2.3's source identity to the peeled `v0.2.3` tag
 commit `bf168ebd21cc0c4529fc721c1e1ab9b498b4ddd5`. Its assembly, packed-package,
 and Docker gates consume the published npm artifact, not a Seedbed-side source
@@ -79,19 +94,50 @@ without incorrectly requiring path-dependent repacks to be byte-identical. The
 verified registry tarball is the single Workshop input used by all Seedbed release
 acceptance paths.
 
-## Tracked production advisory
+## Production advisory remediation
 
-The 0.1.1 production tree contains
-`@modelcontextprotocol/sdk@1.29.0 -> @hono/node-server@1.19.14`, which is affected by
-moderate advisory GHSA-frvp-7c67-39w9 (`@hono/node-server <2.0.5`). The vulnerable
-Windows `serve-static` path is not reachable through Seedbed's stdio-only process
-surface, and the container is Linux, but the code remains installed. The latest MCP
-SDK still constrains Hono to `^1.19.9`; npm's suggested SDK downgrade and an
-unsupported Hono major override are not accepted as safe release fixes. Track the
-upstream remediation in [issue #11](https://github.com/gnolith/seedbed/issues/11).
-The high-severity production audit gate therefore passes with two audit entries for
-this one upstream moderate advisory; reviewers must explicitly accept this residual
-risk before release.
+The historical 0.1.1 production tree contains
+`@modelcontextprotocol/sdk@1.29.0 -> @hono/node-server@1.19.14`, affected by moderate
+advisory GHSA-frvp-7c67-39w9. Seedbed is an application/CLI distribution whose MCP
+surface is stdio-only, so 0.2.0 compiles only the SDK server, protocol, and stdio code
+reachable from `src/mcp.ts` into a package-owned artifact. The SDK is an exact build
+dependency rather than a published runtime dependency; Gnolith and Node/native
+dependencies remain external. Hono HTTP server code is neither reachable nor shipped.
+
+The checked-in MCP runtime SBOM records every included package with exact registry
+integrity, source, version, and license, plus SHA-256 for every input and output. Build
+verification rejects Hono, StreamableHTTP, and serve-static bytes. Clean packed-consumer
+install and invalid-registry offline `npm ci` gates both parse npm's JSON report and
+require exactly zero production vulnerabilities; advisory thresholds are not used as
+a substitute. This narrow bundle is temporary until the upstream SDK exposes a stable
+stdio-only package without the Hono dependency, at which point the removal issue must
+be completed rather than retaining a hidden fork.
+
+The repository retains a root-only development override to
+`@hono/node-server@2.0.11` while SDK 1.29.0 remains a build/test dependency. The full
+development audit and stdio build/tests verify that hardening. The override is absent
+from the published runtime and Docker closure manifests and can be removed with the
+SDK build dependency when upstream provides the stable stdio-only surface.
+
+## 0.2.0 candidate acceptance
+
+The authorization candidate was exercised on 2026-07-22 against only the exact
+public Diamond 0.4.0, Taproot 0.3.0, and Workshop 0.3.3 registry tarballs. Registry
+signature verification succeeded for the complete development tree and for the
+fresh production closure. The packed-process test initialized and bootstrapped a
+new installation, performed Task/Memory operations across process restarts, applied
+a revision-bound principal manifest, then proved the disabled principal was denied
+in a new process.
+
+The production closure was realized from an empty npm cache, verified against the
+committed SHA-512 lock, and reinstalled offline with the registry set to an invalid
+local endpoint. The Node 24 image accepted only the exact
+`0.4.0 / 0.3.0 / 0.3.3 / 0.2.0` tuple, ran as non-root, exposed no ports, and had no
+listening TCP or TCP6 sockets while MCP stdio was active. A replacement container
+reopened the same named volume and authorized data; replacement with a different
+root secret failed closed. SIGTERM drained in-flight writes and the database reopened
+ready. These are candidate gates, not release evidence: the tagged release workflow
+must rebuild, content-address, and reverify its own exact closure before publication.
 
 ## Failed 0.1.0 publication evidence
 
