@@ -182,8 +182,9 @@ export async function createSeedbedTaprootRuntime(
       if (context.capabilities.includes('search:admin')) {
         await materialization.run(context, { maxJobs: 100, maxRebuildRoots: 100 });
         const status = await semantic.status(context);
+        const signal = AbortSignal.timeout(config.shutdownTimeoutMs);
         for (const plan of status.plans.filter(({ state }) => state === 'approved' || state === 'running')) {
-          await semantic.resume(plan.planId, context, backgroundAbort.signal);
+          await semantic.resume(plan.planId, context, signal);
         }
       }
     },
@@ -256,6 +257,7 @@ async function callTaprootTool(
     case 'semantic_pause': await semantic.pause(requiredString(args.planId, 'planId'), context); return { paused: true };
     case 'semantic_stop': await semantic.stop(requiredString(args.planId, 'planId'), context); return { stopped: true };
     case 'semantic_retry': await semantic.retry(requiredString(args.planId, 'planId'), context); return { retried: true };
+    case 'semantic_exclude': await semantic.exclude(requiredString(args.configurationId, 'configurationId'), requiredInteger(args.generation, 'generation'), requiredString(args.derivedId, 'derivedId'), requiredString(args.reason, 'reason'), context); return { excluded: true };
     case 'semantic_retire': await semantic.retire(requiredString(args.configurationId, 'configurationId'), context); return { retired: true };
     case 'semantic_delete': await semantic.deleteEmbeddings(requiredString(args.configurationId, 'configurationId'), context); return { deleted: true };
     case 'sparql_query': {
@@ -279,7 +281,7 @@ async function callTaprootTool(
 function toolDefinitions(): readonly WorkshopToolDefinition[] {
   const read = ['search', 'search_hydrate', 'content_resource_get', 'content_resource_hydrate', 'content_annotation_get'] as const;
   const write = ['content_resource_create', 'content_resource_update', 'content_resource_delete', 'content_annotation_create', 'content_annotation_update', 'content_annotation_delete'] as const;
-  const admin = ['search_admin_health', 'search_admin_run', 'search_admin_retry_dead', 'search_admin_rebuild', 'search_admin_activate', 'semantic_status', 'semantic_select', 'semantic_reconnect', 'semantic_estimate', 'semantic_approve', 'semantic_run', 'semantic_resume', 'semantic_pause', 'semantic_stop', 'semantic_retry', 'semantic_retire', 'semantic_delete'] as const;
+  const admin = ['search_admin_health', 'search_admin_run', 'search_admin_retry_dead', 'search_admin_rebuild', 'search_admin_activate', 'semantic_status', 'semantic_select', 'semantic_reconnect', 'semantic_estimate', 'semantic_approve', 'semantic_run', 'semantic_resume', 'semantic_pause', 'semantic_stop', 'semantic_retry', 'semantic_exclude', 'semantic_retire', 'semantic_delete'] as const;
   const make = (name: string, capability: 'read' | 'knowledge-write' | 'search:admin' | 'admin'): WorkshopToolDefinition => ({
     name,
     title: name.replaceAll('_', ' '),

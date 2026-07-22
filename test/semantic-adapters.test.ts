@@ -6,7 +6,11 @@ import {
   createOllamaCompatibleEmbeddingProviderV1,
   createOpenAICompatibleEmbeddingProviderV1,
   createQdrantVectorIndexV1,
+  createSqliteVectorIndexV1,
+  applyTaprootMigrations,
 } from '@gnolith/taproot';
+import { NodeSqliteDatabase } from '@gnolith/diamond/node-sqlite';
+import { migrateDiamondStore } from '@gnolith/diamond';
 import { loadConfig } from '../src/config.js';
 import { createCredentialReader } from '../src/secrets.js';
 
@@ -57,5 +61,25 @@ describe('semantic host attachments', () => {
     const attachment = config.semanticConfigurations?.[0];
     expect(JSON.stringify(config)).not.toContain('selector-canary');
     await expect(createCredentialReader(attachment?.provider.secret)!()).resolves.toBe('selector-canary');
+  });
+
+  it('persists SQLite vectors and applies visibility before returning candidates', async () => {
+    const db = new NodeSqliteDatabase(':memory:');
+    try {
+      await migrateDiamondStore(db);
+      await applyTaprootMigrations(db, { baseIri: 'https://semantic.seedbed.test/' });
+      const vectors = createSqliteVectorIndexV1(db);
+      await vectors.validate(2, 'cosine');
+      await vectors.upsert([
+        { id: 'public', installationId: 'installation', configurationId: 'config', generation: 1, kind: 'resource', sourceId: 'public', sourceRevision: '1', documentId: 'public-doc', chunkId: null, contentHash: 'a'.repeat(64), authorization: { version: 1, clauses: [] }, selector: null, vector: [1, 0] },
+        { id: 'private', installationId: 'installation', configurationId: 'config', generation: 1, kind: 'resource', sourceId: 'private', sourceRevision: '1', documentId: 'private-doc', chunkId: null, contentHash: 'b'.repeat(64), authorization: { version: 1, clauses: [[{ kind: 'principal', principalId: 'someone-else' }]] }, selector: null, vector: [1, 0] },
+      ], 2, 'cosine');
+      const result = await vectors.query({ installationId: 'installation', configurationId: 'config', generation: 1, kinds: ['resource'], vector: [1, 0], limit: 5, context: { installationId: 'installation', principalId: 'owner', activeWorkspaceId: null, workspaceIds: [], capabilities: ['read'], authorizationRevision: 1 } }, 2, 'cosine');
+      expect(result).toEqual([{ derivedId: 'public', score: 1 }]);
+      await vectors.delete({ installationId: 'installation', configurationId: 'config' });
+      await expect(vectors.query({ installationId: 'installation', configurationId: 'config', generation: 1, kinds: ['resource'], vector: [1, 0], limit: 5, context: { installationId: 'installation', principalId: 'owner', activeWorkspaceId: null, workspaceIds: [], capabilities: ['read'], authorizationRevision: 1 } }, 2, 'cosine')).resolves.toEqual([]);
+    } finally {
+      await db.close();
+    }
   });
 });
