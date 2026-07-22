@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "fixtureResources": 25,
+  "maximumIngestAndMaterializeMilliseconds": 15000,
+  "maximumSearchP95Milliseconds": 1000,
+  "maximumDatabaseBytes": 16777216
+}

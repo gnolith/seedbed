@@ -7,6 +7,7 @@ import { ExitCode, SeedbedError } from './errors.js';
 import { OperationLifecycle } from './lifecycle.js';
 import { requireReady, type TaprootAssembly } from './persistence.js';
 import { openAuthorization } from './authorization.js';
+import { createSeedbedTaprootRuntime } from './taproot-runtime.js';
 
 export interface SeedbedRuntime {
   readonly database: NodeSqliteDatabase;
@@ -33,16 +34,30 @@ export async function createSeedbedRuntime(config: SeedbedConfig, taproot: Tapro
       },
       diamondHealth: () => true,
     });
-    const dispatcher = createWorkshopToolDispatcher(core);
+    const workshopDispatcher = createWorkshopToolDispatcher(core);
+    const resolvePrincipal = () => bundle.resolveContext(config.principalSelector!, config.workspaceSelector);
+    const taprootRuntime = await createSeedbedTaprootRuntime(database, config, bundle, workshopDispatcher, resolvePrincipal);
+    const dispatcher = taprootRuntime.dispatcher;
     const lifecycle = new OperationLifecycle();
+    const drainTaproot = async () => {
+      try {
+        await taprootRuntime.drain(await resolvePrincipal());
+      } catch (error) {
+        if (!(error instanceof SeedbedError) || error.code !== 'forbidden') throw error;
+      }
+    };
     return {
       database,
       dispatcher,
       principal,
       lifecycle,
-      async drain() { await lifecycle.drain(config.shutdownTimeoutMs); },
+      async drain() {
+        await lifecycle.drain(config.shutdownTimeoutMs);
+        await drainTaproot();
+      },
       async close() {
         await lifecycle.drain(config.shutdownTimeoutMs);
+        await drainTaproot();
         await database.close();
       },
     };

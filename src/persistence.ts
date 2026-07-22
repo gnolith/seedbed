@@ -87,10 +87,10 @@ export interface MigrationTestHooks {
 }
 
 const versions: MigrationVersions = {
-  diamond: '0.4.0',
-  taproot: '0.3.0',
+  diamond: '0.4.1',
+  taproot: '0.4.0',
   workshop: '0.3.3',
-  seedbed: '0.2.2',
+  seedbed: '0.3.0',
 };
 
 const workshopKnownMigrations = workshopMigrations.map(({ id, sql }) => ({
@@ -98,7 +98,8 @@ const workshopKnownMigrations = workshopMigrations.map(({ id, sql }) => ({
   statements: sql.split(/;\s*(?:\r?\n|$)/u).map((statement) => statement.trim()).filter(Boolean),
 }));
 const predecessorWorkshopMigrations = workshopKnownMigrations.slice(0, 3);
-const predecessorTaprootMigrations = taprootMigrations.slice(0, 3);
+const preAuthorizationTaprootMigrations = taprootMigrations.slice(0, 3);
+const v030TaprootMigrations = taprootMigrations.slice(0, 5);
 
 const currentMigrationPlan: ComponentMigrationPlan = {
   target: versions,
@@ -117,7 +118,7 @@ const currentMigrationPlan: ComponentMigrationPlan = {
     taproot: {
       async verify(db) {
         try {
-          await verifyNamespace(db, '@gnolith/taproot', predecessorTaprootMigrations);
+          await verifyNamespace(db, '@gnolith/taproot', preAuthorizationTaprootMigrations);
           return await isExactPreAuthorizationTaprootSchema(db)
             ? { ready: true }
             : { ready: false, detail: 'Taproot is not the exact pre-authorization predecessor schema' };
@@ -129,6 +130,29 @@ const currentMigrationPlan: ComponentMigrationPlan = {
     workshop: {
       migrations: predecessorWorkshopMigrations,
       verify: verifyPredecessorWorkshopSchema,
+    },
+  }, {
+    versions: { diamond: '0.4.0', taproot: '0.3.0', workshop: '0.3.3', seedbed: '0.2.2' },
+    diamond: {
+      migrations: diamondMigrations,
+      async verify(db) {
+        const inspection = await inspectStoreSchema(db);
+        return inspection.valid ? { ready: true } : { ready: false, detail: inspection.errors.join('; ') };
+      },
+    },
+    taproot: {
+      async verify(db) {
+        try {
+          await verifyNamespace(db, '@gnolith/taproot', v030TaprootMigrations);
+          return { ready: true };
+        } catch (error) {
+          return { ready: false, detail: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    },
+    workshop: {
+      migrations: workshopKnownMigrations,
+      verify: verifyCurrentWorkshopSchema,
     },
   }],
   diamond: {

@@ -1,0 +1,248 @@
+import { readFile } from 'node:fs/promises';
+import { isAbsolute, relative, resolve } from 'node:path';
+import {
+  TaprootContentRepositoryV1,
+  createAuthorizedSearchServiceV1,
+  createSearchMaterializationAdminGuardV1,
+  createSemanticSearchAdminV1,
+  createSqliteVectorIndexV1,
+  createQdrantVectorIndexV1,
+  createOpenAICompatibleEmbeddingProviderV1,
+  createOllamaCompatibleEmbeddingProviderV1,
+  type AuthorizationContext,
+  type PortableResourcePayloadStoreV1,
+  type SearchRequest,
+  type SearchResultV1,
+  type SemanticSearchAdminV1,
+} from '@gnolith/taproot';
+import type { NodeSqliteDatabase } from '@gnolith/diamond/node-sqlite';
+import type { WorkshopToolCall, WorkshopToolDispatchContext, WorkshopToolDispatcher, WorkshopToolDefinition } from '@gnolith/workshop/core';
+import { normalizeWorkshopError, type WorkshopPrincipal } from '@gnolith/workshop/protocol';
+import type { ResourcePayloadV1 } from '@gnolith/taproot';
+import type { SeedbedAuthorityBundle } from './authorization.js';
+import type { SeedbedConfig } from './config.js';
+import { createCredentialReader } from './secrets.js';
+
+const publicVisibility = Object.freeze({ version: 1 as const, clauses: Object.freeze([]) });
+
+export interface SeedbedTaprootRuntime {
+  readonly content: TaprootContentRepositoryV1;
+  readonly semantic: SemanticSearchAdminV1;
+  readonly dispatcher: WorkshopToolDispatcher;
+  drain(context: AuthorizationContext): Promise<void>;
+}
+
+export async function createSeedbedTaprootRuntime(
+  db: NodeSqliteDatabase,
+  config: SeedbedConfig,
+  bundle: SeedbedAuthorityBundle,
+  workshop: WorkshopToolDispatcher,
+  resolvePrincipal: () => Promise<AuthorizationContext>,
+): Promise<SeedbedTaprootRuntime> {
+  const payloadStore = nativePayloadStore(config.blobPath ?? resolve(config.databasePath, '..', 'blobs'));
+  const content = new TaprootContentRepositoryV1(db, {
+    installationId: bundle.installationId,
+    payloadStore,
+  });
+  const semantic = createSemanticSearchAdminV1(db, { installationId: bundle.installationId });
+  const materialization = await createSearchMaterializationAdminGuardV1(
+    db,
+    { baseIri: config.baseIri! },
+    bundle.hostCapability,
+    { payloadStore },
+  );
+  const initial = await resolvePrincipal();
+  if (initial.capabilities.includes('search:admin')) await materialization.initialize(initial);
+  if (initial.capabilities.includes('search:admin')) {
+    for (const attachment of config.semanticConfigurations ?? []) {
+      const providerOptions = {
+        endpoint: attachment.provider.endpoint,
+        model: attachment.provider.model,
+        dimensions: attachment.provider.dimensions,
+        ...(attachment.provider.metric ? { metric: attachment.provider.metric } : {}),
+        ...(attachment.provider.allowPrivateEndpoint === undefined ? {} : { allowPrivateEndpoint: attachment.provider.allowPrivateEndpoint }),
+        ...(attachment.provider.secret ? { secret: createCredentialReader(attachment.provider.secret)! } : {}),
+      };
+      const provider = attachment.provider.kind === 'openai-compatible'
+        ? createOpenAICompatibleEmbeddingProviderV1(providerOptions)
+        : createOllamaCompatibleEmbeddingProviderV1(providerOptions);
+      const vectorIndex = attachment.vectorIndex.kind === 'sqlite'
+        ? createSqliteVectorIndexV1(db)
+        : createQdrantVectorIndexV1({
+          endpoint: attachment.vectorIndex.endpoint!,
+          collection: attachment.vectorIndex.collection!,
+          ...(attachment.vectorIndex.allowPrivateEndpoint === undefined ? {} : { allowPrivateEndpoint: attachment.vectorIndex.allowPrivateEndpoint }),
+          ...(attachment.vectorIndex.secret ? { secret: createCredentialReader(attachment.vectorIndex.secret)! } : {}),
+        });
+      await semantic.configure({
+        id: attachment.id,
+        name: attachment.name,
+        provider,
+        vectorIndex,
+        ...(attachment.vectorIndex.endpoint ? { vectorEndpoint: attachment.vectorIndex.endpoint } : {}),
+      }, initial);
+      if (attachment.selected) await semantic.select(attachment.id, initial);
+    }
+  }
+  const search = createAuthorizedSearchServiceV1(db, {
+    installationId: bundle.installationId,
+    content,
+    semantic,
+  });
+
+  const taprootTools = toolDefinitions();
+  const byName = new Map(taprootTools.map((tool) => [tool.name, tool]));
+  const dispatcher: WorkshopToolDispatcher = Object.freeze({
+    tools: Object.freeze([...workshop.tools, ...taprootTools]),
+    listTools(principal: WorkshopPrincipal | null) {
+      const base = workshop.listTools(principal);
+      if (!base.ok) return base;
+      if (!principal) return base;
+      return {
+        ok: true as const,
+        value: Object.freeze([
+          ...base.value,
+          ...taprootTools.filter((tool) => principal.capabilities.includes(tool.capability)),
+        ]),
+      };
+    },
+    async callTool(call: WorkshopToolCall, context: WorkshopToolDispatchContext) {
+      if (!byName.has(call.name)) {
+        try {
+          const result = await workshop.callTool(call, { ...context, principal: await resolvePrincipal() });
+          if (result.ok) {
+            const refreshed = await resolvePrincipal();
+            if (refreshed.capabilities.includes('search:admin')) {
+              await materialization.run(refreshed, { maxJobs: 100, maxRebuildRoots: 100 });
+            }
+          }
+          return result;
+        } catch (error) {
+          if (isForbidden(error)) return failure('forbidden', 'forbidden', 'Authorization is no longer active');
+          const normalized = normalizeWorkshopError(error);
+          return failure('operation', normalized.code, normalized.message, normalized.details);
+        }
+      }
+      try {
+        const principal = await resolvePrincipal();
+        const tool = byName.get(call.name)!;
+        if (!principal.capabilities.includes(tool.capability)) {
+          return failure('forbidden', 'forbidden', `Exact ${tool.capability} capability is required`);
+        }
+        const args = objectArguments(call.arguments);
+        const value = await callTaprootTool(call.name, args, principal, content, search, semantic, materialization, context.signal);
+        if (call.name.startsWith('content_')) {
+          const refreshed = await resolvePrincipal();
+          if (refreshed.capabilities.includes('search:admin')) {
+            await materialization.run(refreshed, { maxJobs: 100, maxRebuildRoots: 100 });
+          }
+        }
+        return { ok: true as const, value };
+      } catch (error) {
+        const normalized = normalizeWorkshopError(error);
+        return failure('operation', normalized.code, normalized.message, normalized.details);
+      }
+    },
+  });
+
+  return Object.freeze({
+    content,
+    semantic,
+    dispatcher,
+    async drain(context: AuthorizationContext) {
+      if (context.capabilities.includes('search:admin')) {
+        await materialization.run(context, { maxJobs: 100, maxRebuildRoots: 100 });
+      }
+    },
+  });
+}
+
+function nativePayloadStore(rootInput: string): PortableResourcePayloadStoreV1 {
+  const root = resolve(rootInput);
+  return Object.freeze({
+    kind: 'taproot-resource-payload-store-v1' as const,
+    async load(reference: Extract<ResourcePayloadV1, { kind: 'location' }>, signal?: AbortSignal) {
+      if (signal?.aborted) throw signal.reason ?? new Error('operation aborted');
+      if (reference.storage !== 'blob') throw new Error('native Seedbed loads only installation-owned blob payloads');
+      const candidate = resolve(root, reference.location);
+      const child = relative(root, candidate);
+      if (!child || child.startsWith('..') || isAbsolute(child)) throw new Error('blob location escapes the installation store');
+      return new Uint8Array(await readFile(candidate));
+    },
+  });
+}
+
+async function callTaprootTool(
+  name: string,
+  args: Record<string, unknown>,
+  context: AuthorizationContext,
+  content: TaprootContentRepositoryV1,
+  search: ReturnType<typeof createAuthorizedSearchServiceV1>,
+  semantic: SemanticSearchAdminV1,
+  materialization: Awaited<ReturnType<typeof createSearchMaterializationAdminGuardV1>>,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const metadata = () => ({
+    context,
+    attribution: { id: context.principalId, kind: 'human' as const },
+    workspaceId: context.activeWorkspaceId,
+    ownerPrincipalId: context.principalId,
+    visibility: (args.visibility ?? publicVisibility) as typeof publicVisibility,
+    expectedAuthorizationRevision: context.authorizationRevision,
+  });
+  switch (name) {
+    case 'search': return search.search(args as unknown as SearchRequest, context);
+    case 'search_hydrate': return search.hydrate(requiredObject(args.result, 'result') as unknown as SearchResultV1, context);
+    case 'content_resource_create': return content.createResource(requiredObject(args.resource, 'resource') as never, metadata());
+    case 'content_resource_get': return content.getResource(requiredString(args.id, 'id'), context);
+    case 'content_resource_hydrate': return { bytesBase64: Buffer.from(await content.hydrateResourcePayload(requiredString(args.id, 'id'), context, signal)).toString('base64') };
+    case 'content_resource_update': return content.updateResource(requiredString(args.id, 'id'), requiredInteger(args.expectedRevision, 'expectedRevision'), requiredObject(args.patch, 'patch') as never, metadata());
+    case 'content_resource_delete': return content.deleteResource(requiredString(args.id, 'id'), requiredInteger(args.expectedRevision, 'expectedRevision'), metadata());
+    case 'content_annotation_create': return content.createAnnotation(requiredObject(args.annotation, 'annotation') as never, metadata());
+    case 'content_annotation_get': return content.getAnnotation(requiredString(args.id, 'id'), context);
+    case 'content_annotation_update': return content.updateAnnotation(requiredString(args.id, 'id'), requiredInteger(args.expectedRevision, 'expectedRevision'), requiredObject(args.annotation, 'annotation') as never, metadata());
+    case 'content_annotation_delete': return content.deleteAnnotation(requiredString(args.id, 'id'), requiredInteger(args.expectedRevision, 'expectedRevision'), metadata());
+    case 'search_admin_health': return materialization.health(context);
+    case 'search_admin_run': return materialization.run(context, { maxJobs: optionalBound(args.maxJobs, 100), maxRebuildRoots: optionalBound(args.maxRebuildRoots, 100) });
+    case 'search_admin_retry_dead': return { retried: await materialization.retryDead(context, { limit: optionalBound(args.limit, 100) }) };
+    case 'search_admin_rebuild': return { shadowCorpusGeneration: await materialization.startShadowRebuild(context) };
+    case 'search_admin_activate': return { activeCorpusGeneration: await materialization.activateReadyShadow(context) };
+    case 'semantic_status': return semantic.status(context);
+    case 'semantic_select': await semantic.select(requiredString(args.configurationId, 'configurationId'), context); return { selected: true };
+    case 'semantic_reconnect': return { connected: await semantic.reconnect(requiredString(args.configurationId, 'configurationId'), context) };
+    case 'semantic_estimate': return semantic.estimate(requiredString(args.configurationId, 'configurationId'), requiredObject(args.policy, 'policy') as never, context);
+    case 'semantic_approve': await semantic.approve(requiredString(args.planId, 'planId'), context); return { approved: true };
+    case 'semantic_run': return semantic.run(requiredString(args.planId, 'planId'), context, signal);
+    case 'semantic_resume': return semantic.resume(requiredString(args.planId, 'planId'), context, signal);
+    case 'semantic_pause': await semantic.pause(requiredString(args.planId, 'planId'), context); return { paused: true };
+    case 'semantic_stop': await semantic.stop(requiredString(args.planId, 'planId'), context); return { stopped: true };
+    case 'semantic_retry': await semantic.retry(requiredString(args.planId, 'planId'), context); return { retried: true };
+    case 'semantic_retire': await semantic.retire(requiredString(args.configurationId, 'configurationId'), context); return { retired: true };
+    case 'semantic_delete': await semantic.deleteEmbeddings(requiredString(args.configurationId, 'configurationId'), context); return { deleted: true };
+    default: throw new Error(`Unknown Taproot tool ${name}`);
+  }
+}
+
+function toolDefinitions(): readonly WorkshopToolDefinition[] {
+  const read = ['search', 'search_hydrate', 'content_resource_get', 'content_resource_hydrate', 'content_annotation_get'] as const;
+  const write = ['content_resource_create', 'content_resource_update', 'content_resource_delete', 'content_annotation_create', 'content_annotation_update', 'content_annotation_delete'] as const;
+  const admin = ['search_admin_health', 'search_admin_run', 'search_admin_retry_dead', 'search_admin_rebuild', 'search_admin_activate', 'semantic_status', 'semantic_select', 'semantic_reconnect', 'semantic_estimate', 'semantic_approve', 'semantic_run', 'semantic_resume', 'semantic_pause', 'semantic_stop', 'semantic_retry', 'semantic_retire', 'semantic_delete'] as const;
+  const make = (name: string, capability: 'read' | 'knowledge-write' | 'search:admin'): WorkshopToolDefinition => ({
+    name,
+    title: name.replaceAll('_', ' '),
+    description: `Seedbed Taproot ${name.replaceAll('_', ' ')} operation`,
+    capability,
+    inputSchema: { type: 'object', properties: {}, additionalProperties: true },
+  });
+  return Object.freeze([...read.map((name) => make(name, 'read')), ...write.map((name) => make(name, 'knowledge-write')), ...admin.map((name) => make(name, 'search:admin'))]);
+}
+
+function failure(kind: 'forbidden' | 'operation', code: Parameters<typeof normalizeWorkshopError>[0] extends never ? never : 'forbidden' | 'bad_request' | 'validation_failed' | 'unauthenticated' | 'not_found' | 'conflict' | 'limit_exceeded' | 'query_rejected' | 'query_timeout' | 'cancelled' | 'dependency_unavailable' | 'internal_error', message: string, details?: Readonly<Record<string, unknown>>) {
+  return { ok: false as const, failure: { kind, error: { code, message, ...(details ? { details } : {}) } } };
+}
+function objectArguments(value: unknown): Record<string, unknown> { return value && !Array.isArray(value) && typeof value === 'object' ? value as Record<string, unknown> : {}; }
+function requiredObject(value: unknown, name: string): Record<string, unknown> { if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error(`${name} must be an object`); return value as Record<string, unknown>; }
+function requiredString(value: unknown, name: string): string { if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} must be a non-empty string`); return value; }
+function requiredInteger(value: unknown, name: string): number { if (!Number.isSafeInteger(value) || Number(value) < 1) throw new Error(`${name} must be a positive integer`); return Number(value); }
+function optionalBound(value: unknown, fallback: number): number { if (value === undefined) return fallback; return requiredInteger(value, 'limit'); }
+function isForbidden(error: unknown): boolean { return !!error && typeof error === 'object' && 'code' in error && error.code === 'forbidden'; }

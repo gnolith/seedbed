@@ -80,6 +80,13 @@ Taproot `knowledge:policy`. These Taproot capabilities are required by its guard
 installation advance and are distinct from Workshop's `knowledge-write`; generic
 `admin` implies none of them.
 
+Taproot's `search` and `search_hydrate` tools provide the single relevance-search
+surface. Seedbed owns Resource and Annotation CRUD/hydration tools and runs the
+bounded Taproot materializer after successful mutations and during graceful drain.
+Materialization and semantic maintenance tools require exact `search:admin`.
+Task, Memory, and Prompt results are enabled only when their exact Workshop-owned
+producer adapters are present; Seedbed does not duplicate those domain owners.
+
 Structured results are one-line JSON on stdout. Diagnostics and JSON logs go only
 to stderr. Exit codes are `0` success, `2` usage, `3` configuration, `4`
 persistence/readiness, `5` authorization, and `6` operation failure.
@@ -104,6 +111,14 @@ Precedence is CLI, then `SEEDBED_*` environment variables, then
 Exactly one root-secret selector is required for authorization. Seedbed derives
 non-extractable, installation-bound and domain-separated keys with HKDF-SHA-256.
 Changing the secret, installation, or base IRI fails closed across restarts.
+
+Optional `semanticConfigurations` are declared only in the JSON configuration.
+Each chooses an OpenAI- or Ollama-compatible embedding endpoint and either SQLite
+or Qdrant vectors. Provider and Qdrant credentials use `{ "file": "..." }` or
+`{ "fd": 3 }` selectors; literal credential values, environment credential bytes,
+CLI credential flags, and MCP credential arguments are intentionally unsupported.
+Private endpoints require the explicit `allowPrivateEndpoint` opt-in. See
+[`seedbed.config.example.json`](seedbed.config.example.json) for the complete shape.
 
 ## Snapshot and restore
 

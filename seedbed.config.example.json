@@ -7,6 +7,21 @@
   "principalSelector": "owner",
   "workspaceSelector": "primary",
   "logLevel": "info",
-  "shutdownTimeoutMs": 10000
+  "shutdownTimeoutMs": 10000,
+  "semanticConfigurations": [
+    {
+      "id": "local-ollama",
+      "name": "Local Ollama with SQLite vectors",
+      "selected": true,
+      "provider": {
+        "kind": "ollama-compatible",
+        "endpoint": "http://127.0.0.1:11434",
+        "model": "nomic-embed-text",
+        "dimensions": 768,
+        "allowPrivateEndpoint": true
+      },
+      "vectorIndex": { "kind": "sqlite" }
+    }
+  ]
 }
 

@@ -1,7 +1,7 @@
 import { lstat, open, readFile } from 'node:fs/promises';
 import { constants, readSync } from 'node:fs';
 import { subtle, type webcrypto } from 'node:crypto';
-import type { SeedbedConfig } from './config.js';
+import type { SecretSelector, SeedbedConfig } from './config.js';
 import { ExitCode, SeedbedError } from './errors.js';
 
 const encoder = new TextEncoder();
@@ -84,4 +84,33 @@ async function readRootSecret(config: SeedbedConfig): Promise<Uint8Array> {
 
 function secretError(message: string): SeedbedError {
   return new SeedbedError(message, ExitCode.configuration, 'invalid_root_secret');
+}
+
+/** Returns a process-local credential callback; selector metadata is safe to persist, secret bytes are not. */
+export function createCredentialReader(selector: SecretSelector | undefined): (() => Promise<string>) | undefined {
+  if (!selector) return undefined;
+  let inherited: string | undefined;
+  return async () => {
+    if (selector.file !== undefined) {
+      const metadata = await lstat(selector.file);
+      if (metadata.isSymbolicLink() || !metadata.isFile()) throw secretError('Credential selector must identify a regular non-symbolic-link file');
+      if (process.platform !== 'win32' && (metadata.mode & 0o077) !== 0) throw secretError('Credential file must not be accessible by group or others');
+      const value = (await readFile(selector.file, 'utf8')).trim();
+      if (!value) throw secretError('Credential source must not be empty');
+      return value;
+    }
+    if (inherited !== undefined) return inherited;
+    const buffer = Buffer.alloc(65_537);
+    let count = 0;
+    while (count < buffer.length) {
+      const size = readSync(selector.fd!, buffer, count, buffer.length - count, null);
+      if (size === 0) break;
+      count += size;
+    }
+    if (count === buffer.length) throw secretError('Credential source exceeds 65536 bytes');
+    inherited = buffer.subarray(0, count).toString('utf8').trim();
+    buffer.fill(0);
+    if (!inherited) throw secretError('Credential source must not be empty');
+    return inherited;
+  };
 }
