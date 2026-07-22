@@ -58,6 +58,7 @@
     "test:coverage": "vitest run --coverage",
     "test:packed": "node scripts/packed-system-test.mjs",
     "test:docker": "node scripts/docker-smoke.mjs",
+    "test:qdrant": "node scripts/qdrant-qualification.mjs",
     "test:published": "node scripts/published-system-test.mjs",
     "check": "npm run typecheck && npm test && npm run build && npm run bundle:verify && npm run security:runtime-check && npm run pack:check",
     "security:runtime-check": "node scripts/audit-zero.mjs --full && node scripts/audit-zero.mjs",
