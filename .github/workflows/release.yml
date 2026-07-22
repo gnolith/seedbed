@@ -1,36 +1,53 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: seedbed-release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
   package:
-    if: startsWith(github.event.release.tag_name, 'v')
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
     outputs:
       sha256: ${{ steps.package.outputs.sha256 }}
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      staging_artifact_id: ${{ steps.upload-staging.outputs.artifact-id }}
+      staging_artifact_digest: ${{ steps.upload-staging.outputs.artifact-digest }}
+      integrity: ${{ steps.package.outputs.integrity }}
+      version: ${{ steps.identity.outputs.version }}
+      closure_sha256: ${{ steps.closure.outputs.sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.ref }}
+          fetch-depth: 0
       - uses: ./.github/actions/setup-node
       - id: identity
         shell: bash
         run: |
-          tag="${{ github.event.release.tag_name }}"
+          tag="${{ github.ref_name }}"
           [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]
           version="${BASH_REMATCH[1]}"
-          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git cat-file -t "refs/tags/$tag")" = tag
+          tag_commit=$(git rev-parse "refs/tags/$tag^{commit}")
+          test "$tag_commit" = "$(git rev-parse HEAD)"
+          test "$tag_commit" = "${{ github.sha }}"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$tag_commit" origin/main
           test "$(node -p "require('./package.json').version")" = "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$tag_commit" >> "$GITHUB_OUTPUT"
       - run: npm ci
       - run: npm run check
       - id: package
@@ -66,7 +83,28 @@ jobs:
             "$sha256" "$SEEDBED_VERSION" "$filename" > "$publication_dir/seedbed-publication.json"
           rm -- "$pack_json" "$packed_manifest"
           echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "integrity=$integrity" >> "$GITHUB_OUTPUT"
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+      - name: Fail closed on existing npm, GHCR, or GitHub Release state
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_INTEGRITY: ${{ steps.package.outputs.integrity }}
+          SEEDBED_VERSION: ${{ steps.identity.outputs.version }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          test "$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            repos/gnolith/seedbed/immutable-releases --jq .enabled)" = true
+          node scripts/release-preflight.mjs npm \
+            "https://registry.npmjs.org/@gnolith%2fseedbed/$SEEDBED_VERSION" \
+            '@gnolith/seedbed' "$SEEDBED_VERSION" "$EXPECTED_INTEGRITY" \
+            | tee "$RUNNER_TEMP/npm-preflight.json"
+          node scripts/release-preflight.mjs ghcr \
+            'https://api.github.com/orgs/gnolith/packages/container/seedbed/versions?per_page=100&state=active' \
+            "$SEEDBED_VERSION" | tee "$RUNNER_TEMP/ghcr-preflight.json"
+          node scripts/release-preflight.mjs release \
+            "https://api.github.com/repos/gnolith/seedbed/releases/tags/$RELEASE_TAG" \
+            "$RELEASE_TAG" | tee "$RUNNER_TEMP/release-preflight.json"
       - id: upload
         name: Upload the content-addressed publication artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -75,6 +113,78 @@ jobs:
           path: |
             ${{ runner.temp }}/npm-publication/seedbed-publication-${{ steps.package.outputs.sha256 }}.tgz
             ${{ runner.temp }}/npm-publication/seedbed-publication.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - name: Stage and verify exact public component artifacts before publication
+        shell: bash
+        run: |
+          stage_component() {
+            package="$1"
+            version="$2"
+            filename="$3"
+            expected_sha256="$4"
+            metadata="$RUNNER_TEMP/${filename%.tgz}-metadata.json"
+            pack="$RUNNER_TEMP/${filename%.tgz}-pack.json"
+            npm view "$package@$version" --json > "$metadata"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).name" "$metadata")" = "$package"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$metadata")" = "$version"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.provenance?.predicateType || ''" "$metadata")" = 'https://slsa.dev/provenance/v1'
+            npm pack "$package@$version" --json > "$pack"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))[0].filename" "$pack")" = "$filename"
+            test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))[0].integrity" "$pack")" = \
+              "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.integrity" "$metadata")"
+            echo "$expected_sha256  $filename" | sha256sum --check
+          }
+          stage_component '@gnolith/diamond' '0.4.0' 'gnolith-diamond-0.4.0.tgz' \
+            'ac8e34810a8504bd891b36a199973f2d65ef652555644813c7a36f1c7016c9d2'
+          stage_component '@gnolith/taproot' '0.3.0' 'gnolith-taproot-0.3.0.tgz' \
+            '2faf3d9bce7811da3fd61629a4cd8b63bb0a6de861d77347030b216ff3ccc347'
+          stage_component '@gnolith/workshop' '0.3.3' 'gnolith-workshop-0.3.3.tgz' \
+            'c2bc2f3763a3d693662b584d0ed2270936644ab3d23ecd699f0f8b4a2ed0cdc3'
+          npm audit signatures
+      - name: Test the exact staged package assembly before publication
+        env:
+          DIAMOND_TGZ: ${{ github.workspace }}/gnolith-diamond-0.4.0.tgz
+          TAPROOT_TGZ: ${{ github.workspace }}/gnolith-taproot-0.3.0.tgz
+          WORKSHOP_TGZ: ${{ github.workspace }}/gnolith-workshop-0.3.3.tgz
+        run: npm run test:packed
+      - id: closure
+        name: Stage the locked production closure before publication
+        env:
+          SEEDBED_INTEGRITY: ${{ steps.package.outputs.integrity }}
+          SEEDBED_SHA256: ${{ steps.package.outputs.sha256 }}
+        shell: bash
+        run: |
+          seedbed="$RUNNER_TEMP/npm-publication/seedbed-publication-$SEEDBED_SHA256.tgz"
+          bash scripts/build-production-closure.sh \
+            "$seedbed" "$SEEDBED_INTEGRITY" \
+            gnolith-diamond-0.4.0.tgz \
+            gnolith-taproot-0.3.0.tgz \
+            gnolith-workshop-0.3.3.tgz
+          closure_sha=$(cut -d ' ' -f 1 gnolith-production-closure.tar.gz.sha256)
+          [[ "$closure_sha" =~ ^[0-9a-f]{64}$ ]]
+          echo "sha256=$closure_sha" >> "$GITHUB_OUTPUT"
+      - name: Build and functionally verify the staged image before publication
+        env:
+          CLOSURE_SHA256: ${{ steps.closure.outputs.sha256 }}
+          SEEDBED_CLOSURE_SHA256: ${{ steps.closure.outputs.sha256 }}
+        shell: bash
+        run: |
+          docker build \
+            --build-arg PRODUCTION_CLOSURE_SHA256="$CLOSURE_SHA256" \
+            --build-arg REVISION=${{ steps.identity.outputs.commit }} \
+            --tag seedbed:release-candidate .
+          SEEDBED_TEST_IMAGE=seedbed:release-candidate npm run test:docker
+      - id: upload-staging
+        name: Upload the verified release staging evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: seedbed-staging-${{ steps.package.outputs.sha256 }}-attempt-${{ github.run_attempt }}
+          path: |
+            gnolith-production-closure.tar.gz
+            gnolith-production-closure.tar.gz.sha256
+            docs/mcp-runtime-sbom.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
@@ -92,7 +202,7 @@ jobs:
           archive=node-v24.14.0-linux-x64.tar.xz
           expected=41cd79bb7877c81605a9e68ec4c91547774f46a40c67a17e34d7179ef11729df
           install_root="$RUNNER_TEMP/node-v24.14.0-linux-x64"
-          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+          curl --fail --silent --show-error --location --connect-timeout 5 --max-time 30 --proto '=https' --tlsv1.2 \
             --output "$RUNNER_TEMP/$archive" "https://nodejs.org/dist/v24.14.0/$archive"
           echo "$expected  $RUNNER_TEMP/$archive" | sha256sum --check
           tar --extract --xz --file "$RUNNER_TEMP/$archive" --directory "$RUNNER_TEMP"
@@ -114,7 +224,7 @@ jobs:
           EXPECTED_ARTIFACT_ID: ${{ needs.package.outputs.artifact_id }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.package.outputs.artifact_digest }}
           EXPECTED_COMMIT: ${{ github.sha }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
         shell: bash
         run: |
           [[ "$RELEASE_TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]
@@ -182,9 +292,9 @@ jobs:
           root_packument_url="https://registry.npmjs.org/@gnolith%2fseedbed"
           audit_dir="$RUNNER_TEMP/npm-provenance-audit"
           registry_ready() {
-            registry_status=$(curl --silent --show-error --location \
+            registry_status=$(curl --silent --show-error --location --connect-timeout 5 --max-time 15 \
               --output "$registry_response" --write-out '%{http_code}' "$registry_url")
-            root_packument_status=$(curl --silent --show-error --location \
+            root_packument_status=$(curl --silent --show-error --location --connect-timeout 5 --max-time 15 \
               --output "$root_packument" --write-out '%{http_code}' "$root_packument_url")
             test "$registry_status" = 200 || return 1
             test "$root_packument_status" = 200 || return 1
@@ -235,7 +345,7 @@ jobs:
             npm audit signatures | tee "$RUNNER_TEMP/npm-signature-audit.txt"
             grep -Eq '[1-9][0-9]* packages? (has|have) (a )?verified attestations?' "$RUNNER_TEMP/npm-signature-audit.txt"
             attestation_response="$RUNNER_TEMP/npm-provenance-attestations.json"
-            curl --fail --silent --show-error --location \
+            curl --fail --silent --show-error --location --connect-timeout 5 --max-time 15 \
               --output "$attestation_response" "$attestations_url"
             node - "$attestation_response" "$expected_version" "$expected_sha512_hex" "$expected_ref" "$EXPECTED_COMMIT" <<'NODE'
           const fs = require('fs');
@@ -269,7 +379,7 @@ jobs:
           }
           NODE
           }
-          registry_status=$(curl --silent --show-error --location \
+          registry_status=$(curl --silent --show-error --location --connect-timeout 5 --max-time 15 \
             --output "$registry_response" --write-out '%{http_code}' "$registry_url")
           if test "$registry_status" = 200; then
             wait_for_registry
@@ -284,17 +394,23 @@ jobs:
           verify_registry_provenance
 
   image:
-    needs: publish
+    needs: [package, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
       id-token: write
       attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      closure_sha256: ${{ steps.closure.outputs.sha256 }}
+      evidence_artifact_id: ${{ steps.upload-image-evidence.outputs.artifact-id }}
+      evidence_artifact_digest: ${{ steps.upload-image-evidence.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.ref }}
+          fetch-depth: 0
       - uses: ./.github/actions/setup-node
       - run: npm config set registry https://registry.npmjs.org
       - run: npm ci --ignore-scripts
@@ -329,7 +445,7 @@ jobs:
       - id: identity
         shell: bash
         run: |
-          tag="${{ github.event.release.tag_name }}"
+          tag="${{ github.ref_name }}"
           [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]
           version="${BASH_REMATCH[1]}"
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
@@ -358,32 +474,48 @@ jobs:
             gnolith-taproot-0.3.0.tgz \
             gnolith-workshop-0.3.3.tgz
           closure_sha=$(cut -d ' ' -f 1 gnolith-production-closure.tar.gz.sha256)
-          test -n "$closure_sha"
+          test "$closure_sha" = "${{ needs.package.outputs.closure_sha256 }}"
           echo "sha256=$closure_sha" >> "$GITHUB_OUTPUT"
       - name: Verify the exact published process assembly
         env:
           SEEDBED_VERSION: ${{ steps.identity.outputs.version }}
         run: npm run test:published
       - id: build
-        name: Build and push the provenance-attested image
+        name: Publish once or recover the exact provenance-attested version image
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SEEDBED_VERSION: ${{ steps.identity.outputs.version }}
+          CLOSURE_SHA256: ${{ steps.closure.outputs.sha256 }}
         shell: bash
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
-          docker buildx create --use --driver docker-container
-          docker buildx build . \
-            --push \
-            --provenance=mode=max \
-            --sbom=true \
-            --build-arg PRODUCTION_CLOSURE_SHA256=${{ steps.closure.outputs.sha256 }} \
-            --build-arg REVISION=${{ github.sha }} \
-            --tag ghcr.io/gnolith/seedbed:${{ steps.identity.outputs.version }} \
-            --label org.opencontainers.image.version=${{ steps.identity.outputs.version }} \
-            --label org.opencontainers.image.revision=${{ github.sha }} \
-            --metadata-file "$RUNNER_TEMP/build-metadata.json"
-          digest=$(node -p "require(process.env.RUNNER_TEMP + '/build-metadata.json')['containerimage.digest']")
-          test -n "$digest"
+          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+          state=$(node scripts/release-preflight.mjs ghcr \
+            'https://api.github.com/orgs/gnolith/packages/container/seedbed/versions?per_page=100&state=active' \
+            "$SEEDBED_VERSION" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).state")
+          image="ghcr.io/gnolith/seedbed:$SEEDBED_VERSION"
+          if test "$state" = absent; then
+            docker buildx create --use --driver docker-container
+            docker buildx build . \
+              --push \
+              --provenance=mode=max \
+              --sbom=true \
+              --build-arg PRODUCTION_CLOSURE_SHA256="$CLOSURE_SHA256" \
+              --build-arg REVISION=${{ github.sha }} \
+              --tag "$image" \
+              --label org.opencontainers.image.version="$SEEDBED_VERSION" \
+              --label org.opencontainers.image.revision=${{ github.sha }} \
+              --metadata-file "$RUNNER_TEMP/build-metadata.json"
+            digest=$(node -p "require(process.env.RUNNER_TEMP + '/build-metadata.json')['containerimage.digest']")
+          elif test "$state" = match; then
+            digest="sha256:$(docker buildx imagetools inspect --raw "$image" | sha256sum | cut -d ' ' -f 1)"
+          else
+            echo 'GHCR preflight returned an impossible state' >&2
+            exit 1
+          fi
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-      - shell: bash
+      - name: Verify the exact immutable version image and provenance
+        shell: bash
         run: |
           docker pull "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}"
           test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{len .Config.ExposedPorts}}')" = "0"
@@ -391,10 +523,162 @@ jobs:
           test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "${{ steps.identity.outputs.version }}"
           test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "${{ github.sha }}"
           test "$(docker image inspect "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" --format '{{index .Config.Labels "org.gnolith.production-closure.sha256"}}')" = "${{ steps.closure.outputs.sha256 }}"
+          mkdir image-evidence
+          docker buildx imagetools inspect --raw \
+            "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" > image-evidence/image-manifest.json
+          test "sha256:$(sha256sum image-evidence/image-manifest.json | cut -d ' ' -f 1)" = \
+            "${{ steps.build.outputs.digest }}"
+          gh attestation verify "oci://ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" \
+            --repo gnolith/seedbed | tee image-evidence/image-provenance-verification.txt
+          test -s image-evidence/image-provenance-verification.txt
       - name: Functionally verify the immutable published image
         env:
           SEEDBED_TEST_IMAGE: ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}
           SEEDBED_CLOSURE_SHA256: ${{ steps.closure.outputs.sha256 }}
         run: npm run test:docker
-      - shell: bash
-        run: docker buildx imagetools create --tag ghcr.io/gnolith/seedbed:latest "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}"
+      - name: Move latest only after exact version verification
+        shell: bash
+        run: |
+          docker buildx imagetools create --tag ghcr.io/gnolith/seedbed:latest \
+            "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}"
+          latest_digest="sha256:$(docker buildx imagetools inspect --raw ghcr.io/gnolith/seedbed:latest | sha256sum | cut -d ' ' -f 1)"
+          test "$latest_digest" = "${{ steps.build.outputs.digest }}"
+      - id: upload-image-evidence
+        name: Upload the verified image evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: seedbed-image-evidence-${{ steps.build.outputs.digest }}-attempt-${{ github.run_attempt }}
+          path: image-evidence
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  release:
+    needs: [package, publish, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      attestations: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-node
+      - name: Download the exact npm and staging artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }},${{ needs.package.outputs.staging_artifact_id }},${{ needs.image.outputs.evidence_artifact_id }}
+          path: ${{ runner.temp }}/release-assets
+          merge-multiple: true
+      - name: Create or recover the immutable GitHub Release last
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          SEEDBED_VERSION: ${{ needs.package.outputs.version }}
+          NPM_SHA256: ${{ needs.package.outputs.sha256 }}
+          NPM_INTEGRITY: ${{ needs.package.outputs.integrity }}
+          NPM_ARTIFACT_ID: ${{ needs.package.outputs.artifact_id }}
+          NPM_ARTIFACT_DIGEST: ${{ needs.package.outputs.artifact_digest }}
+          STAGING_ARTIFACT_ID: ${{ needs.package.outputs.staging_artifact_id }}
+          STAGING_ARTIFACT_DIGEST: ${{ needs.package.outputs.staging_artifact_digest }}
+          CLOSURE_SHA256: ${{ needs.image.outputs.closure_sha256 }}
+          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+          IMAGE_EVIDENCE_ARTIFACT_ID: ${{ needs.image.outputs.evidence_artifact_id }}
+          IMAGE_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.image.outputs.evidence_artifact_digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/release-assets"
+          test "$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            repos/gnolith/seedbed/immutable-releases --jq .enabled)" = true
+          npm_tarball="$assets/seedbed-publication-$NPM_SHA256.tgz"
+          test -f "$npm_tarball" && test ! -L "$npm_tarball"
+          test "$(sha256sum "$npm_tarball" | cut -d ' ' -f 1)" = "$NPM_SHA256"
+          test "$(cut -d ' ' -f 1 "$assets/gnolith-production-closure.tar.gz.sha256")" = "$CLOSURE_SHA256"
+          closure_asset="$assets/seedbed-production-closure-$CLOSURE_SHA256.tar.gz"
+          mv "$assets/gnolith-production-closure.tar.gz" "$closure_asset"
+          sbom_sha=$(sha256sum "$assets/mcp-runtime-sbom.json" | cut -d ' ' -f 1)
+          sbom_asset="$assets/seedbed-mcp-runtime-sbom-$sbom_sha.json"
+          mv "$assets/mcp-runtime-sbom.json" "$sbom_asset"
+          manifest_sha=$(sha256sum "$assets/image-manifest.json" | cut -d ' ' -f 1)
+          test "sha256:$manifest_sha" = "$IMAGE_DIGEST"
+          manifest_asset="$assets/seedbed-image-manifest-$manifest_sha.json"
+          mv "$assets/image-manifest.json" "$manifest_asset"
+          provenance_sha=$(sha256sum "$assets/image-provenance-verification.txt" | cut -d ' ' -f 1)
+          provenance_asset="$assets/seedbed-image-provenance-verification-$provenance_sha.txt"
+          mv "$assets/image-provenance-verification.txt" "$provenance_asset"
+          evidence="$assets/seedbed-release-evidence.json"
+          node - "$evidence" <<'NODE'
+          const fs = require('fs');
+          const path = process.argv[2];
+          const required = [
+            'RELEASE_TAG', 'RELEASE_COMMIT', 'SEEDBED_VERSION', 'NPM_SHA256', 'NPM_INTEGRITY',
+            'NPM_ARTIFACT_ID', 'NPM_ARTIFACT_DIGEST', 'STAGING_ARTIFACT_ID',
+            'STAGING_ARTIFACT_DIGEST', 'CLOSURE_SHA256', 'IMAGE_DIGEST',
+            'IMAGE_EVIDENCE_ARTIFACT_ID', 'IMAGE_EVIDENCE_ARTIFACT_DIGEST',
+          ];
+          for (const name of required) if (!process.env[name]) throw new Error(`missing ${name}`);
+          const evidence = {
+            schemaVersion: 1,
+            package: { name: '@gnolith/seedbed', version: process.env.SEEDBED_VERSION, sha256: process.env.NPM_SHA256, integrity: process.env.NPM_INTEGRITY },
+            source: { repository: 'https://github.com/gnolith/seedbed', tag: process.env.RELEASE_TAG, commit: process.env.RELEASE_COMMIT, workflow: '.github/workflows/release.yml' },
+            components: { diamond: '0.4.0', taproot: '0.3.0', workshop: '0.3.3' },
+            closure: { sha256: process.env.CLOSURE_SHA256 },
+            image: { reference: `ghcr.io/gnolith/seedbed@${process.env.IMAGE_DIGEST}`, digest: process.env.IMAGE_DIGEST, sbom: true, provenance: 'mode=max' },
+            handoffs: {
+              npm: { artifactId: process.env.NPM_ARTIFACT_ID, digest: process.env.NPM_ARTIFACT_DIGEST },
+              staging: { artifactId: process.env.STAGING_ARTIFACT_ID, digest: process.env.STAGING_ARTIFACT_DIGEST },
+              image: { artifactId: process.env.IMAGE_EVIDENCE_ARTIFACT_ID, digest: process.env.IMAGE_EVIDENCE_ARTIFACT_DIGEST },
+            },
+          };
+          fs.writeFileSync(path, `${JSON.stringify(evidence, null, 2)}\n`);
+          NODE
+          evidence_sha=$(sha256sum "$evidence" | cut -d ' ' -f 1)
+          evidence_asset="$assets/seedbed-release-evidence-$evidence_sha.json"
+          mv "$evidence" "$evidence_asset"
+          expected_assets="$RUNNER_TEMP/expected-release-assets.txt"
+          printf '%s\n' \
+            "$(basename "$npm_tarball")" \
+            "$(basename "$closure_asset")" \
+            "$(basename "$sbom_asset")" \
+            "$(basename "$manifest_asset")" \
+            "$(basename "$provenance_asset")" \
+            "$(basename "$evidence_asset")" | sort > "$expected_assets"
+
+          release_state=$(node scripts/release-preflight.mjs release \
+            "https://api.github.com/repos/gnolith/seedbed/releases/tags/$RELEASE_TAG" \
+            "$RELEASE_TAG" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).state")
+          draft_count=$(gh release list --limit 100 --json tagName,isDraft \
+            --jq "[.[] | select(.tagName == \"$RELEASE_TAG\" and .isDraft == true)] | length")
+          if test "$release_state" = absent && test "$draft_count" = 0; then
+            gh release create "$RELEASE_TAG" \
+              "$npm_tarball" "$closure_asset" "$sbom_asset" "$manifest_asset" \
+              "$provenance_asset" "$evidence_asset" \
+              --verify-tag --title "Seedbed $SEEDBED_VERSION" --notes-from-tag --latest
+          elif test "$release_state" = absent && test "$draft_count" = 1; then
+            recovery="$RUNNER_TEMP/release-recovery"
+            mkdir "$recovery"
+            gh release download "$RELEASE_TAG" --dir "$recovery"
+            find "$recovery" -maxdepth 1 -type f -printf '%f\n' | sort > "$RUNNER_TEMP/recovery-assets.txt"
+            cmp "$expected_assets" "$RUNNER_TEMP/recovery-assets.txt"
+            for local_asset in "$npm_tarball" "$closure_asset" "$sbom_asset" "$manifest_asset" "$provenance_asset" "$evidence_asset"; do
+              cmp "$local_asset" "$recovery/$(basename "$local_asset")"
+            done
+            gh release edit "$RELEASE_TAG" --draft=false --latest
+          elif test "$release_state" = match && test "$draft_count" = 0; then
+            echo 'The exact immutable GitHub Release already exists; verifying recovery evidence.'
+          else
+            echo 'GitHub Release preflight found conflicting published/draft state' >&2
+            exit 1
+          fi
+
+          gh release verify "$RELEASE_TAG"
+          test "$(gh release view "$RELEASE_TAG" --json isDraft,isImmutable,isPrerelease,tagName \
+            --jq '[.isDraft, .isImmutable, .isPrerelease, .tagName] | @tsv')" = $'false\ttrue\tfalse\t'"$RELEASE_TAG"
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/final-assets.txt"
+          cmp "$expected_assets" "$RUNNER_TEMP/final-assets.txt"
+          for local_asset in "$npm_tarball" "$closure_asset" "$sbom_asset" "$manifest_asset" "$provenance_asset" "$evidence_asset"; do
+            gh release verify-asset "$RELEASE_TAG" "$local_asset"
+          done

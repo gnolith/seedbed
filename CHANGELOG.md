@@ -24,6 +24,9 @@
 - Replace the temporary npm bootstrap token path with OIDC-only trusted publishing.
 - Retry root-packument propagation and a clean exact-version install before accepting
   post-publish registry evidence.
+- Drive releases from protected annotated `v*` tags, fail closed on remote artifact
+  conflicts, verify recoverable npm and GHCR publication by exact identity, and create
+  the content-addressed immutable GitHub Release only after all package/runtime gates.
 
 ## 0.1.1 - 2026-07-21
 
