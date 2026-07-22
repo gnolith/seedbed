@@ -118,10 +118,10 @@ install_exact_package() {
 # Replace lock-installed top-level packages with the already independently
 # verified publication artifacts so the image bytes and provenance subjects
 # are the same objects.
+npm --prefix "$root" ls --omit=dev --all --json > "$root/production-tree.json"
 install_exact_package "$diamond" '@gnolith/diamond'
 install_exact_package "$taproot" '@gnolith/taproot'
 install_exact_package "$workshop" '@gnolith/workshop'
-npm --prefix "$root" ls --omit=dev --all --json > "$root/production-tree.json"
 install_exact_package "$seedbed" '@gnolith/seedbed'
 chmod 0755 "$root/node_modules/@gnolith/seedbed/dist/cli.js"
 mkdir -p "$root/node_modules/.bin"
@@ -134,9 +134,9 @@ const fs = require('fs');
 const path = require('path');
 const root = process.argv[2];
 const expected = {
-  diamond: '0.4.0',
-  taproot: '0.3.0',
-  workshop: '0.3.3',
+  diamond: '0.4.1',
+  taproot: '0.4.0',
+  workshop: '0.4.0',
   seedbed: JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version,
 };
 for (const [name, version] of Object.entries(expected)) {

@@ -294,6 +294,8 @@ failed attempt. The reviewed correction derives an absolute tooling path from
 `github.workspace`, and an executable regression invokes the same validator from a
 foreign temporary working directory.
 
+Recovery run [`29925752072`](https://github.com/gnolith/seedbed/actions/runs/29925752072) passed the frozen trust, npm, GHCR, and asset-staging checks, then failed at `gh release create` because the workspace root was not a Git repository. It created no GitHub Release or draft and made no public mutation.
+
 ## Failed 0.1.0 publication evidence
 
 The `v0.1.0` source tag points to commit

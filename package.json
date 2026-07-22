@@ -1,6 +1,6 @@
 {
   "name": "@gnolith/seedbed",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Headless local process assembly for Gnolith.",
   "type": "module",
   "private": false,
@@ -58,8 +58,10 @@
     "test:coverage": "vitest run --coverage",
     "test:packed": "node scripts/packed-system-test.mjs",
     "test:docker": "node scripts/docker-smoke.mjs",
+    "test:qdrant": "node scripts/qdrant-qualification.mjs",
     "test:published": "node scripts/published-system-test.mjs",
-    "check": "npm run typecheck && npm test && npm run build && npm run bundle:verify && npm run security:runtime-check && npm run pack:check",
+    "check": "npm run typecheck && npm test && npm run build && npm run bundle:verify && npm run evidence:verify && npm run security:runtime-check && npm run pack:check",
+    "evidence:verify": "node scripts/verify-acceptance-evidence.mjs",
     "security:runtime-check": "node scripts/audit-zero.mjs --full && node scripts/audit-zero.mjs",
     "bundle:inventory": "node scripts/bundled-runtime-inventory.mjs --write",
     "bundle:verify": "node scripts/bundled-runtime-inventory.mjs --verify",
@@ -67,9 +69,9 @@
     "prepack": "npm run build && npm run bundle:verify"
   },
   "dependencies": {
-    "@gnolith/diamond": "0.4.0",
-    "@gnolith/taproot": "0.3.0",
-    "@gnolith/workshop": "0.3.3"
+    "@gnolith/diamond": "0.4.1",
+    "@gnolith/taproot": "0.4.0",
+    "@gnolith/workshop": "0.4.0"
   },
   "overrides": {
     "@hono/node-server": "2.0.11"

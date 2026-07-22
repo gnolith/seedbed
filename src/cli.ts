@@ -28,6 +28,11 @@ import {
   type PrincipalAuthorizationUpdate,
 } from './authorization.js';
 import { requireBaseIri } from './config.js';
+import {
+  createInstallationSnapshot,
+  inspectInstallationSnapshot,
+  restoreInstallationSnapshot,
+} from './snapshot.js';
 
 const help = `Usage: seedbed [global options] <command> [command options]
 
@@ -40,6 +45,10 @@ Headless commands:
   auth apply --manifest <path>   declaratively replace one principal's authorization
   auth backfill taproot --manifest <path>
   auth backfill workshop --domain <task|memory>
+  snapshot create --output <path>  create a consistent secret-free installation snapshot
+  snapshot inspect --input <path>  print a snapshot manifest without restoring it
+  snapshot verify --input <path>   verify every database/blob checksum
+  snapshot restore --input <path>  restore into an empty native installation
   mcp --stdio                  run MCP over stdin/stdout
   tools                        list authorized tools as JSON
   call <name> [--arguments J]  call one tool and print JSON
@@ -47,6 +56,8 @@ Headless commands:
 Global options:
   --config <path>
   --database <path>
+  --blobs <path>
+  --busy-timeout-ms <milliseconds>
   --base-iri <absolute-http(s)-url>
   --root-secret-file <path>    selector for an exact 32-byte secret file
   --root-secret-fd <number>    selector for an inherited secret descriptor
@@ -66,7 +77,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return ExitCode.success;
   }
   if (argv.includes('--version')) {
-    process.stdout.write('0.2.2\n');
+    process.stdout.write('0.3.0\n');
     return ExitCode.success;
   }
   const parsed = parseGlobal(argv);
@@ -96,6 +107,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }
     case 'auth':
       return runAuthorizationCommand(parsed.args, config, taproot);
+    case 'snapshot':
+      return runSnapshotCommand(parsed.args, config, taproot);
     case 'mcp':
       if (parsed.args.length !== 1 || parsed.args[0] !== '--stdio') usage('mcp requires exactly --stdio');
       await runMcpStdio(await createSeedbedRuntime(config, taproot), logger);
@@ -144,6 +157,8 @@ function parseGlobal(argv: string[]): ParsedArguments {
     switch (option) {
       case '--config': config.configPath = value; break;
       case '--database': config.databasePath = value; break;
+      case '--blobs': config.blobPath = value; break;
+      case '--busy-timeout-ms': config.busyTimeoutMs = value; break;
       case '--base-iri': config.baseIri = value; break;
       case '--root-secret-file': config.rootSecretFile = value; break;
       case '--root-secret-fd': config.rootSecretFd = value; break;
@@ -157,6 +172,26 @@ function parseGlobal(argv: string[]): ParsedArguments {
   const command = argv[index];
   if (!command) usage('A command is required');
   return { command, args: argv.slice(index + 1), config };
+}
+
+async function runSnapshotCommand(
+  args: string[],
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  taproot: Awaited<ReturnType<typeof loadTaprootAssembly>>,
+): Promise<number> {
+  const subcommand = args[0];
+  const flag = subcommand === 'create' ? '--output' : '--input';
+  if (!['create', 'inspect', 'verify', 'restore'].includes(subcommand ?? '') || args.length !== 3 || args[1] !== flag || !args[2]) {
+    usage('snapshot requires create --output <path>, inspect --input <path>, verify --input <path>, or restore --input <path>');
+  }
+  const path = args[2]!;
+  const result = subcommand === 'create'
+    ? await createInstallationSnapshot(config, taproot, path)
+    : subcommand === 'restore'
+      ? await restoreInstallationSnapshot(config, taproot, path)
+      : await inspectInstallationSnapshot(path, subcommand === 'verify');
+  printJson(result);
+  return ExitCode.success;
 }
 
 function parseCall(args: string[]): { name: string; argumentsValue: Record<string, unknown> } {

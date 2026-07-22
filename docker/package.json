@@ -1,6 +1,6 @@
 {
   "name": "@gnolith/seedbed-production-closure",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "description": "Reviewed production-only dependency closure for the Seedbed image.",
   "license": "MIT",
@@ -8,8 +8,8 @@
     "node": ">=24 <25"
   },
   "dependencies": {
-    "@gnolith/diamond": "0.4.0",
-    "@gnolith/taproot": "0.3.0",
-    "@gnolith/workshop": "0.3.3"
+    "@gnolith/diamond": "0.4.1",
+    "@gnolith/taproot": "0.4.0",
+    "@gnolith/workshop": "0.4.0"
   }
 }

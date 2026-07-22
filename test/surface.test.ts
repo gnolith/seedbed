@@ -4,11 +4,23 @@ import { describe, expect, it } from 'vitest';
 describe('headless product boundary', () => {
   it('advertises only the approved process commands', async () => {
     const source = await readFile(new URL('../src/cli.ts', import.meta.url), 'utf8');
-    for (const command of ['init', 'migrate', 'doctor', 'auth', 'mcp', 'tools', 'call']) {
+    for (const command of ['init', 'migrate', 'doctor', 'auth', 'snapshot', 'mcp', 'tools', 'call']) {
       expect(source).toContain(`case '${command}'`);
     }
     expect(source).not.toMatch(/case ['"](?:serve|http|ui)['"]/u);
     expect(source).not.toMatch(/case ['"]sparql['"]/u);
+  });
+
+  it('keeps snapshot maintenance host-only and secret-free by construction', async () => {
+    const cli = await readFile(new URL('../src/cli.ts', import.meta.url), 'utf8');
+    const snapshot = await readFile(new URL('../src/snapshot.ts', import.meta.url), 'utf8');
+    const mcp = await readFile(new URL('../src/mcp.ts', import.meta.url), 'utf8');
+    expect(cli).toContain('snapshot create --output <path>');
+    expect(snapshot).toContain("secretsExported: false");
+    expect(snapshot).not.toContain('rootSecretFile:');
+    expect(snapshot).not.toContain('rootSecretFd:');
+    expect(mcp).not.toContain('createInstallationSnapshot');
+    expect(mcp).not.toContain('restoreInstallationSnapshot');
   });
 
   it('contains no listening socket implementation', async () => {

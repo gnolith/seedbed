@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Pin the native assembly to Diamond 0.4.1, Taproot 0.4.0, and Workshop 0.4.0, with explicit
+  migration from the released Seedbed 0.2.2 tuple.
+- Register Workshop Task, Memory, and Prompt search producers, advance durable
+  adoption headlessly, and prove authorized seven-kind search, hydration, and rebuild.
+- Compose Taproot Resource and Annotation ownership, bounded unified-search
+  materialization, authorized search/hydration, and semantic administration.
+- Add SQLite and Qdrant vector attachments plus OpenAI- and Ollama-compatible
+  embedding attachments. Credentials are selected only by protected file or
+  inherited descriptor and are never accepted as tool arguments or persisted.
+- Retain Workshop Task, Memory, and Prompt producer wiring as a release blocker
+  until an exact Workshop artifact compatible with Taproot 0.4 is published.
+
+## Unreleased
+
+- Add an explicit native installation adapter and future host-binding ports, plus
+  search-admin-gated consistent snapshot/inspect/verify/restore for the complete
+  SQLite installation and local blobs. Snapshots carry per-object integrity and
+  package identity but never secret selectors or credential material; restore
+  stages and validates everything before making the canonical database visible.
 - Add installation-bound authorization state with durable principals, workspaces,
   memberships, exact grants, immutable audit records, and Taproot-owned revisions.
 - Require an exact 32-byte root secret from a protected file or inherited descriptor;

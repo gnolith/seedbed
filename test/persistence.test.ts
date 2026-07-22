@@ -20,7 +20,7 @@ import type { SeedbedConfig } from '../src/config.js';
 const taprootMigration = { id: '0001-test-taproot', statements: ['CREATE TABLE taproot_test (id TEXT PRIMARY KEY) STRICT'] } as const;
 
 function fakeTaproot(): TaprootAssembly {
-  return fakeTaprootFor('0.3.0', [taprootMigration]);
+  return fakeTaprootFor('0.4.0', [taprootMigration]);
 }
 
 function fakeTaprootFor(
@@ -43,10 +43,10 @@ function fakeTaprootFor(
 }
 
 const currentVersions = {
-  diamond: '0.4.0',
-  taproot: '0.3.0',
-  workshop: '0.3.3',
-  seedbed: '0.2.2',
+  diamond: '0.4.1',
+  taproot: '0.4.0',
+  workshop: '0.4.0',
+  seedbed: '0.3.0',
 } as const;
 
 const futureVersions = {
@@ -229,9 +229,9 @@ describe('persistence coordinator', () => {
     const status = await initializeDatabase(config, fakeTaproot());
     expect(status.ready).toBe(true);
     expect(status.components.map(({ name, version }) => ({ name, version }))).toEqual([
-      { name: 'diamond', version: '0.4.0' },
-      { name: 'taproot', version: '0.3.0' },
-      { name: 'workshop', version: '0.3.3' },
+      { name: 'diamond', version: '0.4.1' },
+      { name: 'taproot', version: '0.4.0' },
+      { name: 'workshop', version: '0.4.0' },
     ]);
 
     const reopened = await requireReady(config, fakeTaproot());
@@ -596,7 +596,7 @@ describe('persistence coordinator', () => {
     await reached;
     const concurrent = await openDatabase(config);
     await concurrent.prepare("UPDATE seedbed_assembly SET seedbed_version = 'temporary', updated_at = '2026-07-21T23:59:58.000Z' WHERE singleton = 1").run();
-    await concurrent.prepare("UPDATE seedbed_assembly SET seedbed_version = '0.2.2', updated_at = '2026-07-21T23:59:59.000Z' WHERE singleton = 1").run();
+    await concurrent.prepare("UPDATE seedbed_assembly SET seedbed_version = '0.3.0', updated_at = '2026-07-21T23:59:59.000Z' WHERE singleton = 1").run();
     await concurrent.close();
     resumeMigration();
 

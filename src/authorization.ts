@@ -26,7 +26,7 @@ import { requireBaseIri } from './config.js';
 import { ExitCode, SeedbedError } from './errors.js';
 import { deriveInstallationKeys, type InstallationKeys } from './secrets.js';
 
-export const EXACT_CAPABILITIES = ['read', 'task-write', 'knowledge-write', 'knowledge:write', 'knowledge:policy', 'memory-write', 'admin', 'search:admin'] as const;
+export const EXACT_CAPABILITIES = ['read', 'task-write', 'knowledge-write', 'knowledge:write', 'knowledge:policy', 'memory-write', 'prompt-write', 'admin', 'search:admin'] as const;
 export type ExactCapability = typeof EXACT_CAPABILITIES[number];
 
 export const seedbedAuthorizationMigration = {
@@ -89,6 +89,28 @@ export const seedbedAuthorizationMigration = {
   ],
 } as const;
 
+export const seedbedPromptAuthorizationMigration = {
+  id: '0003-prompt-authorization-v1',
+  statements: [
+    `CREATE TABLE seedbed_capability_grants_v2 (
+      installation_id TEXT NOT NULL,
+      principal_selector TEXT NOT NULL,
+      capability TEXT NOT NULL CHECK (capability IN ('read','task-write','knowledge-write','knowledge:write','knowledge:policy','memory-write','prompt-write','admin','search:admin')),
+      PRIMARY KEY (installation_id, principal_selector, capability),
+      FOREIGN KEY (installation_id, principal_selector) REFERENCES seedbed_principals(installation_id, selector)
+    ) STRICT`,
+    `INSERT INTO seedbed_capability_grants_v2 (installation_id, principal_selector, capability)
+      SELECT installation_id, principal_selector, capability FROM seedbed_capability_grants`,
+    'DROP TABLE seedbed_capability_grants',
+    'ALTER TABLE seedbed_capability_grants_v2 RENAME TO seedbed_capability_grants',
+    `INSERT INTO seedbed_capability_grants (installation_id, principal_selector, capability)
+      SELECT installation_id, principal_selector, 'prompt-write'
+      FROM seedbed_capability_grants
+      GROUP BY installation_id, principal_selector
+      HAVING COUNT(*) = 8`,
+  ],
+} as const;
+
 interface InstallationRow { installation_id: string; base_iri: string; binding_tag: string; cursor_key_generation: number }
 interface TaggedStatement extends D1PreparedStatementLike {
   readonly __seedbedSql: string;
@@ -105,6 +127,7 @@ export interface SeedbedAuthorityBundle {
   readonly hostCapability: TaprootHostWriteCapability;
   authorizedReader(context: AuthorizationContext): ReturnType<typeof createAuthorizedTaproot>;
   resolveContext(principalSelector: string, workspaceSelector?: string): Promise<AuthorizationContext>;
+  resolveSearchAdminContext(): Promise<AuthorizationContext>;
 }
 
 export async function bootstrapAuthorization(
@@ -324,6 +347,31 @@ async function createAuthorityBundle(db: NodeSqliteDatabase, config: SeedbedConf
   const cursorGuard = await createInstallationDomainMutationGuard(db, { baseIri }, host, { domain: 'workshop-cursor-snapshot', capability: 'read' });
   const persistence = taggedPersistence(db);
   const authority = workshopAuthority(persistence, authorizationGuard, taskGuard, memoryGuard, taskBackfillGuard, memoryBackfillGuard, cursorGuard);
+  const resolveContext = async (principalSelector: string, workspaceSelector?: string): Promise<AuthorizationContext> => {
+    validateSelector(principalSelector);
+    if (workspaceSelector !== undefined) validateSelector(workspaceSelector);
+    const state = await authorizationGuard.readCurrentState();
+    const principalStatement = db.prepare(`SELECT enabled FROM seedbed_principals WHERE installation_id = ? AND selector = ?`)
+      .bind(installation.installation_id, principalSelector) as D1PreparedStatementLike;
+    const principal = await principalStatement.first<{ enabled: number }>();
+    if (principal?.enabled !== 1) throw authorizationError('Principal selector is not active');
+    const memberships = await db.prepare(`SELECT workspace_selector FROM seedbed_workspace_memberships
+      WHERE installation_id = ? AND principal_selector = ? ORDER BY workspace_selector`)
+      .bind(installation.installation_id, principalSelector).all<{ workspace_selector: string }>();
+    const workspaceIds = memberships.results.map(({ workspace_selector }) => workspace_selector);
+    if (workspaceSelector !== undefined && !workspaceIds.includes(workspaceSelector)) throw authorizationError('Workspace selector is not granted');
+    const grants = await db.prepare(`SELECT capability FROM seedbed_capability_grants
+      WHERE installation_id = ? AND principal_selector = ? ORDER BY capability`)
+      .bind(installation.installation_id, principalSelector).all<{ capability: string }>();
+    return freezeContext({
+      installationId: installation.installation_id,
+      principalId: principalSelector,
+      activeWorkspaceId: workspaceSelector ?? null,
+      workspaceIds,
+      capabilities: grants.results.map(({ capability }) => capability),
+      authorizationRevision: state.authorizationRevision,
+    });
+  };
   return {
     installationId: installation.installation_id,
     authority,
@@ -336,31 +384,18 @@ async function createAuthorityBundle(db: NodeSqliteDatabase, config: SeedbedConf
         cursorCodec: createAuthorizationCursorCodec(keys.taprootCursorAead),
       });
     },
-    async resolveContext(principalSelector, workspaceSelector) {
-      validateSelector(principalSelector);
-      if (workspaceSelector !== undefined) validateSelector(workspaceSelector);
-      const state = await authorizationGuard.readCurrentState();
-      const principalStatement = db.prepare(`SELECT enabled FROM seedbed_principals WHERE installation_id = ? AND selector = ?`)
-        .bind(installation.installation_id, principalSelector) as D1PreparedStatementLike;
-      const principal = await principalStatement.first<{ enabled: number }>();
-      if (principal?.enabled !== 1) throw authorizationError('Principal selector is not active');
-      const memberships = await db.prepare(`SELECT workspace_selector FROM seedbed_workspace_memberships
-        WHERE installation_id = ? AND principal_selector = ? ORDER BY workspace_selector`)
-        .bind(installation.installation_id, principalSelector).all<{ workspace_selector: string }>();
-      const workspaceIds = memberships.results.map(({ workspace_selector }) => workspace_selector);
-      if (workspaceSelector !== undefined && !workspaceIds.includes(workspaceSelector)) throw authorizationError('Workspace selector is not granted');
-      const grants = await db.prepare(`SELECT capability FROM seedbed_capability_grants
-        WHERE installation_id = ? AND principal_selector = ? ORDER BY capability`)
-        .bind(installation.installation_id, principalSelector).all<{ capability: string }>();
-      return freezeContext({
-        installationId: installation.installation_id,
-        principalId: principalSelector,
-        activeWorkspaceId: workspaceSelector ?? null,
-        workspaceIds,
-        capabilities: grants.results.map(({ capability }) => capability),
-        authorizationRevision: state.authorizationRevision,
-      });
+    async resolveSearchAdminContext() {
+      const statement = db.prepare(`SELECT p.selector
+        FROM seedbed_principals p
+        JOIN seedbed_capability_grants g
+          ON g.installation_id = p.installation_id AND g.principal_selector = p.selector
+        WHERE p.installation_id = ? AND p.enabled = 1 AND g.capability = 'search:admin'
+        ORDER BY p.selector LIMIT 1`).bind(installation.installation_id) as D1PreparedStatementLike;
+      const row = await statement.first<{ selector: string }>();
+      if (!row) throw authorizationError('No active search administrator is available for producer registration');
+      return resolveContext(row.selector);
     },
+    resolveContext,
   };
 }
 

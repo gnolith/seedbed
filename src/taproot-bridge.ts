@@ -6,7 +6,7 @@ import {
 import type { TaprootAssembly } from './persistence.js';
 
 const taprootAssembly: TaprootAssembly = {
-  version: '0.3.0',
+  version: '0.4.0',
   async migrate(db, baseIri) {
     await applyTaprootMigrations(db, { baseIri });
   },

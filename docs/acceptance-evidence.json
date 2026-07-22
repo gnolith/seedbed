@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "scope": "seedbed-owned-requirements",
+  "authoritativeParentLedger": "gnolith/seedbed#15",
+  "entries": [
+    { "id": "A01", "status": "complete", "proofs": ["test/taproot-runtime.test.ts", "scripts/packed-system-test.mjs"], "blockingCommand": "npm run test:packed" },
+    { "id": "D02", "status": "complete", "proofs": ["test/taproot-runtime.test.ts", "test/lifecycle.test.ts", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:docker" },
+    { "id": "D05", "status": "complete", "proofs": ["scripts/packed-system-test.mjs", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:packed && npm run test:docker" },
+    { "id": "G07", "status": "complete", "proofs": ["test/taproot-runtime.test.ts", "test/semantic-runtime.test.ts", "test/semantic-adapters.test.ts", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:docker" },
+    { "id": "H05", "status": "complete", "proofs": ["test/snapshot.test.ts", "scripts/packed-system-test.mjs"], "blockingCommand": "npm run test:packed" },
+    { "id": "H06", "status": "complete", "proofs": ["test/snapshot.test.ts", "test/semantic-runtime.test.ts", "test/semantic-adapters.test.ts", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:docker" },
+    { "id": "H07", "status": "complete", "proofs": ["test/snapshot.test.ts"], "blockingCommand": "npm run check" },
+    { "id": "H08", "status": "complete", "proofs": ["test/semantic-runtime.test.ts", "test/semantic-adapters.test.ts", "scripts/qdrant-qualification.mjs", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:qdrant && npm run test:docker" },
+    { "id": "I05", "status": "partial", "proofs": ["scripts/packed-system-test.mjs", "scripts/docker-smoke.mjs", "scripts/published-system-test.mjs"], "blockingCommand": "npm run check && npm run test:packed && npm run test:docker && npm run test:published", "remaining": "Final exact compatible package/image/published artifacts" },
+    { "id": "I08", "status": "complete", "proofs": ["test/taproot-runtime.test.ts", "scripts/packed-system-test.mjs", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:packed && npm run test:docker" },
+    { "id": "I16", "status": "complete", "proofs": ["test/snapshot.test.ts", "test/semantic-runtime.test.ts", "scripts/packed-system-test.mjs", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:packed && npm run test:docker" },
+    { "id": "I17", "status": "pending", "proofs": ["test/performance.test.ts", "docs/performance-baseline.json"], "blockingCommand": "npm run check && npm run test:packed && npm run test:docker", "remaining": "Final cross-repository 105-row reconciliation and seven-field release handoff" }
+  ]
+}
