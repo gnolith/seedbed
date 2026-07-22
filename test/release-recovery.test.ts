@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -344,10 +344,27 @@ describe('v0.2.2 immutable Release recovery', () => {
       'node "$RECOVERY_TOOLING" verify-npm-metadata "$RECOVERY_TAG" "$metadata"',
     );
     expect(npmStep?.run).not.toContain('node recovery-tooling/scripts/release-recovery.mjs');
-    const foreignCwd = await mkdtemp(join(tmpdir(), 'seedbed-recovery-foreign-cwd-'));
+    const metadataCommand = npmStep?.run?.split(/\r?\n/u)
+      .find((line) => line.trim() === 'node "$RECOVERY_TOOLING" verify-npm-metadata "$RECOVERY_TAG" "$metadata"')
+      ?.trim();
+    expect(metadataCommand).toBeDefined();
+    const commandRoot = await mkdtemp(join(tmpdir(), 'seedbed-recovery-command-'));
     try {
+      const foreignCwd = join(commandRoot, 'foreign-cwd');
+      const workflowWorkspace = join(commandRoot, 'workflow-workspace');
+      const workflowScripts = join(workflowWorkspace, 'recovery-tooling', 'scripts');
+      await mkdir(foreignCwd);
+      await mkdir(workflowScripts, { recursive: true });
+      await copyFile(
+        fileURLToPath(new URL('../scripts/release-recovery.mjs', import.meta.url)),
+        join(workflowScripts, 'release-recovery.mjs'),
+      );
+      await copyFile(
+        fileURLToPath(new URL('../scripts/release-preflight.mjs', import.meta.url)),
+        join(workflowScripts, 'release-preflight.mjs'),
+      );
       const definition = getV022RecoveryPlan('v0.2.2');
-      const metadataPath = join(foreignCwd, 'npm-metadata.json');
+      const metadataPath = join(commandRoot, 'npm-metadata.json');
       await writeFile(metadataPath, JSON.stringify({
         name: '@gnolith/seedbed', version: definition.version, dist: {
           integrity: definition.npmIntegrity, shasum: definition.npmShasum,
@@ -360,13 +377,31 @@ describe('v0.2.2 immutable Release recovery', () => {
           signatures: [{ keyid: definition.npmSignatureKeyId, sig: definition.npmSignature }],
         },
       }));
-      const toolingPath = fileURLToPath(new URL('../scripts/release-recovery.mjs', import.meta.url));
-      const foreignInvocation = spawnSync(process.execPath, [
-        toolingPath, 'verify-npm-metadata', 'v0.2.2', metadataPath,
-      ], { cwd: foreignCwd, encoding: 'utf8' });
+      const toolingFromWorkflow = npmStep?.env?.RECOVERY_TOOLING
+        ?.replace('${{ github.workspace }}', workflowWorkspace);
+      expect(toolingFromWorkflow).toBeDefined();
+      const toBashPath = (value: string): string => /^[A-Za-z]:[\\/]/u.test(value)
+        ? `/mnt/${value[0]!.toLowerCase()}${value.slice(2).replaceAll('\\', '/')}`
+        : value;
+      const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\"'\"'`)}'`;
+      const runMetadataCommand = (tooling: string | undefined) => spawnSync('bash', [], {
+        encoding: 'utf8',
+        input: [
+          'set -euo pipefail',
+          tooling === undefined ? '' : `RECOVERY_TOOLING=${shellQuote(toBashPath(tooling))}`,
+          'RECOVERY_TAG=v0.2.2',
+          `metadata=${shellQuote(toBashPath(metadataPath))}`,
+          `cd ${shellQuote(toBashPath(foreignCwd))}`,
+          metadataCommand,
+        ].filter(Boolean).join('\n'),
+      });
+      const foreignInvocation = runMetadataCommand(toolingFromWorkflow);
       expect(foreignInvocation.status, foreignInvocation.stderr).toBe(0);
+      expect(runMetadataCommand(undefined).status).not.toBe(0);
+      expect(runMetadataCommand(join(commandRoot, 'missing-recovery-tooling.mjs')).status).not.toBe(0);
+      expect(runMetadataCommand('recovery-tooling/scripts/release-recovery.mjs').status).not.toBe(0);
     } finally {
-      await rm(foreignCwd, { recursive: true, force: true });
+      await rm(commandRoot, { recursive: true, force: true });
     }
     for (const step of recovery.steps.filter(({ uses }) => uses?.startsWith('actions/checkout@'))) {
       expect(step.with?.['persist-credentials']).toBe(false);
