@@ -1,0 +1,259 @@
+name: Recover immutable v0.2.2 Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact existing annotated tag; only v0.2.2 is accepted
+        required: true
+        type: string
+
+concurrency:
+  group: seedbed-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    if: github.ref == 'refs/heads/main' && inputs.tag == 'v0.2.2'
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+      packages: read
+    steps:
+      - name: Check out only the reviewed one-shot recovery tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          path: recovery-tooling
+          persist-credentials: false
+      - name: Prove remote tag identity and reviewed tooling before tagged checkout
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMMUTABLE_SETTING_EVIDENCE_TAG: ${{ vars.IMMUTABLE_RELEASES_VERIFIED_FOR }}
+          RECOVERY_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RECOVERY_TAG" = v0.2.2
+          test "$IMMUTABLE_SETTING_EVIDENCE_TAG" = "$RECOVERY_TAG"
+          test "$(git -C recovery-tooling rev-parse HEAD)" = "${{ github.sha }}"
+          git -C recovery-tooling fetch origin main --no-tags
+          test "$(git -C recovery-tooling rev-parse origin/main)" = "${{ github.sha }}"
+          expected_commit=74737bec42368df4f006adcac5fe215edc732094
+          expected_tag_object=af24354dffe56a09ddcf302633d50d5ad53ed2eb
+          expected_workflow_blob=a1ab8cbb6a0e13c1e0e7a1e029f5989b18f7eaaa
+          mapfile -t remote_tag < <(git -C recovery-tooling ls-remote --tags origin \
+            "refs/tags/$RECOVERY_TAG" "refs/tags/$RECOVERY_TAG^{}")
+          test "${#remote_tag[@]}" = 2
+          test "${remote_tag[0]%%$'\t'*}" = "$expected_tag_object"
+          test "${remote_tag[1]%%$'\t'*}" = "$expected_commit"
+          test "$(git -C recovery-tooling cat-file -t "$expected_tag_object")" = tag
+          test "$(git -C recovery-tooling rev-parse "$expected_tag_object^{commit}")" = "$expected_commit"
+          test "$(git -C recovery-tooling rev-parse "$expected_tag_object:.github/workflows/release.yml")" = "$expected_workflow_blob"
+          git -C recovery-tooling merge-base --is-ancestor "$expected_commit" origin/main
+          test "$(gh api repos/gnolith/seedbed/immutable-releases --jq .enabled)" = true
+      - name: Check out the now-proven immutable tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: af24354dffe56a09ddcf302633d50d5ad53ed2eb
+          fetch-depth: 0
+          path: tagged-source
+          persist-credentials: false
+      - uses: ./recovery-tooling/.github/actions/setup-node
+      - id: identity
+        name: Bind the checked-out source and frozen recovery plan
+        env:
+          RECOVERY_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          plan="$RUNNER_TEMP/recovery-plan.json"
+          node recovery-tooling/scripts/release-recovery.mjs plan "$RECOVERY_TAG" > "$plan"
+          node recovery-tooling/scripts/release-recovery.mjs github-output "$RECOVERY_TAG" >> "$GITHUB_OUTPUT"
+          test "$(git -C tagged-source rev-parse HEAD)" = 74737bec42368df4f006adcac5fe215edc732094
+          test "$(git -C tagged-source cat-file -t refs/tags/$RECOVERY_TAG)" = tag
+          test "$(git -C tagged-source rev-parse "$RECOVERY_TAG^{commit}")" = 74737bec42368df4f006adcac5fe215edc732094
+          test "$(git -C tagged-source rev-parse "$RECOVERY_TAG:.github/workflows/release.yml")" = a1ab8cbb6a0e13c1e0e7a1e029f5989b18f7eaaa
+          test "$(node -p "require('./tagged-source/package.json').version")" = 0.2.2
+      - name: Prove the exact failed run, jobs, artifacts, and raw ZIP archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_TAG: ${{ inputs.tag }}
+          RUN_ID: ${{ steps.identity.outputs.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          plan="$RUNNER_TEMP/recovery-plan.json"
+          node recovery-tooling/scripts/release-recovery.mjs plan "$RECOVERY_TAG" > "$plan"
+          gh api "repos/gnolith/seedbed/actions/runs/$RUN_ID" > "$RUNNER_TEMP/run.json"
+          gh api "repos/gnolith/seedbed/actions/runs/$RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/jobs.json"
+          gh api "repos/gnolith/seedbed/actions/runs/$RUN_ID/artifacts?per_page=100" > "$RUNNER_TEMP/artifacts.json"
+          node - "$plan" "$RUNNER_TEMP/run.json" "$RUNNER_TEMP/jobs.json" "$RUNNER_TEMP/artifacts.json" <<'NODE'
+          const fs = require('fs');
+          const [planPath, runPath, jobsPath, artifactsPath] = process.argv.slice(2);
+          const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
+          const run = JSON.parse(fs.readFileSync(runPath, 'utf8'));
+          if (String(run.id) !== plan.runId || String(run.workflow_id) !== plan.workflowId || run.event !== 'push' ||
+              run.status !== 'completed' || run.conclusion !== 'failure' || run.run_attempt !== 1 ||
+              run.head_branch !== plan.tag || run.head_sha !== plan.commit || run.path !== '.github/workflows/release.yml') {
+            throw new Error('frozen release run identity mismatch');
+          }
+          const jobs = JSON.parse(fs.readFileSync(jobsPath, 'utf8')).jobs;
+          const actualJobs = jobs.map(({ id, name, status, conclusion }) => ({ id: String(id), name, status, conclusion }));
+          const expectedJobs = plan.jobs.map((job) => ({ ...job, status: 'completed' }));
+          if (JSON.stringify(actualJobs) !== JSON.stringify(expectedJobs)) throw new Error('frozen release job identity mismatch');
+          const artifacts = JSON.parse(fs.readFileSync(artifactsPath, 'utf8')).artifacts;
+          if (artifacts.length !== plan.artifacts.length) throw new Error('unexpected retained artifact count');
+          for (const expected of plan.artifacts) {
+            const artifact = artifacts.find(({ id }) => String(id) === expected.id);
+            if (!artifact || artifact.name !== expected.name || artifact.digest !== expected.digest ||
+                artifact.size_in_bytes !== expected.size || artifact.expired !== false ||
+                artifact.expires_at !== expected.expiresAt || String(artifact.workflow_run?.id) !== plan.runId ||
+                artifact.workflow_run?.head_branch !== plan.tag || artifact.workflow_run?.head_sha !== plan.commit) {
+              throw new Error('retained artifact metadata mismatch');
+            }
+          }
+          NODE
+          root="$RUNNER_TEMP/retained"
+          mkdir "$root"
+          for index in 0 1 2; do
+            id=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).artifacts[$index].id" "$plan")
+            directory=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).artifacts[$index].directory" "$plan")
+            archive="$RUNNER_TEMP/artifact-$id.zip"
+            gh api "repos/gnolith/seedbed/actions/artifacts/$id/zip" > "$archive"
+            python recovery-tooling/scripts/extract-release-artifact.py "$plan" "$index" "$archive" "$root/$directory"
+          done
+          node recovery-tooling/scripts/release-recovery.mjs verify-inventory "$RECOVERY_TAG" "$root"
+      - name: Verify exact npm integrity, signature, SLSA identity, install, and retained bytes
+        env:
+          EXPECTED_COMMIT: ${{ steps.identity.outputs.commit }}
+          EXPECTED_INTEGRITY: ${{ steps.identity.outputs.npm_integrity }}
+          EXPECTED_SHA256: ${{ steps.identity.outputs.npm_sha256 }}
+          EXPECTED_VERSION: ${{ steps.identity.outputs.version }}
+          RECOVERY_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata="$RUNNER_TEMP/npm-metadata.json"
+          npm view "@gnolith/seedbed@$EXPECTED_VERSION" --json > "$metadata"
+          node recovery-tooling/scripts/release-recovery.mjs verify-npm-metadata "$RECOVERY_TAG" "$metadata"
+          attestations_url='https://registry.npmjs.org/-/npm/v1/attestations/@gnolith%2fseedbed@0.2.2'
+          registry="$RUNNER_TEMP/registry"
+          mkdir "$registry"
+          cd "$registry"
+          npm pack "@gnolith/seedbed@$EXPECTED_VERSION" --json > pack.json
+          tarball=$(node -p "JSON.parse(require('fs').readFileSync('pack.json', 'utf8'))[0].filename")
+          test "$(sha256sum "$tarball" | cut -d ' ' -f 1)" = "$EXPECTED_SHA256"
+          cmp "$tarball" "$RUNNER_TEMP/retained/npm/seedbed-publication-$EXPECTED_SHA256.tgz"
+          audit="$RUNNER_TEMP/npm-audit"
+          mkdir "$audit"
+          cd "$audit"
+          npm init --yes >/dev/null
+          npm install --ignore-scripts --save-exact "@gnolith/seedbed@$EXPECTED_VERSION" >/dev/null
+          test "$(node -p "require('./package-lock.json').packages['node_modules/@gnolith/seedbed'].integrity")" = "$EXPECTED_INTEGRITY"
+          test "$(node -p "require('./node_modules/@gnolith/seedbed/package.json').version")" = "$EXPECTED_VERSION"
+          npm audit signatures | tee "$RUNNER_TEMP/npm-signature-audit.txt"
+          grep -Eq '[1-9][0-9]* packages? (has|have) (a )?verified attestations?' "$RUNNER_TEMP/npm-signature-audit.txt"
+          attestation_response="$RUNNER_TEMP/npm-attestations.json"
+          curl --fail --silent --show-error --location --connect-timeout 5 --max-time 15 \
+            --output "$attestation_response" "$attestations_url"
+          node recovery-tooling/scripts/release-recovery.mjs verify-npm-provenance "$RECOVERY_TAG" "$attestation_response"
+      - name: Verify exact GHCR runtime, SBOM, signed attestation, and non-downgraded latest
+        env:
+          CLOSURE_SHA256: ${{ steps.identity.outputs.closure_sha256 }}
+          EXPECTED_COMMIT: ${{ steps.identity.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_DIGEST: ${{ steps.identity.outputs.image_digest }}
+          RECOVERY_TAG: ${{ inputs.tag }}
+          SEEDBED_VERSION: ${{ steps.identity.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/gnolith/seedbed@$IMAGE_DIGEST"
+          test "sha256:$(docker buildx imagetools inspect --raw "ghcr.io/gnolith/seedbed:$SEEDBED_VERSION" | sha256sum | cut -d ' ' -f 1)" = "$IMAGE_DIGEST"
+          test "sha256:$(docker buildx imagetools inspect --raw ghcr.io/gnolith/seedbed:latest | sha256sum | cut -d ' ' -f 1)" = "$IMAGE_DIGEST"
+          docker pull "$image"
+          test "$(docker image inspect "$image" --format '{{len .Config.ExposedPorts}}')" = 0
+          test "$(docker run --rm --entrypoint id "$image" -u)" != 0
+          test "$(docker run --rm "$image" --version)" = "$SEEDBED_VERSION"
+          test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "$SEEDBED_VERSION"
+          test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$EXPECTED_COMMIT"
+          test "$(docker image inspect "$image" --format '{{index .Config.Labels "org.gnolith.production-closure.sha256"}}')" = "$CLOSURE_SHA256"
+          docker buildx imagetools inspect "$image" --format '{{json .SBOM}}' > "$RUNNER_TEMP/live-image-sbom.json"
+          cmp "$RUNNER_TEMP/live-image-sbom.json" "$RUNNER_TEMP/retained/image/image-sbom.json"
+          gh attestation verify "oci://$image" --repo gnolith/seedbed \
+            --signer-workflow gnolith/seedbed/.github/workflows/release.yml \
+            --source-ref "refs/tags/$RECOVERY_TAG" --source-digest "$EXPECTED_COMMIT" >/dev/null
+      - name: Deterministically stage the seven exact Release assets
+        env:
+          RECOVERY_TAG: ${{ inputs.tag }}
+        run: node recovery-tooling/scripts/release-recovery.mjs stage "$RECOVERY_TAG" "$RUNNER_TEMP/retained" "$RUNNER_TEMP/release-assets"
+      - name: Create the absent immutable GitHub Release last or verify an exact immutable result
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/release-assets"
+          expected="$RUNNER_TEMP/expected-release-assets.txt"
+          release_state=$(node recovery-tooling/scripts/release-preflight.mjs release \
+            "https://api.github.com/repos/gnolith/seedbed/releases/tags/$RECOVERY_TAG" \
+            "$RECOVERY_TAG" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).state")
+          mapfile -t release_assets < <(find "$assets" -maxdepth 1 -type f -printf '%p\n' | sort)
+          test "${#release_assets[@]}" = 7
+          if test "$release_state" = absent; then
+            second_state=$(node recovery-tooling/scripts/release-preflight.mjs release \
+              "https://api.github.com/repos/gnolith/seedbed/releases/tags/$RECOVERY_TAG" \
+              "$RECOVERY_TAG" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).state")
+            draft_count=$(node recovery-tooling/scripts/release-recovery.mjs fetch-draft-count \
+              "$RECOVERY_TAG" 'https://api.github.com/repos/gnolith/seedbed/releases')
+            latest_before=$(gh api repos/gnolith/seedbed/releases/latest --jq .tag_name)
+            decision=$(node recovery-tooling/scripts/release-recovery.mjs release-decision \
+              "$RECOVERY_TAG" "$release_state" "$second_state" "$draft_count" "$latest_before")
+            test "$decision" = create
+            mapfile -t remote_tag < <(git -C recovery-tooling ls-remote --tags origin \
+              "refs/tags/$RECOVERY_TAG" "refs/tags/$RECOVERY_TAG^{}")
+            test "${#remote_tag[@]}" = 2
+            test "${remote_tag[0]%%$'\t'*}" = af24354dffe56a09ddcf302633d50d5ad53ed2eb
+            test "${remote_tag[1]%%$'\t'*}" = 74737bec42368df4f006adcac5fe215edc732094
+            test "$(git -C recovery-tooling rev-parse 'af24354dffe56a09ddcf302633d50d5ad53ed2eb:.github/workflows/release.yml')" = a1ab8cbb6a0e13c1e0e7a1e029f5989b18f7eaaa
+            test "$(gh api repos/gnolith/seedbed/releases/latest --jq .tag_name)" = v0.1.1
+            gh release create "$RECOVERY_TAG" "${release_assets[@]}" --verify-tag \
+              --title 'Seedbed 0.2.2' --notes-from-tag --latest
+          elif test "$release_state" = match; then
+            draft_count=$(node recovery-tooling/scripts/release-recovery.mjs fetch-draft-count \
+              "$RECOVERY_TAG" 'https://api.github.com/repos/gnolith/seedbed/releases')
+            latest_before=$(gh api repos/gnolith/seedbed/releases/latest --jq .tag_name)
+            decision=$(node recovery-tooling/scripts/release-recovery.mjs release-decision \
+              "$RECOVERY_TAG" "$release_state" not-checked "$draft_count" "$latest_before")
+            test "$decision" = verify
+            echo 'The exact immutable v0.2.2 GitHub Release already exists; verifying only.'
+          else
+            echo 'GitHub Release recovery found draft, mutable, partial, or conflicting state' >&2
+            exit 1
+          fi
+          gh release verify "$RECOVERY_TAG"
+          gh api "repos/gnolith/seedbed/releases/tags/$RECOVERY_TAG" > "$RUNNER_TEMP/final-release.json"
+          node recovery-tooling/scripts/release-recovery.mjs verify-release-json \
+            "$RECOVERY_TAG" "$RUNNER_TEMP/final-release.json"
+          test "$(gh api repos/gnolith/seedbed/releases/latest --jq .tag_name)" = "$RECOVERY_TAG"
+          gh release view "$RECOVERY_TAG" --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/final-assets.txt"
+          cmp "$expected" "$RUNNER_TEMP/final-assets.txt"
+          for asset in "${release_assets[@]}"; do gh release verify-asset "$RECOVERY_TAG" "$asset"; done
+          test "$(node recovery-tooling/scripts/release-recovery.mjs fetch-draft-count \
+            "$RECOVERY_TAG" 'https://api.github.com/repos/gnolith/seedbed/releases')" = 0
+          mapfile -t final_remote_tag < <(git -C recovery-tooling ls-remote --tags origin \
+            "refs/tags/$RECOVERY_TAG" "refs/tags/$RECOVERY_TAG^{}")
+          test "${#final_remote_tag[@]}" = 2
+          test "${final_remote_tag[0]%%$'\t'*}" = af24354dffe56a09ddcf302633d50d5ad53ed2eb
+          test "${final_remote_tag[1]%%$'\t'*}" = 74737bec42368df4f006adcac5fe215edc732094
+          test "$(git -C recovery-tooling rev-parse 'af24354dffe56a09ddcf302633d50d5ad53ed2eb:.github/workflows/release.yml')" = a1ab8cbb6a0e13c1e0e7a1e029f5989b18f7eaaa

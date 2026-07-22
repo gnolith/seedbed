@@ -216,6 +216,39 @@ job was skipped. Never move, delete, overwrite, reuse, rerun, or manually comple
 `v0.2.1` identities. Version `0.2.2` is the reviewed fix-forward; it changes only the
 transient artifact-name representation while keeping every content identity exact.
 
+## Frozen 0.2.2 Release recovery
+
+The protected annotated `v0.2.2` tag object
+`af24354dffe56a09ddcf302633d50d5ad53ed2eb` peels to main commit
+`74737bec42368df4f006adcac5fe215edc732094`. Release workflow run
+[`29915140208`](https://github.com/gnolith/seedbed/actions/runs/29915140208)
+published `@gnolith/seedbed@0.2.2` through npm OIDC with integrity
+`sha512-nyMdjkJJjSLXlppljaR4J37R8vQZtXO8KxohJYhwAjenniEA3Ix9q0mssrTGM4jnBSZVQTIAHEkMa37DJp/Cvg==`.
+It published and accepted the exact image
+`sha256:f1a05b0e43ee76c3ce0a8ef5806ade7a5b64603b25f5fca021a47ff3ac44b389`,
+verified its runtime, SPDX SBOM, and signed GitHub provenance, uploaded the portable
+image evidence, and moved `latest` to the same exact digest.
+
+Release-last then failed before calling `gh release create`: Actions extraction
+preserved the staging entry as `docs/mcp-runtime-sbom.json`, while the script assumed
+the flattened path `mcp-runtime-sbom.json`. The retained artifact inventory proves
+that this is the single path-contract defect; the other archive paths and hashes match.
+
+The manual `workflow_dispatch` recovery accepts only explicit tag `v0.2.2` from the
+current reviewed `main` workflow. It first checks out only current-main recovery
+tooling without persisted credentials, proves the hard-coded remote tag object, peeled
+commit, original release-workflow blob, and `origin/main` tooling identity, and only
+then checks out the tag separately without credentials or runs the reviewed setup
+action. It cannot publish npm or GHCR or mutate a tag. Before creating the
+missing Release last, it proves the immutable setting, tag object/peel/main ancestry,
+exact npm integrity/signatures/SLSA/install, exact versioned and `latest` image digest,
+non-root/no-port runtime labels, image SBOM, signed attestation, retained run/artifact
+IDs and service digests, every archive path/size/hash, and all seven deterministic
+content-addressed Release assets. Missing, mutable, expired, mismatched, draft, or
+unexpected evidence fails closed. Creation is allowed only while the prior latest
+Release remains `v0.1.1`; an already-present Release is accepted only when it is the
+latest immutable `v0.2.2` identity and every asset verifies byte-for-byte.
+
 ## Failed 0.1.0 publication evidence
 
 The `v0.1.0` source tag points to commit

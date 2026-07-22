@@ -32,6 +32,20 @@
 - Derive a portable, deterministic image-evidence artifact name that replaces every
   GitHub-forbidden character while retaining the exact container digest inside the
   evidence and immutable Release asset identities.
+- Preserve the staged `docs/mcp-runtime-sbom.json` extraction path and add a
+  capability-scoped manual recovery mode for the frozen v0.2.2 artifacts. Recovery
+  verifies exact tag ancestry, npm SLSA/signatures/install, GHCR runtime/SBOM/signed
+  provenance, retained artifact service digests and contents, then creates only the
+  missing immutable GitHub Release last.
+
+## 0.2.2 - 2026-07-22
+
+- Published the OIDC-provenanced npm package and exact versioned GHCR image
+  `sha256:f1a05b0e43ee76c3ce0a8ef5806ade7a5b64603b25f5fca021a47ff3ac44b389`.
+- Verified the image runtime, SPDX SBOM, signed GitHub provenance, portable evidence
+  upload, and `latest` identity.
+- Stopped fail-closed before GitHub Release creation because the staging artifact
+  retained `docs/mcp-runtime-sbom.json` while Release-last assumed a flattened path.
 
 ## 0.2.1 - 2026-07-22
 

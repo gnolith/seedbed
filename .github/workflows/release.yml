@@ -680,9 +680,9 @@ jobs:
           test "$(cut -d ' ' -f 1 "$assets/gnolith-production-closure.tar.gz.sha256")" = "$CLOSURE_SHA256"
           closure_asset="$assets/seedbed-production-closure-$CLOSURE_SHA256.tar.gz"
           mv "$assets/gnolith-production-closure.tar.gz" "$closure_asset"
-          sbom_sha=$(sha256sum "$assets/mcp-runtime-sbom.json" | cut -d ' ' -f 1)
+          sbom_sha=$(sha256sum "$assets/docs/mcp-runtime-sbom.json" | cut -d ' ' -f 1)
           sbom_asset="$assets/seedbed-mcp-runtime-sbom-$sbom_sha.json"
-          mv "$assets/mcp-runtime-sbom.json" "$sbom_asset"
+          mv "$assets/docs/mcp-runtime-sbom.json" "$sbom_asset"
           image_sbom_sha=$(sha256sum "$assets/image-sbom.json" | cut -d ' ' -f 1)
           image_sbom_asset="$assets/seedbed-image-sbom-$image_sbom_sha.json"
           mv "$assets/image-sbom.json" "$image_sbom_asset"
