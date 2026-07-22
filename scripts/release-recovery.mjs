@@ -31,6 +31,10 @@ const plan = Object.freeze({
   repositoryOwnerId: '307278281',
   builderId: 'https://github.com/actions/runner/github-hosted',
   invocationId: 'https://github.com/gnolith/seedbed/actions/runs/29915140208/attempts/1',
+  dsseSignature: 'MEQCIHzKn9Ph19yd7VslMra+CswtwXVpiuDkac9+mj9PzZBZAiBFj6XJlPWx63cMw3THD6DTUnrBYjGKoQekkVAnynwQeg==',
+  verificationMaterialSha256: '9ceb6efcdb35c412d8e87f785a19645c73c5dc3b117189c5ee63eca55da65c8b',
+  tlogIndex: '2217599731',
+  tlogIntegratedTime: '1784719198',
   jobs: [
     { id: '88907134527', name: 'package', conclusion: 'success' },
     { id: '88907578374', name: 'publish', conclusion: 'success' },
@@ -107,7 +111,11 @@ export function validateV022NpmMetadata(tag, metadata) {
 }
 
 export function validateV022NpmProvenance(tag, response) {
-  getV022RecoveryPlan(tag);
+  const expected = getV022RecoveryPlan(tag);
+  validateNpmProvenanceIdentity(expected, response);
+}
+
+export function validateNpmProvenanceIdentity(expected, response) {
   const attestations = response?.attestations?.filter(
     ({ predicateType }) => predicateType === 'https://slsa.dev/provenance/v1',
   ) ?? [];
@@ -117,19 +125,29 @@ export function validateV022NpmProvenance(tag, response) {
   const signature = envelope?.signatures?.[0];
   const verification = bundle?.verificationMaterial;
   if (bundle?.mediaType !== 'application/vnd.dev.sigstore.bundle.v0.3+json' ||
-      envelope?.payloadType !== 'application/vnd.in-toto+json' || typeof envelope.payload !== 'string' ||
-      envelope.signatures?.length !== 1 || signature?.keyid !== '' || !isCanonicalBase64(signature?.sig) ||
+      envelope?.payloadType !== 'application/vnd.in-toto+json' || !isCanonicalBase64(envelope?.payload) ||
+      envelope.signatures?.length !== 1 || signature?.keyid !== '' || signature?.sig !== expected.dsseSignature ||
       !isCanonicalBase64(verification?.certificate?.rawBytes) || verification?.tlogEntries?.length !== 1 ||
       verification.tlogEntries[0]?.kindVersion?.kind !== 'dsse' ||
       verification.tlogEntries[0]?.kindVersion?.version !== '0.0.1') {
     throw new Error('unexpected npm provenance DSSE envelope');
   }
+  const tlog = verification.tlogEntries[0];
+  if (tlog.logIndex !== expected.tlogIndex || tlog.integratedTime !== expected.tlogIntegratedTime ||
+      !isCanonicalBase64(tlog.logId?.keyId) || !isCanonicalBase64(tlog.inclusionPromise?.signedEntryTimestamp) ||
+      tlog.inclusionProof?.logIndex === undefined || !isCanonicalBase64(tlog.inclusionProof?.rootHash) ||
+      !/^\d+$/u.test(tlog.inclusionProof?.treeSize ?? '') || !Array.isArray(tlog.inclusionProof?.hashes) ||
+      tlog.inclusionProof.hashes.length === 0 || tlog.inclusionProof.hashes.some((hash) => !isCanonicalBase64(hash)) ||
+      typeof tlog.inclusionProof?.checkpoint?.envelope !== 'string' || !tlog.inclusionProof.checkpoint.envelope ||
+      !isCanonicalBase64(tlog.canonicalizedBody) || stableSha256(verification) !== expected.verificationMaterialSha256) {
+    throw new Error('unexpected npm provenance transparency-log verification material');
+  }
   const statement = JSON.parse(Buffer.from(envelope.payload, 'base64').toString('utf8'));
-  const expectedSha512 = Buffer.from(plan.npmIntegrity.slice('sha512-'.length), 'base64').toString('hex');
+  const expectedSha512 = Buffer.from(expected.npmIntegrity.slice('sha512-'.length), 'base64').toString('hex');
   if (statement?._type !== 'https://in-toto.io/Statement/v1' ||
       statement?.predicateType !== 'https://slsa.dev/provenance/v1' ||
       statement?.subject?.length !== 1 ||
-      statement.subject[0]?.name !== `pkg:npm/%40gnolith/seedbed@${plan.version}` ||
+      statement.subject[0]?.name !== `pkg:npm/%40gnolith/seedbed@${expected.version}` ||
       statement.subject[0]?.digest?.sha512 !== expectedSha512) {
     throw new Error('unexpected npm provenance statement or subject');
   }
@@ -139,22 +157,30 @@ export function validateV022NpmProvenance(tag, response) {
   }
   const workflow = build.externalParameters?.workflow;
   if (workflow?.repository !== 'https://github.com/gnolith/seedbed' ||
-      workflow?.path !== '.github/workflows/release.yml' || workflow?.ref !== `refs/tags/${plan.tag}`) {
+      workflow?.path !== '.github/workflows/release.yml' || workflow?.ref !== `refs/tags/${expected.tag}`) {
     throw new Error('unexpected npm provenance workflow');
   }
   const source = build.resolvedDependencies?.filter(
-    ({ uri }) => uri === `git+https://github.com/gnolith/seedbed@refs/tags/${plan.tag}`,
+    ({ uri }) => uri === `git+https://github.com/gnolith/seedbed@refs/tags/${expected.tag}`,
   ) ?? [];
-  if (source.length !== 1 || source[0]?.digest?.gitCommit !== plan.commit) {
+  if (source.length !== 1 || source[0]?.digest?.gitCommit !== expected.commit) {
     throw new Error('unexpected npm provenance source commit');
   }
   const github = build.internalParameters?.github;
-  if (github?.event_name !== 'push' || github?.repository_id !== plan.repositoryId ||
-      github?.repository_owner_id !== plan.repositoryOwnerId ||
-      statement.predicate?.runDetails?.builder?.id !== plan.builderId ||
-      statement.predicate?.runDetails?.metadata?.invocationId !== plan.invocationId) {
+  if (github?.event_name !== 'push' || github?.repository_id !== expected.repositoryId ||
+      github?.repository_owner_id !== expected.repositoryOwnerId ||
+      statement.predicate?.runDetails?.builder?.id !== expected.builderId ||
+      statement.predicate?.runDetails?.metadata?.invocationId !== expected.invocationId) {
     throw new Error('unexpected npm provenance invocation identity');
   }
+}
+
+function stableSha256(value) {
+  const normalize = (entry) => Array.isArray(entry) ? entry.map(normalize) :
+    entry && typeof entry === 'object' ? Object.fromEntries(
+      Object.keys(entry).sort().map((key) => [key, normalize(entry[key])]),
+    ) : entry;
+  return createHash('sha256').update(JSON.stringify(normalize(value))).digest('hex');
 }
 
 function isCanonicalBase64(value) {

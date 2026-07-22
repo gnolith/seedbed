@@ -12,8 +12,8 @@ import {
   getV022ReleaseCopies,
   getV022RecoveryPlan,
   stageRecoveryAssetsFromDefinition,
+  validateNpmProvenanceIdentity,
   validateV022NpmMetadata,
-  validateV022NpmProvenance,
   validateV022ReleaseSnapshot,
   validateV022RecoveryInventory,
 } from '../scripts/release-recovery.mjs';
@@ -69,6 +69,10 @@ describe('v0.2.2 immutable Release recovery', () => {
     expect(plan.repositoryOwnerId).toBe('307278281');
     expect(plan.builderId).toBe('https://github.com/actions/runner/github-hosted');
     expect(plan.invocationId).toBe('https://github.com/gnolith/seedbed/actions/runs/29915140208/attempts/1');
+    expect(plan.dsseSignature).toBe('MEQCIHzKn9Ph19yd7VslMra+CswtwXVpiuDkac9+mj9PzZBZAiBFj6XJlPWx63cMw3THD6DTUnrBYjGKoQekkVAnynwQeg==');
+    expect(plan.verificationMaterialSha256).toBe('9ceb6efcdb35c412d8e87f785a19645c73c5dc3b117189c5ee63eca55da65c8b');
+    expect(plan.tlogIndex).toBe('2217599731');
+    expect(plan.tlogIntegratedTime).toBe('1784719198');
     expect(getV022ReleaseAssetNames('v0.2.2')).toEqual([
       'seedbed-image-manifest-f1a05b0e43ee76c3ce0a8ef5806ade7a5b64603b25f5fca021a47ff3ac44b389.json',
       'seedbed-image-provenance-verification-9e21452a11081d08a5179a72c6b11c4053a40bf8bb895635de7a6d2b9c0fb97e.json',
@@ -106,11 +110,24 @@ describe('v0.2.2 immutable Release recovery', () => {
       expect(() => validateV022NpmMetadata('v0.2.2', changed)).toThrow('metadata');
     }
     const provenance = provenanceFixture();
-    expect(() => validateV022NpmProvenance('v0.2.2', provenance)).not.toThrow();
+    const envelope = provenance.attestations[0]!.bundle.dsseEnvelope;
+    const expected = {
+      ...plan,
+      dsseSignature: envelope.signatures[0]!.sig,
+      tlogIndex: '1',
+      tlogIntegratedTime: '2',
+      verificationMaterialSha256: stableSha256(provenance.attestations[0]!.bundle.verificationMaterial),
+    };
+    expect(() => validateNpmProvenanceIdentity(expected, provenance)).not.toThrow();
     for (const mutate of [
+      (value: ProvenanceResponse) => { value.attestations[0]!.bundle.dsseEnvelope.payload += '!!!'; },
       (value: ProvenanceResponse) => { value.attestations[0]!.bundle.dsseEnvelope.payloadType = 'text/plain'; },
       (value: ProvenanceResponse) => { value.attestations[0]!.bundle.mediaType = 'wrong'; },
       (value: ProvenanceResponse) => { value.attestations[0]!.bundle.dsseEnvelope.signatures[0]!.sig = 'wrong'; },
+      (value: ProvenanceResponse) => { delete value.attestations[0]!.bundle.verificationMaterial.tlogEntries[0]!.logId; },
+      (value: ProvenanceResponse) => { delete value.attestations[0]!.bundle.verificationMaterial.tlogEntries[0]!.inclusionPromise; },
+      (value: ProvenanceResponse) => { delete value.attestations[0]!.bundle.verificationMaterial.tlogEntries[0]!.inclusionProof; },
+      (value: ProvenanceResponse) => { delete value.attestations[0]!.bundle.verificationMaterial.tlogEntries[0]!.canonicalizedBody; },
       (value: ProvenanceResponse) => mutateStatement(value, (statement) => { statement._type = 'wrong'; }),
       (value: ProvenanceResponse) => mutateStatement(value, (statement) => { statement.predicateType = 'wrong'; }),
       (value: ProvenanceResponse) => mutateStatement(value, (statement) => { statement.predicate.buildDefinition.buildType = 'wrong'; }),
@@ -120,7 +137,7 @@ describe('v0.2.2 immutable Release recovery', () => {
     ]) {
       const changed = structuredClone(provenance);
       mutate(changed);
-      expect(() => validateV022NpmProvenance('v0.2.2', changed)).toThrow();
+      expect(() => validateNpmProvenanceIdentity(expected, changed)).toThrow();
     }
   });
 
@@ -255,6 +272,10 @@ describe('v0.2.2 immutable Release recovery', () => {
     expect(text).not.toContain('actions/attest');
     const releaseStep = recovery.steps.find(({ name }) => name?.includes('GitHub Release last'));
     expect(releaseStep?.run).toContain('verify-release-json');
+    expect(releaseStep?.run?.match(/ls-remote --tags origin/g)).toHaveLength(2);
+    expect(releaseStep?.run?.match(/releases\/latest --jq \.tag_name/g)).toHaveLength(4);
+    expect(releaseStep?.run).toMatch(/test "\$\(gh api repos\/gnolith\/seedbed\/releases\/latest --jq \.tag_name\)" = v0\.1\.1\s+gh release create/u);
+    expect(releaseStep?.run?.trimEnd()).toMatch(/rev-parse 'af24354dffe56a09ddcf302633d50d5ad53ed2eb:\.github\/workflows\/release\.yml'\)" = a1ab8cbb6a0e13c1e0e7a1e029f5989b18f7eaaa$/u);
     expect(releaseStep?.env).toEqual(expect.objectContaining({
       GH_TOKEN: '${{ github.token }}', GITHUB_TOKEN: '${{ github.token }}',
     }));
@@ -311,7 +332,17 @@ function provenanceFixture(): ProvenanceResponse {
       mediaType: 'application/vnd.dev.sigstore.bundle.v0.3+json',
       verificationMaterial: {
         certificate: { rawBytes: Buffer.from('certificate').toString('base64') },
-        tlogEntries: [{ kindVersion: { kind: 'dsse', version: '0.0.1' } }],
+        tlogEntries: [{
+          logIndex: '1', integratedTime: '2',
+          logId: { keyId: Buffer.from('log-key').toString('base64') },
+          kindVersion: { kind: 'dsse', version: '0.0.1' },
+          inclusionPromise: { signedEntryTimestamp: Buffer.from('promise').toString('base64') },
+          inclusionProof: {
+            logIndex: '1', rootHash: Buffer.from('root').toString('base64'), treeSize: '2',
+            hashes: [Buffer.from('hash').toString('base64')], checkpoint: { envelope: 'checkpoint' },
+          },
+          canonicalizedBody: Buffer.from('body').toString('base64'),
+        }],
       },
       dsseEnvelope: {
         payloadType: 'application/vnd.in-toto+json', payload: Buffer.from(JSON.stringify(statement)).toString('base64'),
@@ -347,7 +378,21 @@ type ProvenanceResponse = { attestations: Array<{
     mediaType: string;
     verificationMaterial: {
       certificate: { rawBytes: string };
-      tlogEntries: Array<{ kindVersion: { kind: string; version: string } }>;
+      tlogEntries: Array<{
+        logIndex: string;
+        integratedTime: string;
+        logId?: { keyId: string };
+        kindVersion: { kind: string; version: string };
+        inclusionPromise?: { signedEntryTimestamp: string };
+        inclusionProof?: {
+          logIndex: string;
+          rootHash: string;
+          treeSize: string;
+          hashes: string[];
+          checkpoint: { envelope: string };
+        };
+        canonicalizedBody?: string;
+      }>;
     };
     dsseEnvelope: {
       payloadType: string;
@@ -378,3 +423,11 @@ type ReleaseSnapshot = {
   immutable: boolean;
   assets: Array<{ name: string; state: string; size: number; digest: string }>;
 };
+
+function stableSha256(value: unknown): string {
+  const normalize = (entry: unknown): unknown => Array.isArray(entry) ? entry.map(normalize) :
+    entry && typeof entry === 'object' ? Object.fromEntries(
+      Object.keys(entry).sort().map((key) => [key, normalize((entry as Record<string, unknown>)[key])]),
+    ) : entry;
+  return createHash('sha256').update(JSON.stringify(normalize(value))).digest('hex');
+}

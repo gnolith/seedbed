@@ -25,6 +25,10 @@ export function getV022RecoveryPlan(tag: string): {
   repositoryOwnerId: string;
   builderId: string;
   invocationId: string;
+  dsseSignature: string;
+  verificationMaterialSha256: string;
+  tlogIndex: string;
+  tlogIntegratedTime: string;
   jobs: readonly { id: string; name: string; conclusion: string }[];
   inventory: readonly RecoveryInventoryEntry[];
   artifacts: readonly { id: string; name: string; digest: string; size: number; expiresAt: string; directory: string }[];
@@ -34,6 +38,10 @@ export function getV022ReleaseAssetNames(tag: string): string[];
 export function getV022ReleaseCopies(tag: string): Array<[string, string]>;
 export function validateV022NpmMetadata(tag: string, metadata: unknown): void;
 export function validateV022NpmProvenance(tag: string, response: unknown): void;
+export function validateNpmProvenanceIdentity(
+  expected: ReturnType<typeof getV022RecoveryPlan>,
+  response: unknown,
+): void;
 export function decideV022ReleaseRecovery(
   tag: string,
   firstState: string,
