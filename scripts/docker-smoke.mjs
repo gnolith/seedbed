@@ -116,7 +116,7 @@ try {
   assertSevenKinds();
   const semanticMount = ['-v', `${semanticConfig}:/run/seedbed-config.json:ro`];
   const semanticCall = (name, argumentsValue = {}, selectedMount = mount) => JSON.parse(docker([
-    'run', '--rm', ...selectedMount, ...secretMount, ...semanticMount, ...baseEnvironment, image,
+    'run', '--rm', '--add-host', 'host.docker.internal:host-gateway', ...selectedMount, ...secretMount, ...semanticMount, ...baseEnvironment, image,
     '--config', '/run/seedbed-config.json', 'call', name, '--arguments', JSON.stringify(argumentsValue),
   ]).stdout).value;
   const estimated = semanticCall('semantic_estimate', { configurationId: 'docker-sqlite', policy: { mode: 'asap', maxBatchesPerRun: 1 } });
