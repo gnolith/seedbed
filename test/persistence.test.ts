@@ -16,11 +16,12 @@ import {
   type TaprootAssembly,
 } from '../src/persistence.js';
 import type { SeedbedConfig } from '../src/config.js';
+import { loadTaprootAssembly } from '../src/taproot-bridge.js';
 
 const taprootMigration = { id: '0001-test-taproot', statements: ['CREATE TABLE taproot_test (id TEXT PRIMARY KEY) STRICT'] } as const;
 
 function fakeTaproot(): TaprootAssembly {
-  return fakeTaprootFor('0.4.0', [taprootMigration]);
+  return fakeTaprootFor('0.4.1', [taprootMigration]);
 }
 
 function fakeTaprootFor(
@@ -44,9 +45,9 @@ function fakeTaprootFor(
 
 const currentVersions = {
   diamond: '0.4.1',
-  taproot: '0.4.0',
-  workshop: '0.4.0',
-  seedbed: '0.3.0',
+  taproot: '0.4.1',
+  workshop: '0.4.1',
+  seedbed: '0.3.1',
 } as const;
 
 const futureVersions = {
@@ -230,8 +231,8 @@ describe('persistence coordinator', () => {
     expect(status.ready).toBe(true);
     expect(status.components.map(({ name, version }) => ({ name, version }))).toEqual([
       { name: 'diamond', version: '0.4.1' },
-      { name: 'taproot', version: '0.4.0' },
-      { name: 'workshop', version: '0.4.0' },
+      { name: 'taproot', version: '0.4.1' },
+      { name: 'workshop', version: '0.4.1' },
     ]);
 
     const reopened = await requireReady(config, fakeTaproot());
@@ -255,6 +256,26 @@ describe('persistence coordinator', () => {
     const after = await inspect.prepare("SELECT COUNT(*) AS count FROM _gnolith_migrations WHERE namespace = '@gnolith/workshop'").first<{ count: number }>();
     expect(after).toEqual(before);
     await inspect.close();
+  });
+
+  it('advances the exact released 0.3.0 assembly predecessor to 0.3.1', async () => {
+    const config = await fixtureConfig();
+    const taproot = await loadTaprootAssembly();
+    await initializeDatabase(config, taproot);
+    const db = await openDatabase(config);
+    try {
+      await db.prepare(`UPDATE seedbed_assembly SET
+        diamond_version = '0.4.1', taproot_version = '0.4.0',
+        workshop_version = '0.4.0', seedbed_version = '0.3.0',
+        updated_at = '2026-07-22T00:00:00.000Z' WHERE singleton = 1`).run();
+    } finally {
+      await db.close();
+    }
+    await expect(migrateDatabase(config, taproot)).resolves.toMatchObject({ ready: true });
+    await expect(readMarker(config)).resolves.toEqual({
+      diamond_version: '0.4.1', taproot_version: '0.4.1',
+      workshop_version: '0.4.1', seedbed_version: '0.3.1',
+    });
   });
 
   it('binds the database to its stable base IRI', async () => {
@@ -596,7 +617,7 @@ describe('persistence coordinator', () => {
     await reached;
     const concurrent = await openDatabase(config);
     await concurrent.prepare("UPDATE seedbed_assembly SET seedbed_version = 'temporary', updated_at = '2026-07-21T23:59:58.000Z' WHERE singleton = 1").run();
-    await concurrent.prepare("UPDATE seedbed_assembly SET seedbed_version = '0.3.0', updated_at = '2026-07-21T23:59:59.000Z' WHERE singleton = 1").run();
+    await concurrent.prepare("UPDATE seedbed_assembly SET seedbed_version = '0.3.1', updated_at = '2026-07-21T23:59:59.000Z' WHERE singleton = 1").run();
     await concurrent.close();
     resumeMigration();
 

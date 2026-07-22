@@ -43,7 +43,7 @@ try {
     }
     process.stdout.write(JSON.stringify(versions));
   `]).stdout);
-  const expectedVersions = { diamond: '0.4.1', taproot: '0.4.0', workshop: '0.4.0', seedbed: '0.3.0' };
+  const expectedVersions = { diamond: '0.4.1', taproot: '0.4.1', workshop: '0.4.1', seedbed: '0.3.1' };
   if (JSON.stringify(installed) !== JSON.stringify(expectedVersions)) {
     throw new Error(`image package tuple is ${JSON.stringify(installed)}; expected ${JSON.stringify(expectedVersions)}`);
   }
@@ -129,7 +129,7 @@ try {
   if (!semanticReady) throw new Error('Docker SQLite semantic executor did not complete across one-shot restarts');
   const semanticOnly = semanticCall('search', { text: 'semantic-concept-without-lexical-overlap', kinds: ['resource'], limit: 5 });
   if (!semanticOnly.results.some(({ sourceId }) => sourceId === 'docker-resource')) throw new Error('Docker semantic-only search did not return the resource');
-  const sparql = call('sparql_query', { query: 'SELECT ?label WHERE { <https://docker.seedbed.test/instance/entity/Q1> <http://www.w3.org/2000/01/rdf-schema#label> ?label }' });
+  const sparql = call('query_sparql', { query: 'SELECT ?label WHERE { <https://docker.seedbed.test/instance/entity/Q1> <http://www.w3.org/2000/01/rdf-schema#label> ?label }' });
   if (!sparql.body.includes('Docker corpus item')) throw new Error('Docker SPARQL omitted the canonical item label');
   const beforeRebuild = call('search_admin_health');
   const shadow = call('search_admin_rebuild');

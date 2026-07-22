@@ -137,16 +137,16 @@ jobs:
           }
           stage_component '@gnolith/diamond' '0.4.1' 'gnolith-diamond-0.4.1.tgz' \
             '084718233136619dd935b251fbc0bd5b539085bad7dd63210d2c06b915b078e4'
-          stage_component '@gnolith/taproot' '0.4.0' 'gnolith-taproot-0.4.0.tgz' \
-            'b9bc1efad1d8f26c6af282f2eb788ee63c620a4bdb419d10423ac7f6f04ee7ad'
-          stage_component '@gnolith/workshop' '0.4.0' 'gnolith-workshop-0.4.0.tgz' \
-            'ce815ce2cfad6cec2553c8ce0b51b8c23b0770c25dd89921e04f09b858264b9c'
+          stage_component '@gnolith/taproot' '0.4.1' 'gnolith-taproot-0.4.1.tgz' \
+            '0ca445840eafa0962a4746c5566ee00d0406e44f1183127b37918c0c9af131e1'
+          stage_component '@gnolith/workshop' '0.4.1' 'gnolith-workshop-0.4.1.tgz' \
+            '78505095ced1490b0651e006381ae940773241072f95915518f5dde1ccafef28'
           npm audit signatures
       - name: Test the exact staged package assembly before publication
         env:
           DIAMOND_TGZ: ${{ github.workspace }}/gnolith-diamond-0.4.1.tgz
-          TAPROOT_TGZ: ${{ github.workspace }}/gnolith-taproot-0.4.0.tgz
-          WORKSHOP_TGZ: ${{ github.workspace }}/gnolith-workshop-0.4.0.tgz
+          TAPROOT_TGZ: ${{ github.workspace }}/gnolith-taproot-0.4.1.tgz
+          WORKSHOP_TGZ: ${{ github.workspace }}/gnolith-workshop-0.4.1.tgz
         run: npm run test:packed
       - id: closure
         name: Stage the locked production closure before publication
@@ -159,8 +159,8 @@ jobs:
           bash scripts/build-production-closure.sh \
             "$seedbed" "$SEEDBED_INTEGRITY" \
             gnolith-diamond-0.4.1.tgz \
-            gnolith-taproot-0.4.0.tgz \
-            gnolith-workshop-0.4.0.tgz
+            gnolith-taproot-0.4.1.tgz \
+            gnolith-workshop-0.4.1.tgz
           closure_sha=$(cut -d ' ' -f 1 gnolith-production-closure.tar.gz.sha256)
           [[ "$closure_sha" =~ ^[0-9a-f]{64}$ ]]
           echo "sha256=$closure_sha" >> "$GITHUB_OUTPUT"
@@ -437,10 +437,10 @@ jobs:
           }
           stage_component '@gnolith/diamond' '0.4.1' 'gnolith-diamond-0.4.1.tgz' \
             '084718233136619dd935b251fbc0bd5b539085bad7dd63210d2c06b915b078e4'
-          stage_component '@gnolith/taproot' '0.4.0' 'gnolith-taproot-0.4.0.tgz' \
-            'b9bc1efad1d8f26c6af282f2eb788ee63c620a4bdb419d10423ac7f6f04ee7ad'
-          stage_component '@gnolith/workshop' '0.4.0' 'gnolith-workshop-0.4.0.tgz' \
-            'ce815ce2cfad6cec2553c8ce0b51b8c23b0770c25dd89921e04f09b858264b9c'
+          stage_component '@gnolith/taproot' '0.4.1' 'gnolith-taproot-0.4.1.tgz' \
+            '0ca445840eafa0962a4746c5566ee00d0406e44f1183127b37918c0c9af131e1'
+          stage_component '@gnolith/workshop' '0.4.1' 'gnolith-workshop-0.4.1.tgz' \
+            '78505095ced1490b0651e006381ae940773241072f95915518f5dde1ccafef28'
           npm audit signatures
       - id: identity
         shell: bash
@@ -471,8 +471,8 @@ jobs:
             gnolith-seedbed-${{ steps.identity.outputs.version }}.tgz \
             "$(cat npm-integrity.txt)" \
             gnolith-diamond-0.4.1.tgz \
-            gnolith-taproot-0.4.0.tgz \
-            gnolith-workshop-0.4.0.tgz
+            gnolith-taproot-0.4.1.tgz \
+            gnolith-workshop-0.4.1.tgz
           closure_sha=$(cut -d ' ' -f 1 gnolith-production-closure.tar.gz.sha256)
           test "$closure_sha" = "${{ needs.package.outputs.closure_sha256 }}"
           echo "sha256=$closure_sha" >> "$GITHUB_OUTPUT"

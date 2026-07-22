@@ -35,9 +35,19 @@ try {
   const client = new Client({ name: 'seedbed-published-test', version: '1.0.0' });
   await client.connect(transport);
   const tools = await client.listTools();
-  if (!tools.tools.some(({ name }) => name === 'get_memory') || tools.tools.some(({ name }) => name === 'query_sparql')) throw new Error('published MCP discovery failed');
+  for (const name of ['get_memory', 'validate_sparql', 'dry_run_sparql', 'query_sparql']) {
+    if (!tools.tools.some((tool) => tool.name === name)) throw new Error(`published MCP discovery omitted ${name}`);
+  }
   const entity = await client.callTool({ name: 'get_memory', arguments: { slug: 'published-restart' } });
   if (entity.isError || entity.structuredContent?.slug !== 'published-restart') throw new Error('published MCP restart read failed');
+  const validation = await client.callTool({ name: 'validate_sparql', arguments: { query: 'ASK {}' } });
+  if (validation.isError || validation.structuredContent?.valid !== true) throw new Error('published MCP SPARQL validation failed');
+  const dryRun = await client.callTool({ name: 'dry_run_sparql', arguments: { query: 'ASK {}' } });
+  if (dryRun.isError || dryRun.structuredContent?.dryRun !== true) throw new Error('published MCP SPARQL dry-run failed');
+  const query = await client.callTool({ name: 'query_sparql', arguments: { query: 'ASK {}' } });
+  if (query.isError || typeof query.structuredContent?.body !== 'string') throw new Error('published MCP SPARQL query failed');
+  const update = await client.callTool({ name: 'query_sparql', arguments: { query: 'INSERT DATA { <urn:s> <urn:p> <urn:o> }' } });
+  if (!update.isError) throw new Error('published MCP SPARQL update was not rejected');
   await client.close();
 } finally {
   await rm(fixture, { recursive: true, force: true });

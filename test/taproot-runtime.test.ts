@@ -94,7 +94,7 @@ describe('Taproot content and authorized search assembly', () => {
       } });
       expect(escape).toMatchObject({ ok: true });
       await expect(call('content_resource_hydrate', { id: 'resource-escape' })).resolves.toMatchObject({ ok: false, failure: { kind: 'operation' } });
-      const sparql = await call('sparql_query', { query: 'SELECT ?label WHERE { <https://search.seedbed.test/installation/entity/Q1> <http://www.w3.org/2000/01/rdf-schema#label> ?label }' });
+      const sparql = await call('query_sparql', { query: 'SELECT ?label WHERE { <https://search.seedbed.test/installation/entity/Q1> <http://www.w3.org/2000/01/rdf-schema#label> ?label }' });
       expect(sparql).toMatchObject({ ok: true, value: { mediaType: expect.stringContaining('application/sparql-results+json'), body: expect.stringContaining('Petrology basalt sample') } });
 
       const direct = new TaprootContentRepositoryV1(runtime.database, { installationId: runtime.principal.installationId });

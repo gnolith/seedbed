@@ -2,8 +2,14 @@
 
 ## Unreleased
 
-- Pin the native assembly to Diamond 0.4.1, Taproot 0.4.0, and Workshop 0.4.0, with explicit
-  migration from the released Seedbed 0.2.2 tuple.
+- Pin the native assembly to Diamond, Taproot, and Workshop 0.4.1 with one deduplicated
+  Diamond runtime and explicit migration from the released Seedbed 0.3.0 tuple.
+- Permit durable Prompt list cursors under the same exact read-bound tagged-SQL guard as
+  Task and Memory, with packed CLI/MCP continuation, restart, stale-row, and grant-revision proofs.
+- Gate every Taproot-owned knowledge/content mutation on exact `knowledge:write`, preserving
+  the distinct legacy `knowledge-write` spelling without implication in either direction.
+- Expose `validate_sparql`, `dry_run_sparql`, and `query_sparql` under exact `read` while
+  retaining a hard read-only Diamond handler and rejecting updates and administrative grants.
 - Register Workshop Task, Memory, and Prompt search producers, advance durable
   adoption headlessly, and prove authorized seven-kind search, hydration, and rebuild.
 - Compose Taproot Resource and Annotation ownership, bounded unified-search

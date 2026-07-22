@@ -89,7 +89,22 @@ try {
   const created = json(run(process.execPath, [...globals, 'call', 'upsert_memory', '--arguments', '{"slug":"packed-restart","description":"Packed corpus restart","content":"Durable packed corpus guidance"}'], runtimeFixture).stdout);
   if (created.value?.slug !== 'packed-restart') throw new Error('packed memory write failed');
   call('create_task', { description: 'Packed corpus task', prompt: 'Execute the packed corpus workflow', memorySlugs: ['packed-restart'] });
-  call('create_prompt', { id: 'packed-prompt', name: 'packed-prompt', title: 'Packed corpus prompt', promptText: 'Follow packed corpus procedure' });
+  call('create_prompt', { id: 'packed-prompt-a', name: 'packed-prompt-a', title: 'Packed corpus prompt A', promptText: 'Follow packed corpus procedure A' });
+  call('create_prompt', { id: 'packed-prompt-b', name: 'packed-prompt-b', title: 'Packed corpus prompt B', promptText: 'Follow packed corpus procedure B' });
+  call('create_prompt', { id: 'packed-prompt-c', name: 'packed-prompt-c', title: 'Packed corpus prompt C', promptText: 'Follow packed corpus procedure C' });
+
+  const promptFirst = call('list_prompts', { limit: 1 });
+  if (promptFirst.items.length !== 1 || typeof promptFirst.cursor !== 'string') throw new Error('packed nonempty Prompt list did not create a durable cursor');
+  const promptSecond = call('list_prompts', { limit: 1, cursor: promptFirst.cursor });
+  if (promptSecond.items.length !== 1 || promptSecond.items[0].id === promptFirst.items[0].id) throw new Error('packed Prompt continuation did not advance');
+  const stalePromptFirst = call('list_prompts', { limit: 1 });
+  const stalePromptSecond = call('list_prompts', { limit: 1, cursor: stalePromptFirst.cursor });
+  const staleTarget = stalePromptSecond.items[0];
+  call('update_prompt', { id: staleTarget.id, expectedRevision: staleTarget.revision, promptText: `${staleTarget.promptText} updated` });
+  const stalePrompt = run(process.execPath, [...globals, 'call', 'list_prompts', '--arguments', JSON.stringify({ limit: 1, cursor: stalePromptFirst.cursor })], runtimeFixture, false);
+  if (stalePrompt.status === 0) throw new Error('packed Prompt cursor survived a canonical row revision');
+  const restartedPromptList = call('list_prompts', { limit: 2 });
+  if (restartedPromptList.items.length !== 2 || typeof restartedPromptList.cursor !== 'string') throw new Error('packed Prompt cursor state did not survive process restart');
 
   const searchSevenKinds = (selectedGlobals = globals) => {
     let page;
@@ -107,8 +122,12 @@ try {
     return page;
   };
   searchSevenKinds();
-  const sparql = call('sparql_query', { query: 'SELECT ?label WHERE { <https://packed.seedbed.test/instance/entity/Q1> <http://www.w3.org/2000/01/rdf-schema#label> ?label }' });
+  const sparql = call('query_sparql', { query: 'SELECT ?label WHERE { <https://packed.seedbed.test/instance/entity/Q1> <http://www.w3.org/2000/01/rdf-schema#label> ?label }' });
   if (!sparql.body.includes('Packed corpus item')) throw new Error('packed SPARQL query omitted canonical item label');
+  if (!call('validate_sparql', { query: 'ASK {}' }).valid) throw new Error('packed SPARQL validation failed under read');
+  if (!call('dry_run_sparql', { query: 'ASK {}' }).dryRun) throw new Error('packed SPARQL dry-run failed under read');
+  const rejectedUpdate = run(process.execPath, [...globals, 'call', 'query_sparql', '--arguments', JSON.stringify({ query: 'INSERT DATA { <urn:s> <urn:p> <urn:o> }' })], runtimeFixture, false);
+  if (rejectedUpdate.status === 0) throw new Error('packed read-only SPARQL accepted an update');
   const beforeRebuild = call('search_admin_health');
   const shadow = call('search_admin_rebuild');
   if (shadow.shadowCorpusGeneration !== beforeRebuild.activeCorpusGeneration + 1) throw new Error('packed shadow rebuild did not allocate the next generation');
@@ -139,6 +158,7 @@ try {
   if (restoredMemory.value?.slug !== 'packed-restart') throw new Error('packed snapshot did not restore canonical behavior');
   searchSevenKinds(restoredGlobals);
 
+  const authorizationRevisionPromptPage = call('list_prompts', { limit: 1 });
   const status = json(run(process.execPath, [...globals, 'auth', 'status'], runtimeFixture).stdout);
   const manifestPath = join(runtimeFixture, 'principal-authorization.json');
   await writeFile(manifestPath, JSON.stringify({
@@ -150,9 +170,17 @@ try {
     capabilities: ['read'],
   }));
   const applied = json(run(process.execPath, [...globals, 'auth', 'apply', '--manifest', manifestPath], runtimeFixture).stdout);
+  const authorizationRevisionPrompt = run(process.execPath, [...globals, 'call', 'list_prompts', '--arguments', JSON.stringify({ limit: 1, cursor: authorizationRevisionPromptPage.cursor })], runtimeFixture, false);
+  if (authorizationRevisionPrompt.status === 0) throw new Error('packed Prompt cursor survived an authorization revision advance');
   const readerGlobals = [cli, '--database', databasePath, '--base-iri', 'https://packed.seedbed.test/instance/', '--root-secret-file', secretPath, '--principal', 'reader', '--workspace', 'workspace', '--log-level', 'silent'];
   const readerValue = json(run(process.execPath, [...readerGlobals, 'call', 'get_memory', '--arguments', '{"slug":"packed-restart"}'], runtimeFixture).stdout);
   if (readerValue.value?.slug !== 'packed-restart') throw new Error('declaratively granted packed reader could not read');
+  if (!call('validate_sparql', { query: 'ASK {}' }, readerGlobals).valid || !call('dry_run_sparql', { query: 'ASK {}' }, readerGlobals).dryRun) throw new Error('packed read-only principal could not validate or dry-run SPARQL');
+  if (!call('query_sparql', { query: 'ASK {}' }, readerGlobals).body) throw new Error('packed read-only principal could not query SPARQL');
+  const readerUpdate = run(process.execPath, [...readerGlobals, 'call', 'query_sparql', '--arguments', JSON.stringify({ query: 'INSERT DATA { <urn:s> <urn:p> <urn:o> }' })], runtimeFixture, false);
+  if (readerUpdate.status === 0) throw new Error('packed read-only principal executed a SPARQL update');
+  const readerWrite = run(process.execPath, [...readerGlobals, 'call', 'create_item', '--arguments', JSON.stringify({ id: 'Q-reader-forbidden' })], runtimeFixture, false);
+  if (readerWrite.status === 0) throw new Error('packed read-only principal executed a Taproot mutation');
   await writeFile(manifestPath, JSON.stringify({
     version: 1,
     expectedAuthorizationRevision: applied.authorizationRevision,
@@ -174,9 +202,37 @@ try {
   const client = new Client({ name: 'seedbed-packed-test', version: '1.0.0' });
   await client.connect(transport);
   const listed = await client.listTools();
-  if (!listed.tools.some(({ name }) => name === 'get_memory') || listed.tools.some(({ name }) => name === 'query_sparql')) throw new Error('MCP tool discovery surface is invalid');
+  for (const name of ['get_memory', 'list_prompts', 'validate_sparql', 'dry_run_sparql', 'query_sparql']) {
+    if (!listed.tools.some((tool) => tool.name === name)) throw new Error(`MCP tool discovery omitted ${name}`);
+  }
   const called = await client.callTool({ name: 'get_memory', arguments: { slug: 'packed-restart' } });
   if (called.isError || called.structuredContent?.slug !== 'packed-restart') throw new Error('MCP get_memory failed after restart');
+  const mcpPromptFirst = await client.callTool({ name: 'list_prompts', arguments: { limit: 1 } });
+  const mcpPromptFirstValue = mcpPromptFirst.structuredContent;
+  if (mcpPromptFirst.isError || mcpPromptFirstValue?.items?.length !== 1 || typeof mcpPromptFirstValue.cursor !== 'string') throw new Error('MCP nonempty Prompt list did not return a cursor');
+  const mcpPromptSecond = await client.callTool({ name: 'list_prompts', arguments: { limit: 1, cursor: mcpPromptFirstValue.cursor } });
+  if (mcpPromptSecond.isError || mcpPromptSecond.structuredContent?.items?.length !== 1 || mcpPromptSecond.structuredContent.items[0].id === mcpPromptFirstValue.items[0].id) throw new Error('MCP Prompt continuation did not advance');
+  const mcpStaleFirst = await client.callTool({ name: 'list_prompts', arguments: { limit: 1 } });
+  const mcpStaleSecond = await client.callTool({ name: 'list_prompts', arguments: { limit: 1, cursor: mcpStaleFirst.structuredContent?.cursor } });
+  const mcpStaleTarget = mcpStaleSecond.structuredContent?.items?.[0];
+  if (!mcpStaleTarget) throw new Error('MCP Prompt stale-cursor fixture was missing');
+  const mcpPromptUpdate = await client.callTool({ name: 'update_prompt', arguments: { id: mcpStaleTarget.id, expectedRevision: mcpStaleTarget.revision, promptText: `${mcpStaleTarget.promptText} via MCP` } });
+  if (mcpPromptUpdate.isError) throw new Error('MCP Prompt stale-cursor mutation failed');
+  const mcpStaleResult = await client.callTool({ name: 'list_prompts', arguments: { limit: 1, cursor: mcpStaleFirst.structuredContent?.cursor } });
+  if (!mcpStaleResult.isError) throw new Error('MCP Prompt cursor survived a canonical row revision');
+  const mcpRevisionFirst = await client.callTool({ name: 'list_prompts', arguments: { limit: 1 } });
+  const revisionStatus = json(run(process.execPath, [...globals, 'auth', 'status'], runtimeFixture).stdout);
+  await writeFile(manifestPath, JSON.stringify({
+    version: 1,
+    expectedAuthorizationRevision: revisionStatus.authorization.authorizationRevision,
+    principal: 'cursor-revision-bump',
+    enabled: true,
+    workspaces: ['workspace'],
+    capabilities: ['read'],
+  }));
+  run(process.execPath, [...globals, 'auth', 'apply', '--manifest', manifestPath], runtimeFixture);
+  const mcpRevisionResult = await client.callTool({ name: 'list_prompts', arguments: { limit: 1, cursor: mcpRevisionFirst.structuredContent?.cursor } });
+  if (!mcpRevisionResult.isError) throw new Error('MCP Prompt cursor survived an authorization revision advance');
   await client.close();
 } finally {
   await rm(fixture, { recursive: true, force: true });
