@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import {
   decideV022ReleaseRecovery,
+  fetchV022DraftCount,
   getV022ReleaseAssetNames,
   getV022ReleaseCopies,
   getV022RecoveryPlan,
@@ -21,9 +22,18 @@ describe('v0.2.2 immutable Release recovery', () => {
   it('freezes the exact retained run archive names, paths, hashes, and source identity', () => {
     const plan = getV022RecoveryPlan('v0.2.2');
     expect(plan.commit).toBe('74737bec42368df4f006adcac5fe215edc732094');
+    expect(plan.tag).toBe('v0.2.2');
+    expect(plan.version).toBe('0.2.2');
     expect(plan.runId).toBe('29915140208');
     expect(plan.workflowId).toBe('317536422');
     expect(plan.workflowBlob).toBe('a1ab8cbb6a0e13c1e0e7a1e029f5989b18f7eaaa');
+    expect(plan.npmSha256).toBe('2bf53198f07493490a205d28ade3586d26d0a6a02c85434d6e2d5ebe90be423b');
+    expect(plan.npmIntegrity).toBe('sha512-nyMdjkJJjSLXlppljaR4J37R8vQZtXO8KxohJYhwAjenniEA3Ix9q0mssrTGM4jnBSZVQTIAHEkMa37DJp/Cvg==');
+    expect(plan.closureSha256).toBe('d565ac3ac011a0b2bb860486927365befe5823f19c5ad9b0a2592f9093c7f739');
+    expect(plan.imageDigest).toBe('sha256:f1a05b0e43ee76c3ce0a8ef5806ade7a5b64603b25f5fca021a47ff3ac44b389');
+    expect(plan.imageSbomSha256).toBe('806745ac5cae12ec177d4814958cbed2d69d967d1c020fe666414b0a18284070');
+    expect(plan.imageManifestSha256).toBe('f1a05b0e43ee76c3ce0a8ef5806ade7a5b64603b25f5fca021a47ff3ac44b389');
+    expect(plan.provenanceEvidenceSha256).toBe('9e21452a11081d08a5179a72c6b11c4053a40bf8bb895635de7a6d2b9c0fb97e');
     expect(plan.jobs).toEqual([
       { id: '88907134527', name: 'package', conclusion: 'success' },
       { id: '88907578374', name: 'publish', conclusion: 'success' },
@@ -36,13 +46,29 @@ describe('v0.2.2 immutable Release recovery', () => {
       { id: '8527678405', name: 'seedbed-image-evidence-sha256-f1a05b0e43ee76c3ce0a8ef5806ade7a5b64603b25f5fca021a47ff3ac44b389-attempt-1', digest: 'sha256:dfbf2b6438b33d877f3d90fbb9e6d26dd370d1574e8ecf0fafd37a3eacd9dc53', size: 6656391, expiresAt: '2026-08-21T11:23:09Z', directory: 'image' },
     ]);
     expect(validateV022RecoveryInventory('v0.2.2', plan.inventory)).toHaveLength(8);
-    expect(plan.inventory).toContainEqual(expect.objectContaining({
-      path: 'staging/docs/mcp-runtime-sbom.json',
-      sha256: '492322da93a4cd46f6057d1b9c6b36c59500967e65b10ffbf9c010c4439801f4',
-    }));
+    expect(plan.inventory).toEqual([
+      { path: 'image/image-manifest.json', bytes: 856, sha256: 'f1a05b0e43ee76c3ce0a8ef5806ade7a5b64603b25f5fca021a47ff3ac44b389' },
+      { path: 'image/image-provenance-verification.json', bytes: 423, sha256: '9e21452a11081d08a5179a72c6b11c4053a40bf8bb895635de7a6d2b9c0fb97e' },
+      { path: 'image/image-sbom.json', bytes: 6654678, sha256: '806745ac5cae12ec177d4814958cbed2d69d967d1c020fe666414b0a18284070' },
+      { path: 'npm/seedbed-publication-2bf53198f07493490a205d28ade3586d26d0a6a02c85434d6e2d5ebe90be423b.tgz', bytes: 240982, sha256: '2bf53198f07493490a205d28ade3586d26d0a6a02c85434d6e2d5ebe90be423b' },
+      { path: 'npm/seedbed-publication.json', bytes: 224, sha256: '462db1b0573119e0326498db33c6a8ee1cf0d51425723957f43079403641cee5' },
+      { path: 'staging/docs/mcp-runtime-sbom.json', bytes: 38207, sha256: '492322da93a4cd46f6057d1b9c6b36c59500967e65b10ffbf9c010c4439801f4' },
+      { path: 'staging/gnolith-production-closure.tar.gz', bytes: 14171466, sha256: 'd565ac3ac011a0b2bb860486927365befe5823f19c5ad9b0a2592f9093c7f739' },
+      { path: 'staging/gnolith-production-closure.tar.gz.sha256', bytes: 134, sha256: 'ce86aeff089da94fe3dbc19e9f838d379f515dbcf7fb1d798cdcbdb1a7de851d' },
+    ]);
     expect(plan.releaseEvidenceSha256).toBe('82d8695159ee293b10634f7c64942600e39c899dac4bfccd58f0b9e8f71d79f8');
     expect(plan.npmAttestationsUrl).toBe('https://registry.npmjs.org/-/npm/v1/attestations/@gnolith%2fseedbed@0.2.2');
+    expect(plan.npmShasum).toBe('b709b6ea24aecf7f96dd8286d4d07e9bfc727d7b');
+    expect(plan.npmTarballUrl).toBe('https://registry.npmjs.org/@gnolith/seedbed/-/seedbed-0.2.2.tgz');
+    expect(plan.npmFileCount).toBe(59);
+    expect(plan.npmUnpackedSize).toBe(1249898);
+    expect(plan.npmSignatureKeyId).toBe('SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U');
+    expect(plan.npmSignature).toBe('MEYCIQCb/sNAVE6XdjiyBC5GTO6sTkJ66auA8kCJwol/0NqywAIhAJqWGufSBFqUHk75P9Qsg1qZvm9o6NNzPKKhNzggpDav');
     expect(plan.priorLatestReleaseTag).toBe('v0.1.1');
+    expect(plan.repositoryId).toBe('1307629856');
+    expect(plan.repositoryOwnerId).toBe('307278281');
+    expect(plan.builderId).toBe('https://github.com/actions/runner/github-hosted');
+    expect(plan.invocationId).toBe('https://github.com/gnolith/seedbed/actions/runs/29915140208/attempts/1');
     expect(getV022ReleaseAssetNames('v0.2.2')).toEqual([
       'seedbed-image-manifest-f1a05b0e43ee76c3ce0a8ef5806ade7a5b64603b25f5fca021a47ff3ac44b389.json',
       'seedbed-image-provenance-verification-9e21452a11081d08a5179a72c6b11c4053a40bf8bb895635de7a6d2b9c0fb97e.json',
@@ -58,20 +84,39 @@ describe('v0.2.2 immutable Release recovery', () => {
     const plan = getV022RecoveryPlan('v0.2.2');
     const metadata = { name: '@gnolith/seedbed', version: plan.version, dist: {
       integrity: plan.npmIntegrity,
+      shasum: plan.npmShasum,
+      tarball: plan.npmTarballUrl,
+      fileCount: plan.npmFileCount,
+      unpackedSize: plan.npmUnpackedSize,
       attestations: { url: plan.npmAttestationsUrl, provenance: { predicateType: 'https://slsa.dev/provenance/v1' } },
+      signatures: [{ keyid: plan.npmSignatureKeyId, sig: plan.npmSignature }],
     } };
     expect(() => validateV022NpmMetadata('v0.2.2', metadata)).not.toThrow();
-    expect(() => validateV022NpmMetadata('v0.2.2', {
-      ...metadata, dist: { ...metadata.dist, attestations: { ...metadata.dist.attestations, url: 'https://attacker.invalid' } },
-    })).toThrow('metadata');
+    for (const mutate of [
+      (value: typeof metadata) => { value.dist.shasum = 'wrong'; },
+      (value: typeof metadata) => { value.dist.tarball = 'https://attacker.invalid/package.tgz'; },
+      (value: typeof metadata) => { value.dist.fileCount += 1; },
+      (value: typeof metadata) => { value.dist.unpackedSize += 1; },
+      (value: typeof metadata) => { value.dist.attestations.url = 'https://attacker.invalid'; },
+      (value: typeof metadata) => { value.dist.signatures[0]!.keyid = 'wrong'; },
+      (value: typeof metadata) => { value.dist.signatures[0]!.sig = 'wrong'; },
+    ]) {
+      const changed = structuredClone(metadata);
+      mutate(changed);
+      expect(() => validateV022NpmMetadata('v0.2.2', changed)).toThrow('metadata');
+    }
     const provenance = provenanceFixture();
     expect(() => validateV022NpmProvenance('v0.2.2', provenance)).not.toThrow();
     for (const mutate of [
       (value: ProvenanceResponse) => { value.attestations[0]!.bundle.dsseEnvelope.payloadType = 'text/plain'; },
+      (value: ProvenanceResponse) => { value.attestations[0]!.bundle.mediaType = 'wrong'; },
+      (value: ProvenanceResponse) => { value.attestations[0]!.bundle.dsseEnvelope.signatures[0]!.sig = 'wrong'; },
       (value: ProvenanceResponse) => mutateStatement(value, (statement) => { statement._type = 'wrong'; }),
       (value: ProvenanceResponse) => mutateStatement(value, (statement) => { statement.predicateType = 'wrong'; }),
       (value: ProvenanceResponse) => mutateStatement(value, (statement) => { statement.predicate.buildDefinition.buildType = 'wrong'; }),
       (value: ProvenanceResponse) => mutateStatement(value, (statement) => { statement.predicate.buildDefinition.externalParameters.workflow.ref = 'refs/tags/v9.9.9'; }),
+      (value: ProvenanceResponse) => mutateStatement(value, (statement) => { statement.predicate.buildDefinition.internalParameters.github.repository_id = 'wrong'; }),
+      (value: ProvenanceResponse) => mutateStatement(value, (statement) => { statement.predicate.runDetails.metadata.invocationId = 'wrong'; }),
     ]) {
       const changed = structuredClone(provenance);
       mutate(changed);
@@ -113,6 +158,26 @@ describe('v0.2.2 immutable Release recovery', () => {
     expect(() => decideV022ReleaseRecovery('v0.2.2', 'absent', 'absent', 1, 'v0.1.1')).toThrow('draft');
     expect(() => decideV022ReleaseRecovery('v0.2.2', 'absent', 'absent', 0, 'v9.0.0')).toThrow('prior latest');
     expect(() => decideV022ReleaseRecovery('v0.2.2', 'match', 'not-checked', 0, 'v0.1.1')).toThrow('latest');
+  });
+
+  it('enumerates drafts across bounded authenticated pages and fails closed on truncation', async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({ tag_name: `v0.0.${index}`, draft: false }));
+    const pages = [firstPage, [{ tag_name: 'v0.2.2', draft: true }]];
+    const calls: string[] = [];
+    const fakeFetch: typeof fetch = async (input) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify(pages.shift() ?? []), { status: 200 });
+    };
+    await expect(fetchV022DraftCount(
+      'v0.2.2', 'https://api.github.com/repos/gnolith/seedbed/releases', 'token', fakeFetch,
+    )).resolves.toBe(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toContain('page=2');
+
+    const fullFetch: typeof fetch = async () => new Response(JSON.stringify(firstPage), { status: 200 });
+    await expect(fetchV022DraftCount(
+      'v0.2.2', 'https://api.github.com/repos/gnolith/seedbed/releases', 'token', fullFetch,
+    )).rejects.toThrow('bounded 1000-release');
   });
 
   it('accepts only exact immutable Release metadata and server-recorded asset bytes', () => {
@@ -176,6 +241,7 @@ describe('v0.2.2 immutable Release recovery', () => {
     expect(text).toContain('npm audit signatures');
     expect(text).toContain('verify-npm-provenance');
     expect(text).toContain('release-decision');
+    expect(text.match(/fetch-draft-count/g)).toHaveLength(3);
     expect(text).toContain('gh attestation verify');
     expect(text).toContain('gh release create');
     expect(text.match(/gh release create/g)).toHaveLength(1);
@@ -232,13 +298,26 @@ function provenanceFixture(): ProvenanceResponse {
       resolvedDependencies: [{
         uri: 'git+https://github.com/gnolith/seedbed@refs/tags/v0.2.2', digest: { gitCommit: plan.commit },
       }],
+      internalParameters: { github: {
+        event_name: 'push', repository_id: plan.repositoryId, repository_owner_id: plan.repositoryOwnerId,
+      } },
+    }, runDetails: {
+      builder: { id: plan.builderId }, metadata: { invocationId: plan.invocationId },
     } },
   };
   return { attestations: [{
     predicateType: 'https://slsa.dev/provenance/v1',
-    bundle: { dsseEnvelope: {
-      payloadType: 'application/vnd.in-toto+json', payload: Buffer.from(JSON.stringify(statement)).toString('base64'),
-    } },
+    bundle: {
+      mediaType: 'application/vnd.dev.sigstore.bundle.v0.3+json',
+      verificationMaterial: {
+        certificate: { rawBytes: Buffer.from('certificate').toString('base64') },
+        tlogEntries: [{ kindVersion: { kind: 'dsse', version: '0.0.1' } }],
+      },
+      dsseEnvelope: {
+        payloadType: 'application/vnd.in-toto+json', payload: Buffer.from(JSON.stringify(statement)).toString('base64'),
+        signatures: [{ keyid: '', sig: Buffer.from('signature').toString('base64') }],
+      },
+    },
   }] };
 }
 
@@ -256,12 +335,26 @@ type ProvenanceStatement = {
   predicate: { buildDefinition: {
     buildType: string;
     externalParameters: { workflow: { repository: string; path: string; ref: string } };
+    internalParameters: { github: { event_name: string; repository_id: string; repository_owner_id: string } };
     resolvedDependencies: Array<{ uri: string; digest: { gitCommit: string } }>;
-  } };
+  };
+  runDetails: { builder: { id: string }; metadata: { invocationId: string } };
+  };
 };
 type ProvenanceResponse = { attestations: Array<{
   predicateType: string;
-  bundle: { dsseEnvelope: { payloadType: string; payload: string } };
+  bundle: {
+    mediaType: string;
+    verificationMaterial: {
+      certificate: { rawBytes: string };
+      tlogEntries: Array<{ kindVersion: { kind: string; version: string } }>;
+    };
+    dsseEnvelope: {
+      payloadType: string;
+      payload: string;
+      signatures: Array<{ keyid: string; sig: string }>;
+    };
+  };
 }> };
 
 function releaseSnapshotFixture(): ReleaseSnapshot {

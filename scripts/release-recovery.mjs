@@ -13,6 +13,12 @@ const plan = Object.freeze({
   workflowBlob: 'a1ab8cbb6a0e13c1e0e7a1e029f5989b18f7eaaa',
   npmSha256: '2bf53198f07493490a205d28ade3586d26d0a6a02c85434d6e2d5ebe90be423b',
   npmIntegrity: 'sha512-nyMdjkJJjSLXlppljaR4J37R8vQZtXO8KxohJYhwAjenniEA3Ix9q0mssrTGM4jnBSZVQTIAHEkMa37DJp/Cvg==',
+  npmShasum: 'b709b6ea24aecf7f96dd8286d4d07e9bfc727d7b',
+  npmTarballUrl: 'https://registry.npmjs.org/@gnolith/seedbed/-/seedbed-0.2.2.tgz',
+  npmFileCount: 59,
+  npmUnpackedSize: 1249898,
+  npmSignatureKeyId: 'SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U',
+  npmSignature: 'MEYCIQCb/sNAVE6XdjiyBC5GTO6sTkJ66auA8kCJwol/0NqywAIhAJqWGufSBFqUHk75P9Qsg1qZvm9o6NNzPKKhNzggpDav',
   closureSha256: 'd565ac3ac011a0b2bb860486927365befe5823f19c5ad9b0a2592f9093c7f739',
   imageDigest: 'sha256:f1a05b0e43ee76c3ce0a8ef5806ade7a5b64603b25f5fca021a47ff3ac44b389',
   imageSbomSha256: '806745ac5cae12ec177d4814958cbed2d69d967d1c020fe666414b0a18284070',
@@ -21,6 +27,10 @@ const plan = Object.freeze({
   releaseEvidenceSha256: '82d8695159ee293b10634f7c64942600e39c899dac4bfccd58f0b9e8f71d79f8',
   npmAttestationsUrl: 'https://registry.npmjs.org/-/npm/v1/attestations/@gnolith%2fseedbed@0.2.2',
   priorLatestReleaseTag: 'v0.1.1',
+  repositoryId: '1307629856',
+  repositoryOwnerId: '307278281',
+  builderId: 'https://github.com/actions/runner/github-hosted',
+  invocationId: 'https://github.com/gnolith/seedbed/actions/runs/29915140208/attempts/1',
   jobs: [
     { id: '88907134527', name: 'package', conclusion: 'success' },
     { id: '88907578374', name: 'publish', conclusion: 'success' },
@@ -85,8 +95,13 @@ export function validateV022NpmMetadata(tag, metadata) {
   getV022RecoveryPlan(tag);
   if (metadata?.name !== '@gnolith/seedbed' || metadata?.version !== plan.version ||
       metadata?.dist?.integrity !== plan.npmIntegrity ||
+      metadata?.dist?.shasum !== plan.npmShasum || metadata?.dist?.tarball !== plan.npmTarballUrl ||
+      metadata?.dist?.fileCount !== plan.npmFileCount || metadata?.dist?.unpackedSize !== plan.npmUnpackedSize ||
       metadata?.dist?.attestations?.url !== plan.npmAttestationsUrl ||
-      metadata?.dist?.attestations?.provenance?.predicateType !== 'https://slsa.dev/provenance/v1') {
+      metadata?.dist?.attestations?.provenance?.predicateType !== 'https://slsa.dev/provenance/v1' ||
+      metadata?.dist?.signatures?.length !== 1 ||
+      metadata.dist.signatures[0]?.keyid !== plan.npmSignatureKeyId ||
+      metadata.dist.signatures[0]?.sig !== plan.npmSignature) {
     throw new Error('published npm metadata does not match frozen v0.2.2 identity');
   }
 }
@@ -98,7 +113,15 @@ export function validateV022NpmProvenance(tag, response) {
   ) ?? [];
   if (attestations.length !== 1) throw new Error('expected exactly one SLSA v1 provenance attestation');
   const envelope = attestations[0]?.bundle?.dsseEnvelope;
-  if (envelope?.payloadType !== 'application/vnd.in-toto+json' || typeof envelope.payload !== 'string') {
+  const bundle = attestations[0]?.bundle;
+  const signature = envelope?.signatures?.[0];
+  const verification = bundle?.verificationMaterial;
+  if (bundle?.mediaType !== 'application/vnd.dev.sigstore.bundle.v0.3+json' ||
+      envelope?.payloadType !== 'application/vnd.in-toto+json' || typeof envelope.payload !== 'string' ||
+      envelope.signatures?.length !== 1 || signature?.keyid !== '' || !isCanonicalBase64(signature?.sig) ||
+      !isCanonicalBase64(verification?.certificate?.rawBytes) || verification?.tlogEntries?.length !== 1 ||
+      verification.tlogEntries[0]?.kindVersion?.kind !== 'dsse' ||
+      verification.tlogEntries[0]?.kindVersion?.version !== '0.0.1') {
     throw new Error('unexpected npm provenance DSSE envelope');
   }
   const statement = JSON.parse(Buffer.from(envelope.payload, 'base64').toString('utf8'));
@@ -125,6 +148,18 @@ export function validateV022NpmProvenance(tag, response) {
   if (source.length !== 1 || source[0]?.digest?.gitCommit !== plan.commit) {
     throw new Error('unexpected npm provenance source commit');
   }
+  const github = build.internalParameters?.github;
+  if (github?.event_name !== 'push' || github?.repository_id !== plan.repositoryId ||
+      github?.repository_owner_id !== plan.repositoryOwnerId ||
+      statement.predicate?.runDetails?.builder?.id !== plan.builderId ||
+      statement.predicate?.runDetails?.metadata?.invocationId !== plan.invocationId) {
+    throw new Error('unexpected npm provenance invocation identity');
+  }
+}
+
+function isCanonicalBase64(value) {
+  return typeof value === 'string' && value.length > 0 && value.length % 4 === 0 &&
+    /^[A-Za-z0-9+/]+={0,2}$/u.test(value) && Buffer.from(value, 'base64').toString('base64') === value;
 }
 
 export function decideV022ReleaseRecovery(tag, firstState, secondState, draftCount, latestTag) {
@@ -172,6 +207,40 @@ export function validateV022ReleaseSnapshot(tag, release) {
     }
     seen.add(asset.name);
   }
+}
+
+export function countV022DraftReleases(tag, pages) {
+  getV022RecoveryPlan(tag);
+  if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) {
+    throw new Error('paginated GitHub Releases response is malformed');
+  }
+  return pages.flat().filter((release) => release?.tag_name === plan.tag && release?.draft === true).length;
+}
+
+export async function fetchV022DraftCount(tag, apiUrl, token, fetchImpl = fetch) {
+  getV022RecoveryPlan(tag);
+  if (apiUrl !== 'https://api.github.com/repos/gnolith/seedbed/releases' || !token) {
+    throw new Error('invalid authenticated GitHub Releases enumeration input');
+  }
+  let draftCount = 0;
+  for (let page = 1; page <= 10; page += 1) {
+    const response = await fetchImpl(`${apiUrl}?per_page=100&page=${page}`, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error(`GitHub Releases enumeration failed with HTTP ${response.status}`);
+    const releases = await response.json();
+    if (!Array.isArray(releases) || releases.length > 100) {
+      throw new Error('GitHub Releases enumeration returned malformed pagination');
+    }
+    draftCount += countV022DraftReleases(tag, [releases]);
+    if (releases.length < 100) return draftCount;
+  }
+  throw new Error('GitHub Releases enumeration exceeded the bounded 1000-release audit window');
 }
 
 async function inventoryDirectory(root) {
@@ -257,11 +326,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   } else if (command === 'verify-release-json') {
     validateV022ReleaseSnapshot(tag, JSON.parse(await readFile(first, 'utf8')));
     process.stdout.write('immutable v0.2.2 GitHub Release snapshot verified\n');
+  } else if (command === 'count-drafts') {
+    process.stdout.write(`${countV022DraftReleases(tag, JSON.parse(await readFile(first, 'utf8')))}\n`);
+  } else if (command === 'fetch-draft-count') {
+    process.stdout.write(`${await fetchV022DraftCount(tag, first, process.env.GITHUB_TOKEN)}\n`);
   } else if (command === 'verify-inventory') {
     validateV022RecoveryInventory(tag, await inventoryDirectory(first));
     process.stdout.write('retained v0.2.2 artifact inventory verified\n');
   } else if (command === 'stage') {
     const names = await stageV022RecoveryAssets(tag, first, second);
     process.stdout.write(`${JSON.stringify(names)}\n`);
-  } else throw new Error('usage: release-recovery <plan|github-output|verify-npm-metadata|verify-npm-provenance|release-decision|verify-release-json|verify-inventory|stage> v0.2.2 [...]');
+  } else throw new Error('usage: release-recovery <plan|github-output|verify-npm-metadata|verify-npm-provenance|release-decision|verify-release-json|count-drafts|fetch-draft-count|verify-inventory|stage> v0.2.2 [...]');
 }

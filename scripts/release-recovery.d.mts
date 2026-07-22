@@ -8,6 +8,12 @@ export function getV022RecoveryPlan(tag: string): {
   workflowBlob: string;
   npmSha256: string;
   npmIntegrity: string;
+  npmShasum: string;
+  npmTarballUrl: string;
+  npmFileCount: number;
+  npmUnpackedSize: number;
+  npmSignatureKeyId: string;
+  npmSignature: string;
   closureSha256: string;
   imageDigest: string;
   imageSbomSha256: string;
@@ -15,6 +21,10 @@ export function getV022RecoveryPlan(tag: string): {
   provenanceEvidenceSha256: string;
   npmAttestationsUrl: string;
   priorLatestReleaseTag: string;
+  repositoryId: string;
+  repositoryOwnerId: string;
+  builderId: string;
+  invocationId: string;
   jobs: readonly { id: string; name: string; conclusion: string }[];
   inventory: readonly RecoveryInventoryEntry[];
   artifacts: readonly { id: string; name: string; digest: string; size: number; expiresAt: string; directory: string }[];
@@ -32,6 +42,13 @@ export function decideV022ReleaseRecovery(
   latestTag: string,
 ): 'create' | 'verify';
 export function validateV022ReleaseSnapshot(tag: string, release: unknown): void;
+export function countV022DraftReleases(tag: string, pages: unknown): number;
+export function fetchV022DraftCount(
+  tag: string,
+  apiUrl: string,
+  token: string | undefined,
+  fetchImpl?: typeof fetch,
+): Promise<number>;
 export function validateV022RecoveryInventory(
   tag: string,
   inventory: readonly RecoveryInventoryEntry[],

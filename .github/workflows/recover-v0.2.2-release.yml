@@ -208,8 +208,6 @@ jobs:
           release_state=$(node recovery-tooling/scripts/release-preflight.mjs release \
             "https://api.github.com/repos/gnolith/seedbed/releases/tags/$RECOVERY_TAG" \
             "$RECOVERY_TAG" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).state")
-          draft_count=$(gh release list --limit 100 --json tagName,isDraft \
-            --jq "[.[] | select(.tagName == \"$RECOVERY_TAG\" and .isDraft == true)] | length")
           latest_before=$(gh api repos/gnolith/seedbed/releases/latest --jq .tag_name)
           mapfile -t release_assets < <(find "$assets" -maxdepth 1 -type f -printf '%p\n' | sort)
           test "${#release_assets[@]}" = 7
@@ -217,12 +215,16 @@ jobs:
             second_state=$(node recovery-tooling/scripts/release-preflight.mjs release \
               "https://api.github.com/repos/gnolith/seedbed/releases/tags/$RECOVERY_TAG" \
               "$RECOVERY_TAG" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).state")
+            draft_count=$(node recovery-tooling/scripts/release-recovery.mjs fetch-draft-count \
+              "$RECOVERY_TAG" 'https://api.github.com/repos/gnolith/seedbed/releases')
             decision=$(node recovery-tooling/scripts/release-recovery.mjs release-decision \
               "$RECOVERY_TAG" "$release_state" "$second_state" "$draft_count" "$latest_before")
             test "$decision" = create
             gh release create "$RECOVERY_TAG" "${release_assets[@]}" --verify-tag \
               --title 'Seedbed 0.2.2' --notes-from-tag --latest
           elif test "$release_state" = match; then
+            draft_count=$(node recovery-tooling/scripts/release-recovery.mjs fetch-draft-count \
+              "$RECOVERY_TAG" 'https://api.github.com/repos/gnolith/seedbed/releases')
             decision=$(node recovery-tooling/scripts/release-recovery.mjs release-decision \
               "$RECOVERY_TAG" "$release_state" not-checked "$draft_count" "$latest_before")
             test "$decision" = verify
@@ -239,3 +241,5 @@ jobs:
           gh release view "$RECOVERY_TAG" --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/final-assets.txt"
           cmp "$expected" "$RUNNER_TEMP/final-assets.txt"
           for asset in "${release_assets[@]}"; do gh release verify-asset "$RECOVERY_TAG" "$asset"; done
+          test "$(node recovery-tooling/scripts/release-recovery.mjs fetch-draft-count \
+            "$RECOVERY_TAG" 'https://api.github.com/repos/gnolith/seedbed/releases')" = 0
