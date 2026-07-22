@@ -15,8 +15,7 @@ export async function requestJson(url, options = {}) {
       redirect: 'error',
       signal: controller.signal,
     });
-    const text = await response.text();
-    if (Buffer.byteLength(text) > MAX_RESPONSE_BYTES) throw new Error('remote preflight response exceeded 1 MiB');
+    const text = await readBoundedText(response);
     let body;
     try {
       body = text ? JSON.parse(text) : null;
@@ -30,6 +29,28 @@ export async function requestJson(url, options = {}) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function readBoundedText(response) {
+  if (!response.body?.getReader) {
+    const text = await response.text();
+    if (Buffer.byteLength(text) > MAX_RESPONSE_BYTES) throw new Error('remote preflight response exceeded 1 MiB');
+    return text;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_RESPONSE_BYTES) {
+      await reader.cancel();
+      throw new Error('remote preflight response exceeded 1 MiB');
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))));
 }
 
 export function classifyNpmVersion(status, body, expected) {
@@ -49,14 +70,23 @@ export function classifyGhcrVersions(status, body, expectedVersion) {
   if (!Array.isArray(body)) throw new Error('GHCR preflight returned malformed package versions');
   if (body.length >= 100) throw new Error('GHCR preflight result is incomplete; bounded page is full');
   const matches = body.filter((entry) => entry?.metadata?.container?.tags?.includes(expectedVersion));
+  const latest = body.filter((entry) => entry?.metadata?.container?.tags?.includes('latest'));
   if (matches.length > 1) throw new Error('GHCR preflight found duplicate version tags');
-  return matches.length === 1 ? { state: 'match', id: matches[0].id } : { state: 'absent' };
+  if (latest.length > 1) throw new Error('GHCR preflight found duplicate latest tags');
+  const latestVersions = latest[0]?.metadata?.container?.tags?.filter((tag) => /^\d+\.\d+\.\d+$/u.test(tag)) ?? [];
+  if (latest.length === 1 && latestVersions.length !== 1) throw new Error('GHCR latest tag lacks one exact version identity');
+  const latestVersion = latestVersions[0] ?? null;
+  return matches.length === 1 ? { state: 'match', id: matches[0].id, latestVersion } : { state: 'absent', latestVersion };
 }
 
 export function classifyGitHubRelease(status, body, expected) {
   if (status === 404) return { state: 'absent' };
   if (status < 200 || status >= 300) throw new Error(`GitHub Release preflight failed closed with HTTP ${status}`);
-  if (!body || body.tag_name !== expected.tag || body.draft || body.prerelease) throw new Error('GitHub Release preflight identity mismatch');
+  if (!body || body.tag_name !== expected.tag || body.prerelease) throw new Error('GitHub Release preflight identity mismatch');
+  if (body.draft === true) {
+    if (body.immutable === true) throw new Error('GitHub Release draft cannot be immutable');
+    return { state: 'draft', id: body.id };
+  }
   if (body.immutable !== true) throw new Error('GitHub Release is not immutable');
   return { state: 'match', id: body.id };
 }

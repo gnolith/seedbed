@@ -43,11 +43,14 @@ describe('release remote preflights', () => {
   it('accepts only absent or uniquely tagged GHCR versions', () => {
     expect(classifyGhcrVersions(404, {}, '0.2.0')).toEqual({ state: 'absent' });
     expect(classifyGhcrVersions(200, [{ id: 7, metadata: { container: { tags: ['0.2.0'] } } }], '0.2.0'))
-      .toEqual({ state: 'match', id: 7 });
+      .toEqual({ state: 'match', id: 7, latestVersion: null });
+    expect(classifyGhcrVersions(200, [{ id: 8, metadata: { container: { tags: ['0.1.1', 'latest'] } } }], '0.2.0'))
+      .toEqual({ state: 'absent', latestVersion: '0.1.1' });
     expect(() => classifyGhcrVersions(200, {}, '0.2.0')).toThrow();
     expect(() => classifyGhcrVersions(403, [], '0.2.0')).toThrow();
     expect(() => classifyGhcrVersions(500, [], '0.2.0')).toThrow();
     expect(() => classifyGhcrVersions(200, Array.from({ length: 100 }, (_, id) => ({ id })), '0.2.0')).toThrow();
+    expect(() => classifyGhcrVersions(200, [{ id: 3, metadata: { container: { tags: ['latest'] } } }], '0.2.0')).toThrow();
     expect(() => classifyGhcrVersions(200, [
       { id: 1, metadata: { container: { tags: ['0.2.0'] } } },
       { id: 2, metadata: { container: { tags: ['0.2.0'] } } },
@@ -58,6 +61,8 @@ describe('release remote preflights', () => {
     expect(classifyGitHubRelease(404, {}, { tag: 'v0.2.0' })).toEqual({ state: 'absent' });
     expect(classifyGitHubRelease(200, { id: 9, tag_name: 'v0.2.0', draft: false, prerelease: false, immutable: true }, { tag: 'v0.2.0' }))
       .toEqual({ state: 'match', id: 9 });
+    expect(classifyGitHubRelease(200, { id: 10, tag_name: 'v0.2.0', draft: true, prerelease: false, immutable: false }, { tag: 'v0.2.0' }))
+      .toEqual({ state: 'draft', id: 10 });
     for (const body of [
       { tag_name: 'v9.9.9', immutable: true },
       { tag_name: 'v0.2.0', draft: true, immutable: true },
@@ -71,6 +76,15 @@ describe('release remote preflights', () => {
     const response = (status: number, text: string) => ({ status, text: vi.fn(async () => text) });
     await expect(requestJson('https://example.test', { fetchImpl: vi.fn(async () => response(200, '{')) }))
       .rejects.toThrow('malformed JSON');
+    const oversized = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array((1024 * 1024) + 1));
+        controller.close();
+      },
+    });
+    await expect(requestJson('https://example.test', {
+      fetchImpl: vi.fn(async () => ({ status: 200, body: oversized })),
+    })).rejects.toThrow('exceeded 1 MiB');
     await expect(requestJson('https://example.test', {
       timeoutMs: 5,
       fetchImpl: vi.fn((_url, { signal }) => new Promise((_resolve, reject) => {
