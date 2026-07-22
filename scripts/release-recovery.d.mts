@@ -37,6 +37,12 @@ export function getV022RecoveryPlan(tag: string): {
 };
 export function getV022ReleaseAssetNames(tag: string): string[];
 export function getV022ReleaseCopies(tag: string): Array<[string, string]>;
+export function validateV022RecoveryApiSnapshot(
+  tag: string,
+  run: unknown,
+  jobs: unknown,
+  artifacts: unknown,
+): void;
 export function validateV022NpmMetadata(tag: string, metadata: unknown): void;
 export function validateV022NpmProvenance(tag: string, response: unknown): void;
 export function validateNpmProvenanceIdentity(

@@ -94,32 +94,8 @@ jobs:
           gh api "repos/gnolith/seedbed/actions/runs/$RUN_ID" > "$RUNNER_TEMP/run.json"
           gh api "repos/gnolith/seedbed/actions/runs/$RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/jobs.json"
           gh api "repos/gnolith/seedbed/actions/runs/$RUN_ID/artifacts?per_page=100" > "$RUNNER_TEMP/artifacts.json"
-          node - "$plan" "$RUNNER_TEMP/run.json" "$RUNNER_TEMP/jobs.json" "$RUNNER_TEMP/artifacts.json" <<'NODE'
-          const fs = require('fs');
-          const [planPath, runPath, jobsPath, artifactsPath] = process.argv.slice(2);
-          const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
-          const run = JSON.parse(fs.readFileSync(runPath, 'utf8'));
-          if (String(run.id) !== plan.runId || String(run.workflow_id) !== plan.workflowId || run.event !== 'push' ||
-              run.status !== 'completed' || run.conclusion !== 'failure' || run.run_attempt !== 1 ||
-              run.head_branch !== plan.tag || run.head_sha !== plan.commit || run.path !== '.github/workflows/release.yml') {
-            throw new Error('frozen release run identity mismatch');
-          }
-          const jobs = JSON.parse(fs.readFileSync(jobsPath, 'utf8')).jobs;
-          const actualJobs = jobs.map(({ id, name, status, conclusion }) => ({ id: String(id), name, status, conclusion }));
-          const expectedJobs = plan.jobs.map((job) => ({ ...job, status: 'completed' }));
-          if (JSON.stringify(actualJobs) !== JSON.stringify(expectedJobs)) throw new Error('frozen release job identity mismatch');
-          const artifacts = JSON.parse(fs.readFileSync(artifactsPath, 'utf8')).artifacts;
-          if (artifacts.length !== plan.artifacts.length) throw new Error('unexpected retained artifact count');
-          for (const expected of plan.artifacts) {
-            const artifact = artifacts.find(({ id }) => String(id) === expected.id);
-            if (!artifact || artifact.name !== expected.name || artifact.digest !== expected.digest ||
-                artifact.size_in_bytes !== expected.size || artifact.expired !== false ||
-                artifact.expires_at !== expected.expiresAt || String(artifact.workflow_run?.id) !== plan.runId ||
-                artifact.workflow_run?.head_branch !== plan.tag || artifact.workflow_run?.head_sha !== plan.commit) {
-              throw new Error('retained artifact metadata mismatch');
-            }
-          }
-          NODE
+          node recovery-tooling/scripts/release-recovery.mjs verify-api-snapshot "$RECOVERY_TAG" \
+            "$RUNNER_TEMP/run.json" "$RUNNER_TEMP/jobs.json" "$RUNNER_TEMP/artifacts.json"
           root="$RUNNER_TEMP/retained"
           mkdir "$root"
           for index in 0 1 2; do

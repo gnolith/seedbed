@@ -15,6 +15,7 @@ import {
   validateNpmProvenanceIdentity,
   validateV022NpmMetadata,
   validateV022ReleaseSnapshot,
+  validateV022RecoveryApiSnapshot,
   validateV022RecoveryInventory,
 } from '../scripts/release-recovery.mjs';
 
@@ -83,6 +84,50 @@ describe('v0.2.2 immutable Release recovery', () => {
       'seedbed-publication-2bf53198f07493490a205d28ade3586d26d0a6a02c85434d6e2d5ebe90be423b.tgz',
       'seedbed-release-evidence-82d8695159ee293b10634f7c64942600e39c899dac4bfccd58f0b9e8f71d79f8.json',
     ]);
+  });
+
+  it('validates frozen API evidence by exact schema and identity rather than serialization order', () => {
+    const definition = getV022RecoveryPlan('v0.2.2');
+    const snapshot = {
+      run: {
+        path: '.github/workflows/release.yml', head_sha: definition.commit, head_branch: definition.tag,
+        run_attempt: 1, conclusion: 'failure', status: 'completed', event: 'push',
+        workflow_id: Number(definition.workflowId), id: Number(definition.runId), ignored: 'api extension',
+      },
+      jobs: definition.jobs.map(({ id, name, conclusion }) => ({
+        conclusion, ignored: 'api extension', status: 'completed', name, id: Number(id),
+      })).reverse(),
+      artifacts: definition.artifacts.map((artifact) => ({
+        workflow_run: { head_sha: definition.commit, head_branch: definition.tag, id: Number(definition.runId) },
+        expires_at: artifact.expiresAt, expired: false, size_in_bytes: artifact.size,
+        digest: artifact.digest, name: artifact.name, id: Number(artifact.id), ignored: 'api extension',
+      })).reverse(),
+    };
+    expect(() => validateV022RecoveryApiSnapshot(
+      'v0.2.2', snapshot.run, snapshot.jobs, snapshot.artifacts,
+    )).not.toThrow();
+
+    for (const mutate of [
+      (value: typeof snapshot) => { value.jobs[0] = structuredClone(value.jobs[1]!); },
+      (value: typeof snapshot) => { value.jobs.push({ ...value.jobs[0]!, id: 1 }); },
+      (value: typeof snapshot) => { value.jobs.pop(); },
+      (value: typeof snapshot) => { value.jobs[0]!.id = 1; },
+      (value: typeof snapshot) => { value.jobs[0]!.name = 'wrong'; },
+      (value: typeof snapshot) => { value.jobs[0]!.status = 'queued'; },
+      (value: typeof snapshot) => { value.jobs[0]!.conclusion = 'cancelled'; },
+      (value: typeof snapshot) => { value.run.head_sha = 'wrong'; },
+      (value: typeof snapshot) => { value.artifacts[0] = structuredClone(value.artifacts[1]!); },
+      (value: typeof snapshot) => { value.artifacts.push({ ...value.artifacts[0]!, id: 1 }); },
+      (value: typeof snapshot) => { value.artifacts.pop(); },
+      (value: typeof snapshot) => { value.artifacts[0]!.digest = `sha256:${'0'.repeat(64)}`; },
+      (value: typeof snapshot) => { value.artifacts[0]!.size_in_bytes += 1; },
+    ]) {
+      const changed = structuredClone(snapshot);
+      mutate(changed);
+      expect(() => validateV022RecoveryApiSnapshot(
+        'v0.2.2', changed.run, changed.jobs, changed.artifacts,
+      )).toThrow();
+    }
   });
 
   it('strictly validates npm metadata and the complete SLSA statement identity', () => {
@@ -293,6 +338,8 @@ describe('v0.2.2 immutable Release recovery', () => {
     }
     expect(text).toContain('actions/artifacts/$id/zip');
     expect(text).toContain('extract-release-artifact.py');
+    expect(text).toContain('release-recovery.mjs verify-api-snapshot');
+    expect(text).not.toContain('JSON.stringify(actualJobs)');
     expect(text).toContain("require('./node_modules/@gnolith/seedbed/package.json').version");
     expect(text).toContain('npm audit signatures');
     expect(text).toContain('verify-npm-provenance');
