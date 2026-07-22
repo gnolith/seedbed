@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createItem, TaprootContentRepositoryV1 } from '@gnolith/taproot';
@@ -10,6 +10,7 @@ import type { SeedbedConfig } from '../src/config.js';
 import { initializeDatabase, openDatabase } from '../src/persistence.js';
 import { createSeedbedRuntime } from '../src/runtime.js';
 import { loadTaprootAssembly } from '../src/taproot-bridge.js';
+import { createInstallationSnapshot, restoreInstallationSnapshot } from '../src/snapshot.js';
 
 describe('native semantic executor', () => {
   it('executes an approved SQLite plan headlessly and survives restart', { timeout: 15_000 }, async () => {
@@ -19,6 +20,11 @@ describe('native semantic executor', () => {
       request.setEncoding('utf8');
       request.on('data', (chunk) => { body += chunk; });
       request.on('end', () => {
+        if (request.headers.authorization !== 'Bearer semantic-provider-secret') {
+          response.statusCode = 401;
+          response.end('{}');
+          return;
+        }
         if (request.url?.startsWith('/fail/')) {
           failingRequests += 1;
           response.statusCode = 503;
@@ -35,13 +41,15 @@ describe('native semantic executor', () => {
     if (!address || typeof address === 'string') throw new Error('deterministic provider did not bind');
     const directory = await mkdtemp(join(tmpdir(), 'seedbed-semantic-runtime-'));
     const secret = join(directory, 'root.key');
+    const providerSecret = join(directory, 'provider.key');
     await writeFile(secret, Buffer.alloc(32, 0x73), { mode: 0o600 });
+    await writeFile(providerSecret, 'semantic-provider-secret\n', { mode: 0o600 });
     const config: SeedbedConfig = {
       databasePath: join(directory, 'gnolith.sqlite'), blobPath: join(directory, 'blobs'), baseIri: 'https://semantic-runtime.seedbed.test/',
       rootSecretFile: secret, principalSelector: 'owner', workspaceSelector: 'workspace', logLevel: 'silent', shutdownTimeoutMs: 2_000,
       semanticConfigurations: [
-        { id: 'deterministic', name: 'Deterministic fixture', selected: true, provider: { kind: 'openai-compatible', endpoint: `http://127.0.0.1:${address.port}/v1`, model: 'fixture', dimensions: 2, allowPrivateEndpoint: true }, vectorIndex: { kind: 'sqlite' } },
-        { id: 'failing', name: 'Failing fixture', provider: { kind: 'openai-compatible', endpoint: `http://127.0.0.1:${address.port}/fail`, model: 'fixture', dimensions: 2, allowPrivateEndpoint: true }, vectorIndex: { kind: 'sqlite' } },
+        { id: 'deterministic', name: 'Deterministic fixture', selected: true, provider: { kind: 'openai-compatible', endpoint: `http://127.0.0.1:${address.port}/v1`, model: 'fixture', dimensions: 2, allowPrivateEndpoint: true, secret: { file: providerSecret } }, vectorIndex: { kind: 'sqlite' } },
+        { id: 'failing', name: 'Failing fixture', provider: { kind: 'openai-compatible', endpoint: `http://127.0.0.1:${address.port}/fail`, model: 'fixture', dimensions: 2, allowPrivateEndpoint: true, secret: { file: providerSecret } }, vectorIndex: { kind: 'sqlite' } },
       ],
     };
     const taproot = await loadTaprootAssembly();
@@ -81,9 +89,37 @@ describe('native semantic executor', () => {
       expect(await call('semantic_select', { configurationId: 'deterministic' })).toMatchObject({ ok: true });
       await runtime.close();
 
+      const snapshot = join(directory, 'semantic.seedbed-snapshot.gz');
+      await expect(createInstallationSnapshot(config, taproot, snapshot)).resolves.toMatchObject({ valid: true, manifest: { secretsExported: false } });
+
       runtime = await createSeedbedRuntime(config, taproot);
       try {
         await expect(call('search', { text: 'another-semantic-only-concept', kinds: ['resource'], limit: 5 })).resolves.toMatchObject({ ok: true, value: { results: [expect.objectContaining({ sourceId: 'semantic-resource' })] } });
+      } finally {
+        await runtime.close();
+      }
+
+      const { semanticConfigurations, ...baseConfig } = config;
+      const restoredConfig: SeedbedConfig = { ...baseConfig, databasePath: join(directory, 'restored', 'gnolith.sqlite'), blobPath: join(directory, 'restored', 'blobs') };
+      await expect(restoreInstallationSnapshot(restoredConfig, taproot, snapshot)).resolves.toMatchObject({ valid: true });
+      runtime = await createSeedbedRuntime(restoredConfig, taproot);
+      try {
+        await expect(call('search', { text: 'credential-gated-semantic-concept', kinds: ['resource'], limit: 5 })).resolves.toMatchObject({ ok: true, value: { results: [] } });
+        await expect(call('search', { text: 'Magnesium', kinds: ['resource'], limit: 5 })).resolves.toMatchObject({ ok: true, value: { results: [expect.objectContaining({ sourceId: 'semantic-resource' })] } });
+      } finally {
+        await runtime.close();
+      }
+      await unlink(providerSecret);
+      runtime = await createSeedbedRuntime({ ...restoredConfig, semanticConfigurations: semanticConfigurations! }, taproot);
+      try {
+        await expect(call('semantic_reconnect', { configurationId: 'deterministic' })).resolves.toMatchObject({ ok: true, value: { connected: false } });
+      } finally {
+        await runtime.close();
+      }
+      await writeFile(providerSecret, 'semantic-provider-secret\n', { mode: 0o600 });
+      runtime = await createSeedbedRuntime({ ...restoredConfig, semanticConfigurations: semanticConfigurations! }, taproot);
+      try {
+        await expect(call('search', { text: 'reattached-semantic-concept', kinds: ['resource'], limit: 5 })).resolves.toMatchObject({ ok: true, value: { results: [expect.objectContaining({ sourceId: 'semantic-resource' })] } });
       } finally {
         await runtime.close();
       }
