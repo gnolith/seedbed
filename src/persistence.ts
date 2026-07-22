@@ -90,7 +90,7 @@ const versions: MigrationVersions = {
   diamond: '0.4.0',
   taproot: '0.3.0',
   workshop: '0.3.3',
-  seedbed: '0.2.1',
+  seedbed: '0.2.2',
 };
 
 const workshopKnownMigrations = workshopMigrations.map(({ id, sql }) => ({

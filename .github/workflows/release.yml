@@ -619,11 +619,22 @@ jobs:
           fi
           latest_digest="sha256:$(docker buildx imagetools inspect --raw ghcr.io/gnolith/seedbed:latest | sha256sum | cut -d ' ' -f 1)"
           test "$latest_digest" = "${{ steps.build.outputs.digest }}"
+      - id: image-evidence-name
+        name: Create the portable image evidence artifact name
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          name=$(node scripts/github-artifact-name.mjs \
+            seedbed-image-evidence "$IMAGE_DIGEST" "attempt-$RUN_ATTEMPT")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
       - id: upload-image-evidence
         name: Upload the verified image evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: seedbed-image-evidence-${{ steps.build.outputs.digest }}-attempt-${{ github.run_attempt }}
+          name: ${{ steps.image-evidence-name.outputs.name }}
           path: image-evidence
           if-no-files-found: error
           compression-level: 0

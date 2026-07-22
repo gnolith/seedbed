@@ -73,11 +73,11 @@ describe('release remote preflights', () => {
     ], '0.2.0')).toThrow();
   });
 
-  it('treats the partial 0.2.0 image as independent from the 0.2.1 fix-forward', () => {
+  it('treats partial prior images as independent from the 0.2.2 fix-forward', () => {
     expect(classifyGhcrVersions(200, [
       { id: 20, metadata: { container: { tags: ['0.2.0'] } } },
-      { id: 11, metadata: { container: { tags: ['0.1.1', 'latest'] } } },
-    ], '0.2.1')).toEqual({ state: 'absent', latestVersion: '0.1.1' });
+      { id: 21, metadata: { container: { tags: ['0.2.1', 'latest'] } } },
+    ], '0.2.2')).toEqual({ state: 'absent', latestVersion: '0.2.1' });
   });
 
   it('accepts only absent or immutable exact GitHub Releases', () => {
