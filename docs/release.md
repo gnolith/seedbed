@@ -249,6 +249,13 @@ unexpected evidence fails closed. Creation is allowed only while the prior lates
 Release remains `v0.1.1`; an already-present Release is accepted only when it is the
 latest immutable `v0.2.2` identity and every asset verifies byte-for-byte.
 
+This one-shot job uses the dedicated `release-recovery-v0.2.2` environment, not the
+normal tag-only `release` environment. Configure it only after this workflow is merged:
+allow the selected `main` branch and no other branch or tag, and require zero
+environment secrets and variables. The workflow uses only the built-in GitHub token
+with `actions: read`, `attestations: read`, `packages: read`, and `contents: write`;
+it has no OIDC or package/attestation write capability.
+
 ## Failed 0.1.0 publication evidence
 
 The `v0.1.0` source tag points to commit
