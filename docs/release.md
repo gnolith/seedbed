@@ -1,9 +1,21 @@
 # Release process
 
-Seedbed is published from an immutable GitHub Release whose `vX.Y.Z` tag exactly
-matches `package.json`. Configure npm trusted publishing for the `release.yml`
-workflow in `gnolith/seedbed` and the protected `release` environment. GitHub's
-`packages: write` permission publishes the public GHCR image.
+Seedbed publication is started by pushing a protected annotated `vX.Y.Z` tag whose
+peeled commit is the checked-out workflow commit, is reachable from `origin/main`,
+and whose version exactly matches `package.json`. A lightweight tag, an off-main tag,
+or any identity mismatch fails before publication. Configure npm trusted publishing
+for the `release.yml` workflow in `gnolith/seedbed` and the protected `release`
+environment. GitHub's `packages: write` permission publishes the public GHCR image.
+
+Before pushing the tag, update the version and changelog on `main`, wait for required
+checks, and use a maintainer credential to verify that
+`GET /repos/gnolith/seedbed/immutable-releases` reports `enabled: true`. Record that
+per-release external prerequisite with repository Actions variable
+`IMMUTABLE_RELEASES_VERIFIED_FOR=vX.Y.Z`; the tag workflow fails before publication
+if it does not exactly match. Then create the tag with
+`git tag -a vX.Y.Z -m "Seedbed X.Y.Z"` and push that exact tag. Never move or recreate
+a release tag. The workflow rechecks the evidence tag before creating the Release
+and accepts the result only when GitHub reports the published Release immutable.
 
 Repository-level immutable releases are enabled through GitHub's supported
 `immutable-releases` setting. GitHub applies that setting only to Releases created
@@ -47,6 +59,26 @@ the 30-day source-artifact retention allow a rerun to recover if npm accepted a
 publication before the workflow recorded success. Each rerun uploads a new
 attempt-suffixed immutable handoff while retaining the prior attempt's
 content-addressed evidence.
+
+The credential-free job also stages the exact dependency tarballs, audits signatures,
+builds and tests the packed process runtime, creates the production closure and SBOM,
+and builds/tests the candidate non-root, no-port Docker image before npm publication.
+Remote npm, GHCR, and GitHub Release probes are bounded and fail closed on authorization,
+server, network, timeout, malformed-response, or identity errors; only a true 404 means
+absent. A matching npm version or GHCR version tag enters exact-verification recovery
+instead of being overwritten. After the digest-addressed image and provenance pass,
+`latest` is moved to that verified digest and checked. The GitHub Release is created
+last with content-addressed npm tarball, closure, package and image SBOMs, raw image
+manifest, signed-provenance verification, and release-evidence assets;
+reruns accept it only when its immutable identity and every asset match exactly.
+Release asset identity contains only stable source and content identities; transient
+Actions run attempts, artifact IDs, and service handoff digests remain workflow audit
+data and never change immutable Release evidence. Existing exact signed provenance is
+verified and reused rather than duplicated on a rerun.
+
+These gates accept the published package in its supported process and Docker runtimes.
+They do not assemble, provision, deploy, or accept a complete Gnolith Site; that work
+belongs to the agent constructing a Site.
 
 The Actions allowlist evidence is reproducible with:
 

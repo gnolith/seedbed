@@ -6,12 +6,29 @@ describe('release credential boundary', () => {
   let packageJob: string;
   let publishJob: string;
   let imageJob: string;
+  let releaseJob: string;
 
   beforeAll(async () => {
     workflow = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
     packageJob = between(workflow, '  package:', '  publish:');
     publishJob = between(workflow, '  publish:', '  image:');
-    imageJob = workflow.slice(workflow.indexOf('  image:'));
+    imageJob = between(workflow, '  image:', '  release:');
+    releaseJob = workflow.slice(workflow.indexOf('  release:'));
+  });
+
+  it('runs only for version tags and proves the annotated tag identity', () => {
+    expect(workflow).toMatch(/push:\r?\n    tags: \['v\*'\]/u);
+    expect(workflow).not.toContain('types: [published]');
+    expect(packageJob).toContain('fetch-depth: 0');
+    expect(packageJob).toContain('git cat-file -t "refs/tags/$tag"');
+    expect(packageJob).toContain('git rev-parse "refs/tags/$tag^{commit}"');
+    expect(packageJob).toContain('test "$tag_commit" = "$(git rev-parse HEAD)"');
+    expect(packageJob).toContain('test "$tag_commit" = "${{ github.sha }}"');
+    expect(packageJob).toContain('git fetch --no-tags origin main');
+    expect(packageJob).toContain('git merge-base --is-ancestor "$tag_commit" origin/main');
+    expect(packageJob).toContain("require('./package.json').version");
+    expect(packageJob).toContain('vars.IMMUTABLE_RELEASES_VERIFIED_FOR');
+    expect(packageJob).toContain('= "$tag"');
   });
 
   it('keeps packing and repository execution outside the protected environment', () => {
@@ -64,7 +81,7 @@ describe('release credential boundary', () => {
     expect(packageJob).toContain('seedbed-npm-$sha256-attempt-$RUN_ATTEMPT');
     expect(publishJob).toContain('artifact-ids: ${{ needs.package.outputs.artifact_id }}');
     expect(publishJob).toContain('EXPECTED_ARTIFACT_DIGEST');
-    expect(publishJob).toContain('RELEASE_TAG: ${{ github.event.release.tag_name }}');
+    expect(publishJob).toContain('RELEASE_TAG: ${{ github.ref_name }}');
     expect(publishJob).not.toContain('needs.package.outputs.version');
     expect(publishJob).not.toContain('EXPECTED_NAME');
     expect(publishJob).not.toContain('EXPECTED_VERSION');
@@ -140,7 +157,7 @@ describe('release credential boundary', () => {
   });
 
   it('gates the image job on successful OIDC publication', () => {
-    expect(imageJob).toMatch(/^  image:\r?\n    needs: publish/mu);
+    expect(imageJob).toMatch(/^  image:\r?\n    needs: \[package, publish\]/mu);
     expect(imageJob).not.toContain('needs.npm.outputs');
   });
 
@@ -157,9 +174,66 @@ describe('release credential boundary', () => {
     expect(imageJob).toContain('npm audit signatures');
     expect(imageJob).toContain('bash scripts/build-production-closure.sh');
     expect(imageJob).toContain('"$(cat npm-integrity.txt)"');
-    expect(imageJob).toContain('--build-arg PRODUCTION_CLOSURE_SHA256=${{ steps.closure.outputs.sha256 }}');
+    expect(imageJob).toContain('--build-arg PRODUCTION_CLOSURE_SHA256="$CLOSURE_SHA256"');
     expect(imageJob).toContain('org.gnolith.production-closure.sha256');
     expect(imageJob).toContain('SEEDBED_CLOSURE_SHA256: ${{ steps.closure.outputs.sha256 }}');
+  });
+
+  it('fails closed before publication and never overwrites an existing version', () => {
+    expect(packageJob).toContain('release-preflight.mjs npm');
+    expect(packageJob).toContain('release-preflight.mjs ghcr');
+    expect(packageJob).toContain('release-preflight.mjs release');
+    expect(workflow).not.toContain('repos/gnolith/seedbed/immutable-releases');
+    expect(publishJob).toContain('test "$registry_status" = 404');
+    expect(imageJob).toContain('if test "$state" = absent');
+    expect(imageJob).toContain('elif test "$state" = match');
+    expect(workflow).not.toContain('set -x');
+  });
+
+  it('verifies the exact image before moving latest and creates the immutable release last', () => {
+    const verifyImage = imageJob.indexOf('Verify the exact immutable version image and extract its SBOM');
+    const moveLatest = imageJob.indexOf('Move latest only after exact version verification');
+    expect(verifyImage).toBeGreaterThan(-1);
+    expect(moveLatest).toBeGreaterThan(verifyImage);
+    expect(releaseJob).toMatch(/^  release:\r?\n    needs: \[package, publish, image\]/mu);
+    expect(releaseJob).toContain('Create or recover the immutable GitHub Release last');
+    expect(releaseJob).toContain('gh release create "$RELEASE_TAG"');
+    expect(releaseJob).toContain('gh release verify "$RELEASE_TAG"');
+    expect(releaseJob).toContain('gh release verify-asset "$RELEASE_TAG" "$local_asset"');
+    expect(releaseJob).toContain('isImmutable');
+    expect(releaseJob).toContain('IMMUTABLE_SETTING_EVIDENCE_TAG');
+    expect(releaseJob).toContain('seedbed-release-evidence-$evidence_sha.json');
+    expect(releaseJob).toContain('seedbed-production-closure-$CLOSURE_SHA256.tar.gz');
+    expect(imageJob).toContain('image-evidence/image-manifest.json');
+    expect(imageJob).toContain('image-evidence/image-sbom.json');
+    expect(imageJob).toContain('image-evidence/image-provenance-verification.json');
+    expect(imageJob).toContain('release-preflight.mjs attestation');
+    expect(imageJob).toContain("if: steps.attestation-preflight.outputs.state == 'absent'");
+    expect(imageJob).toContain('uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6');
+    expect(imageJob).toContain('--signer-workflow gnolith/seedbed/.github/workflows/release.yml');
+    expect(imageJob).toContain('RELEASE_REF: ${{ github.ref }}');
+    expect(imageJob).toContain('RELEASE_COMMIT: ${{ github.sha }}');
+    expect(imageJob).toContain('--source-ref "$RELEASE_REF"');
+    expect(imageJob).toContain('--source-digest "$RELEASE_COMMIT"');
+    expect(releaseJob).toContain('needs.image.outputs.evidence_artifact_id');
+    expect(releaseJob).toContain('seedbed-image-manifest-$manifest_sha.json');
+    expect(releaseJob).toContain('seedbed-image-sbom-$image_sbom_sha.json');
+    expect(releaseJob).toContain('seedbed-image-provenance-verification-$provenance_sha.json');
+    expect(releaseJob).not.toMatch(/NPM_ARTIFACT_ID|STAGING_ARTIFACT_ID|IMAGE_EVIDENCE_ARTIFACT_ID/u);
+    expect(workflow.match(/gh release create/gu)).toHaveLength(1);
+  });
+
+  it('serializes releases, prevents latest downgrade, and resumes partial drafts without clobbering', () => {
+    expect(workflow).toContain('group: seedbed-release');
+    expect(workflow).not.toContain('group: seedbed-release-${{ github.ref }}');
+    expect(imageJob).toContain('Leaving newer latest version $latest_version unchanged.');
+    expect(releaseJob).toContain('current_latest_version');
+    expect(releaseJob).toContain('gh release upload "$RELEASE_TAG" "$local_asset"');
+    expect(releaseJob).not.toContain('--clobber');
+  });
+
+  it('keeps complete Site ownership outside the package release', () => {
+    expect(workflow).not.toMatch(/cloudflare|wrangler|sites deploy|complete[- ]site acceptance/iu);
   });
 });
 
