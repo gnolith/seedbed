@@ -256,6 +256,21 @@ environment secrets and variables. The workflow uses only the built-in GitHub to
 with `actions: read`, `attestations: read`, `packages: read`, and `contents: write`;
 it has no OIDC or package/attestation write capability.
 
+The built-in Actions token cannot read the administration-only
+`immutable-releases` endpoint. Immediately before dispatch, a maintainer credential
+must verify that endpoint reports `enabled: true` and set the repository Actions
+variable `IMMUTABLE_RELEASES_VERIFIED_FOR` to exact value `v0.2.2`. The recovery job
+requires that fixed value before tagged checkout and still requires the final or
+already-present Release API response to report `immutable: true`.
+
+The first dedicated-environment dispatch, workflow run
+[`29920957467`](https://github.com/gnolith/seedbed/actions/runs/29920957467), failed
+closed in the initial trust step because the built-in token received HTTP 403 from
+the administration-only endpoint. Tagged checkout and every package, container, and
+Release step were skipped; no public identity changed. Never rerun that failed
+attempt or bypass its gate. The reviewed workflow replaces only that impossible API
+probe with the fixed maintainer-attested repository variable described above.
+
 ## Failed 0.1.0 publication evidence
 
 The `v0.1.0` source tag points to commit

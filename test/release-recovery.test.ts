@@ -262,9 +262,32 @@ describe('v0.2.2 immutable Release recovery', () => {
     const trustIndex = recovery.steps.findIndex(({ name }) => name?.includes('Prove remote tag identity'));
     const tagCheckoutIndex = recovery.steps.findIndex(({ name }) => name?.includes('now-proven immutable tagged source'));
     const setupIndex = recovery.steps.findIndex(({ uses }) => uses === './recovery-tooling/.github/actions/setup-node');
+    const releaseStep = recovery.steps.find(({ name }) => name?.includes('GitHub Release last'));
+    const releaseIndex = recovery.steps.indexOf(releaseStep!);
     expect(trustIndex).toBeGreaterThan(0);
     expect(tagCheckoutIndex).toBeGreaterThan(trustIndex);
     expect(setupIndex).toBeGreaterThan(tagCheckoutIndex);
+    expect(releaseIndex).toBeGreaterThan(tagCheckoutIndex);
+    const trustStep = recovery.steps[trustIndex]!;
+    expect(trustStep.env).toEqual(expect.objectContaining({
+      IMMUTABLE_SETTING_EVIDENCE_TAG: '${{ vars.IMMUTABLE_RELEASES_VERIFIED_FOR }}',
+    }));
+    const immutableGuard = trustStep.run?.split(/\r?\n/u)
+      .find((line) => line.trim() === 'test "$IMMUTABLE_SETTING_EVIDENCE_TAG" = v0.2.2');
+    expect(immutableGuard).toBeDefined();
+    const immutableGuardScript = `set -euo pipefail\n${immutableGuard}`;
+    const correctEvidence = spawnSync('bash', [], {
+      encoding: 'utf8', input: `set -euo pipefail\nIMMUTABLE_SETTING_EVIDENCE_TAG=v0.2.2\n${immutableGuard}`,
+    });
+    expect(correctEvidence.status, correctEvidence.stderr).toBe(0);
+    const wrongEvidence = spawnSync('bash', [], {
+      encoding: 'utf8', input: `set -euo pipefail\nIMMUTABLE_SETTING_EVIDENCE_TAG=v0.2.1\n${immutableGuard}`,
+    });
+    expect(wrongEvidence.status).not.toBe(0);
+    const missingEvidence = spawnSync('bash', [], {
+      encoding: 'utf8', input: immutableGuardScript,
+    });
+    expect(missingEvidence.status).not.toBe(0);
     for (const step of recovery.steps.filter(({ uses }) => uses?.startsWith('actions/checkout@'))) {
       expect(step.with?.['persist-credentials']).toBe(false);
     }
@@ -290,8 +313,8 @@ describe('v0.2.2 immutable Release recovery', () => {
     expect(text).not.toContain('packages: write');
     expect(text).not.toContain('actions/attest');
     expect(source).not.toContain('secrets.');
-    expect(source).not.toContain('vars.');
-    const releaseStep = recovery.steps.find(({ name }) => name?.includes('GitHub Release last'));
+    expect(source).not.toContain('immutable-releases');
+    expect(source.match(/\$\{\{\s*vars\.IMMUTABLE_RELEASES_VERIFIED_FOR\s*\}\}/gu)).toHaveLength(1);
     expect(releaseStep?.run).toContain('verify-release-json');
     expect(releaseStep?.run?.match(/ls-remote --tags origin/g)).toHaveLength(2);
     expect(releaseStep?.run?.match(/releases\/latest --jq \.tag_name/g)).toHaveLength(4);
@@ -300,7 +323,7 @@ describe('v0.2.2 immutable Release recovery', () => {
     expect(releaseStep?.env).toEqual(expect.objectContaining({
       GH_TOKEN: '${{ github.token }}', GITHUB_TOKEN: '${{ github.token }}',
     }));
-    expect(recovery.steps.indexOf(releaseStep!)).toBe(recovery.steps.length - 1);
+    expect(releaseIndex).toBe(recovery.steps.length - 1);
     for (const step of recovery.steps.filter(({ shell }) => shell === 'bash')) {
       const syntax = spawnSync('bash', ['-n'], { encoding: 'utf8', input: step.run });
       expect(syntax.status, `${step.name}: ${syntax.stderr}`).toBe(0);

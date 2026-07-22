@@ -36,11 +36,13 @@ jobs:
       - name: Prove remote tag identity and reviewed tooling before tagged checkout
         env:
           GH_TOKEN: ${{ github.token }}
+          IMMUTABLE_SETTING_EVIDENCE_TAG: ${{ vars.IMMUTABLE_RELEASES_VERIFIED_FOR }}
           RECOVERY_TAG: ${{ inputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
           test "$RECOVERY_TAG" = v0.2.2
+          test "$IMMUTABLE_SETTING_EVIDENCE_TAG" = v0.2.2
           test "$(git -C recovery-tooling rev-parse HEAD)" = "${{ github.sha }}"
           git -C recovery-tooling fetch origin main --no-tags
           test "$(git -C recovery-tooling rev-parse origin/main)" = "${{ github.sha }}"
@@ -56,7 +58,6 @@ jobs:
           test "$(git -C recovery-tooling rev-parse "$expected_tag_object^{commit}")" = "$expected_commit"
           test "$(git -C recovery-tooling rev-parse "$expected_tag_object:.github/workflows/release.yml")" = "$expected_workflow_blob"
           git -C recovery-tooling merge-base --is-ancestor "$expected_commit" origin/main
-          test "$(gh api repos/gnolith/seedbed/immutable-releases --jq .enabled)" = true
       - name: Check out the now-proven immutable tagged source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
