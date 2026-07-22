@@ -235,16 +235,19 @@ the flattened path `mcp-runtime-sbom.json`. The retained artifact inventory prov
 that this is the single path-contract defect; the other archive paths and hashes match.
 
 The manual `workflow_dispatch` recovery accepts only explicit tag `v0.2.2` from the
-current reviewed `main` workflow. It checks out the immutable tagged source and the
-reviewed recovery tooling into separate directories, requiring the tooling commit to
-equal `origin/main`. It cannot publish npm or GHCR or mutate a tag. Before creating the
+current reviewed `main` workflow. It first checks out only current-main recovery
+tooling without persisted credentials, proves the hard-coded remote tag object, peeled
+commit, original release-workflow blob, and `origin/main` tooling identity, and only
+then checks out the tag separately without credentials or runs the reviewed setup
+action. It cannot publish npm or GHCR or mutate a tag. Before creating the
 missing Release last, it proves the immutable setting, tag object/peel/main ancestry,
 exact npm integrity/signatures/SLSA/install, exact versioned and `latest` image digest,
 non-root/no-port runtime labels, image SBOM, signed attestation, retained run/artifact
 IDs and service digests, every archive path/size/hash, and all seven deterministic
 content-addressed Release assets. Missing, mutable, expired, mismatched, draft, or
-unexpected evidence fails closed. An already-present Release is accepted only when it
-is immutable and every asset verifies byte-for-byte.
+unexpected evidence fails closed. Creation is allowed only while the prior latest
+Release remains `v0.1.1`; an already-present Release is accepted only when it is the
+latest immutable `v0.2.2` identity and every asset verifies byte-for-byte.
 
 ## Failed 0.1.0 publication evidence
 

@@ -19,6 +19,8 @@ const plan = Object.freeze({
   imageManifestSha256: 'f1a05b0e43ee76c3ce0a8ef5806ade7a5b64603b25f5fca021a47ff3ac44b389',
   provenanceEvidenceSha256: '9e21452a11081d08a5179a72c6b11c4053a40bf8bb895635de7a6d2b9c0fb97e',
   releaseEvidenceSha256: '82d8695159ee293b10634f7c64942600e39c899dac4bfccd58f0b9e8f71d79f8',
+  npmAttestationsUrl: 'https://registry.npmjs.org/-/npm/v1/attestations/@gnolith%2fseedbed@0.2.2',
+  priorLatestReleaseTag: 'v0.1.1',
   jobs: [
     { id: '88907134527', name: 'package', conclusion: 'success' },
     { id: '88907578374', name: 'publish', conclusion: 'success' },
@@ -66,6 +68,112 @@ export function validateV022RecoveryInventory(tag, inventory) {
   return normalized;
 }
 
+export function getV022ReleaseAssetNames(tag) {
+  getV022RecoveryPlan(tag);
+  return [
+    ...releaseCopies.map(([, name]) => name),
+    `seedbed-release-evidence-${plan.releaseEvidenceSha256}.json`,
+  ].sort();
+}
+
+export function getV022ReleaseCopies(tag) {
+  getV022RecoveryPlan(tag);
+  return releaseCopies.map(([source, name]) => [source, name]);
+}
+
+export function validateV022NpmMetadata(tag, metadata) {
+  getV022RecoveryPlan(tag);
+  if (metadata?.name !== '@gnolith/seedbed' || metadata?.version !== plan.version ||
+      metadata?.dist?.integrity !== plan.npmIntegrity ||
+      metadata?.dist?.attestations?.url !== plan.npmAttestationsUrl ||
+      metadata?.dist?.attestations?.provenance?.predicateType !== 'https://slsa.dev/provenance/v1') {
+    throw new Error('published npm metadata does not match frozen v0.2.2 identity');
+  }
+}
+
+export function validateV022NpmProvenance(tag, response) {
+  getV022RecoveryPlan(tag);
+  const attestations = response?.attestations?.filter(
+    ({ predicateType }) => predicateType === 'https://slsa.dev/provenance/v1',
+  ) ?? [];
+  if (attestations.length !== 1) throw new Error('expected exactly one SLSA v1 provenance attestation');
+  const envelope = attestations[0]?.bundle?.dsseEnvelope;
+  if (envelope?.payloadType !== 'application/vnd.in-toto+json' || typeof envelope.payload !== 'string') {
+    throw new Error('unexpected npm provenance DSSE envelope');
+  }
+  const statement = JSON.parse(Buffer.from(envelope.payload, 'base64').toString('utf8'));
+  const expectedSha512 = Buffer.from(plan.npmIntegrity.slice('sha512-'.length), 'base64').toString('hex');
+  if (statement?._type !== 'https://in-toto.io/Statement/v1' ||
+      statement?.predicateType !== 'https://slsa.dev/provenance/v1' ||
+      statement?.subject?.length !== 1 ||
+      statement.subject[0]?.name !== `pkg:npm/%40gnolith/seedbed@${plan.version}` ||
+      statement.subject[0]?.digest?.sha512 !== expectedSha512) {
+    throw new Error('unexpected npm provenance statement or subject');
+  }
+  const build = statement.predicate?.buildDefinition;
+  if (build?.buildType !== 'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1') {
+    throw new Error('unexpected npm provenance build type');
+  }
+  const workflow = build.externalParameters?.workflow;
+  if (workflow?.repository !== 'https://github.com/gnolith/seedbed' ||
+      workflow?.path !== '.github/workflows/release.yml' || workflow?.ref !== `refs/tags/${plan.tag}`) {
+    throw new Error('unexpected npm provenance workflow');
+  }
+  const source = build.resolvedDependencies?.filter(
+    ({ uri }) => uri === `git+https://github.com/gnolith/seedbed@refs/tags/${plan.tag}`,
+  ) ?? [];
+  if (source.length !== 1 || source[0]?.digest?.gitCommit !== plan.commit) {
+    throw new Error('unexpected npm provenance source commit');
+  }
+}
+
+export function decideV022ReleaseRecovery(tag, firstState, secondState, draftCount, latestTag) {
+  getV022RecoveryPlan(tag);
+  if (draftCount !== 0) throw new Error('a draft v0.2.2 Release exists');
+  if (firstState === 'absent') {
+    if (secondState !== 'absent') throw new Error('Release state changed during the recovery preflight');
+    if (latestTag !== plan.priorLatestReleaseTag) throw new Error('unexpected prior latest GitHub Release');
+    return 'create';
+  }
+  if (firstState === 'match') {
+    if (secondState !== 'not-checked' || latestTag !== plan.tag) {
+      throw new Error('existing immutable v0.2.2 Release is not the exact latest state');
+    }
+    return 'verify';
+  }
+  throw new Error('GitHub Release recovery found draft, mutable, partial, or conflicting state');
+}
+
+export function validateV022ReleaseSnapshot(tag, release) {
+  getV022RecoveryPlan(tag);
+  if (release?.tag_name !== plan.tag || release?.name !== 'Seedbed 0.2.2' || release?.body !== 'Seedbed 0.2.2' ||
+      release?.draft !== false || release?.prerelease !== false || release?.immutable !== true) {
+    throw new Error('GitHub Release metadata does not match frozen v0.2.2 identity');
+  }
+  const expectedSizes = new Map([
+    [`seedbed-publication-${plan.npmSha256}.tgz`, 240982],
+    [`seedbed-production-closure-${plan.closureSha256}.tar.gz`, 14171466],
+    ['seedbed-mcp-runtime-sbom-492322da93a4cd46f6057d1b9c6b36c59500967e65b10ffbf9c010c4439801f4.json', 38207],
+    [`seedbed-image-sbom-${plan.imageSbomSha256}.json`, 6654678],
+    [`seedbed-image-manifest-${plan.imageManifestSha256}.json`, 856],
+    [`seedbed-image-provenance-verification-${plan.provenanceEvidenceSha256}.json`, 423],
+    [`seedbed-release-evidence-${plan.releaseEvidenceSha256}.json`, 1250],
+  ]);
+  if (!Array.isArray(release.assets) || release.assets.length !== expectedSizes.size) {
+    throw new Error('GitHub Release asset count does not match frozen v0.2.2 identity');
+  }
+  const seen = new Set();
+  for (const asset of release.assets) {
+    const expectedSize = expectedSizes.get(asset?.name);
+    const digest = asset?.name?.match(/-([a-f0-9]{64})\.(?:json|tgz|tar\.gz)$/)?.[1];
+    if (expectedSize === undefined || seen.has(asset.name) || asset.state !== 'uploaded' ||
+        asset.size !== expectedSize || asset.digest !== `sha256:${digest}`) {
+      throw new Error('GitHub Release asset identity does not match frozen v0.2.2 evidence');
+    }
+    seen.add(asset.name);
+  }
+}
+
 async function inventoryDirectory(root) {
   const entries = [];
   async function visit(directory) {
@@ -86,31 +194,38 @@ async function inventoryDirectory(root) {
   return entries;
 }
 
-async function stageRecoveryAssets(tag, root, destination) {
-  validateV022RecoveryInventory(tag, await inventoryDirectory(root));
+export async function stageRecoveryAssetsFromDefinition(definition, copies, root, destination) {
+  const actual = (await inventoryDirectory(root)).sort((left, right) => left.path.localeCompare(right.path));
+  const expected = [...definition.inventory].sort((left, right) => left.path.localeCompare(right.path));
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error('release staging inventory mismatch');
   await mkdir(destination, { recursive: false });
-  for (const [source, name] of releaseCopies) await copyFile(join(root, source), join(destination, name));
+  for (const [source, name] of copies) await copyFile(join(root, source), join(destination, name));
   const evidence = createReleaseEvidence({
-    releaseTag: plan.tag,
-    releaseCommit: plan.commit,
-    seedbedVersion: plan.version,
-    npmSha256: plan.npmSha256,
-    npmIntegrity: plan.npmIntegrity,
-    closureSha256: plan.closureSha256,
-    imageDigest: plan.imageDigest,
-    imageSbomSha256: plan.imageSbomSha256,
-    imageManifestSha256: plan.imageManifestSha256,
-    provenanceEvidenceSha256: plan.provenanceEvidenceSha256,
-    immutableSettingEvidenceTag: plan.tag,
+    releaseTag: definition.tag,
+    releaseCommit: definition.commit,
+    seedbedVersion: definition.version,
+    npmSha256: definition.npmSha256,
+    npmIntegrity: definition.npmIntegrity,
+    closureSha256: definition.closureSha256,
+    imageDigest: definition.imageDigest,
+    imageSbomSha256: definition.imageSbomSha256,
+    imageManifestSha256: definition.imageManifestSha256,
+    provenanceEvidenceSha256: definition.provenanceEvidenceSha256,
+    immutableSettingEvidenceTag: definition.tag,
   });
   const evidenceBytes = `${JSON.stringify(evidence, null, 2)}\n`;
   const evidenceSha = createHash('sha256').update(evidenceBytes).digest('hex');
-  if (evidenceSha !== plan.releaseEvidenceSha256) throw new Error('release evidence identity drifted');
+  if (evidenceSha !== definition.releaseEvidenceSha256) throw new Error('release evidence identity drifted');
   const evidenceName = `seedbed-release-evidence-${evidenceSha}.json`;
   await writeFile(join(destination, evidenceName), evidenceBytes);
-  const names = [...releaseCopies.map(([, name]) => name), evidenceName].sort();
+  const names = [...copies.map(([, name]) => name), evidenceName].sort();
   await writeFile(join(dirname(destination), 'expected-release-assets.txt'), `${names.join('\n')}\n`);
   return names;
+}
+
+export async function stageV022RecoveryAssets(tag, root, destination) {
+  getV022RecoveryPlan(tag);
+  return stageRecoveryAssetsFromDefinition(plan, releaseCopies, root, destination);
 }
 
 function writeOutputs() {
@@ -130,11 +245,23 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [command, tag, first, second] = process.argv.slice(2);
   if (command === 'plan') process.stdout.write(`${JSON.stringify(getV022RecoveryPlan(tag), null, 2)}\n`);
   else if (command === 'github-output') { getV022RecoveryPlan(tag); writeOutputs(); }
-  else if (command === 'verify-inventory') {
+  else if (command === 'verify-npm-metadata') {
+    validateV022NpmMetadata(tag, JSON.parse(await readFile(first, 'utf8')));
+    process.stdout.write('published npm metadata verified\n');
+  } else if (command === 'verify-npm-provenance') {
+    validateV022NpmProvenance(tag, JSON.parse(await readFile(first, 'utf8')));
+    process.stdout.write('published npm provenance verified\n');
+  } else if (command === 'release-decision') {
+    const [firstState, secondState, draftCount, latestTag] = process.argv.slice(4);
+    process.stdout.write(`${decideV022ReleaseRecovery(tag, firstState, secondState, Number(draftCount), latestTag)}\n`);
+  } else if (command === 'verify-release-json') {
+    validateV022ReleaseSnapshot(tag, JSON.parse(await readFile(first, 'utf8')));
+    process.stdout.write('immutable v0.2.2 GitHub Release snapshot verified\n');
+  } else if (command === 'verify-inventory') {
     validateV022RecoveryInventory(tag, await inventoryDirectory(first));
     process.stdout.write('retained v0.2.2 artifact inventory verified\n');
   } else if (command === 'stage') {
-    const names = await stageRecoveryAssets(tag, first, second);
+    const names = await stageV022RecoveryAssets(tag, first, second);
     process.stdout.write(`${JSON.stringify(names)}\n`);
-  } else throw new Error('usage: release-recovery <plan|github-output|verify-inventory|stage> v0.2.2 [source] [destination]');
+  } else throw new Error('usage: release-recovery <plan|github-output|verify-npm-metadata|verify-npm-provenance|release-decision|verify-release-json|verify-inventory|stage> v0.2.2 [...]');
 }

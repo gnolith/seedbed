@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import hashlib
+import io
 import json
 import os
 import stat
@@ -40,7 +41,7 @@ def main() -> None:
     seen_casefold = set()
     seen_normalized = set()
     extracted = []
-    with zipfile.ZipFile(archive) as bundle:
+    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as bundle:
         infos = bundle.infolist()
         if len(infos) > len(expected) + 8:
             fail("retained artifact ZIP has too many entries")

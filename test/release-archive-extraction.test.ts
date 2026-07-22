@@ -27,6 +27,8 @@ describe('retained release artifact ZIP extraction', () => {
     ['casefold', 'duplicate or colliding paths'],
     ['non-nfc', 'non-NFC path'],
     ['symlink', 'symlink or special'],
+    ['special', 'symlink or special'],
+    ['unsupported', 'unsupported retained artifact compression'],
     ['zip-bomb', 'expansion bound exceeded'],
   ] as const)('rejects %s archives before publication', async (mode, message) => {
     const fixture = await makeFixture(mode);
@@ -43,6 +45,20 @@ describe('retained release artifact ZIP extraction', () => {
     const result = extract(fixture);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('service digest mismatch');
+  });
+
+  it('rejects raw size drift and destinations that already exist', async () => {
+    const fixture = await makeFixture('valid');
+    const plan = JSON.parse(await readFile(fixture.plan, 'utf8')) as RecoveryPlan;
+    plan.artifacts[0]!.size += 1;
+    await writeFile(fixture.plan, JSON.stringify(plan));
+    expect(extract(fixture).stderr).toContain('ZIP size mismatch');
+
+    const second = await makeFixture('valid');
+    await writeFile(second.destination, 'occupied');
+    const result = extract(second);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('FileExistsError');
   });
 });
 
@@ -96,6 +112,8 @@ function entriesFor(mode: FixtureMode): FixtureEntry[] {
   ];
   if (mode === 'non-nfc') return [{ name: 'e\u0301vidence.json', data: encoded('evidence') }];
   if (mode === 'symlink') return [{ name: 'link', data: encoded('target') }];
+  if (mode === 'special') return [{ name: 'pipe', data: encoded('special') }];
+  if (mode === 'unsupported') return [{ name: 'unsupported.txt', data: encoded('unsupported') }];
   return [{ name: 'large.txt', data: Buffer.alloc(1_000_000).toString('base64') }];
 }
 
@@ -113,10 +131,14 @@ with warnings.catch_warnings():
             info.external_attr = (stat.S_IFREG | 0o644) << 16
             if fixture['mode'] == 'symlink':
                 info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            elif fixture['mode'] == 'special':
+                info.external_attr = (stat.S_IFIFO | 0o600) << 16
+            elif fixture['mode'] == 'unsupported':
+                info.compress_type = zipfile.ZIP_BZIP2
             archive.writestr(info, base64.b64decode(entry['data']))
 `;
 
-type FixtureMode = 'casefold' | 'duplicate' | 'non-nfc' | 'symlink' | 'traversal' | 'valid' | 'zip-bomb';
+type FixtureMode = 'casefold' | 'duplicate' | 'non-nfc' | 'special' | 'symlink' | 'traversal' | 'unsupported' | 'valid' | 'zip-bomb';
 type FixtureEntry = { data: string; name: string };
 type Fixture = { archive: string; destination: string; plan: string };
 type RecoveryPlan = {
