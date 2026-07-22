@@ -71,6 +71,10 @@ instead of being overwritten. After the digest-addressed image and provenance pa
 last with content-addressed npm tarball, closure, package and image SBOMs, raw image
 manifest, signed-provenance verification, and release-evidence assets;
 reruns accept it only when its immutable identity and every asset match exactly.
+Release asset identity contains only stable source and content identities; transient
+Actions run attempts, artifact IDs, and service handoff digests remain workflow audit
+data and never change immutable Release evidence. Existing exact signed provenance is
+verified and reused rather than duplicated on a rerun.
 
 These gates accept the published package in its supported process and Docker runtimes.
 They do not assemble, provision, deploy, or accept a complete Gnolith Site; that work

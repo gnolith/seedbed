@@ -91,6 +91,26 @@ export function classifyGitHubRelease(status, body, expected) {
   return { state: 'match', id: body.id };
 }
 
+export function classifyGitHubAttestations(status, body, expected) {
+  if (status === 404) return { state: 'absent' };
+  if (status < 200 || status >= 300) throw new Error(`GitHub attestation preflight failed closed with HTTP ${status}`);
+  if (!Array.isArray(body?.attestations)) throw new Error('GitHub attestation preflight returned malformed data');
+  let matches = 0;
+  for (const attestation of body.attestations) {
+    const payload = attestation?.bundle?.dsseEnvelope?.payload;
+    if (typeof payload !== 'string') throw new Error('GitHub attestation preflight returned malformed bundle');
+    let statement;
+    try {
+      statement = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+    } catch {
+      throw new Error('GitHub attestation preflight returned malformed statement');
+    }
+    if (statement.predicateType !== 'https://slsa.dev/provenance/v1') continue;
+    if (statement.subject?.some((subject) => subject.name === expected.name && subject.digest?.sha256 === expected.digest)) matches += 1;
+  }
+  return matches > 0 ? { state: 'match' } : { state: 'absent' };
+}
+
 export function validateTagEvidence(evidence) {
   if (!/^v\d+\.\d+\.\d+$/u.test(evidence.tag)) throw new Error('release tag must be vX.Y.Z');
   if (evidence.objectType !== 'tag') throw new Error('release tag must be annotated');
@@ -101,6 +121,33 @@ export function validateTagEvidence(evidence) {
   if (evidence.mainAncestor !== true) throw new Error('release tag commit is not on origin/main');
   if (evidence.packageVersion !== evidence.tag.slice(1)) throw new Error('release tag does not match package version');
   return { version: evidence.packageVersion, commit: evidence.peeledCommit };
+}
+
+export function createReleaseEvidence(input) {
+  const required = [
+    'releaseTag', 'releaseCommit', 'seedbedVersion', 'npmSha256', 'npmIntegrity',
+    'closureSha256', 'imageDigest', 'imageSbomSha256', 'imageManifestSha256',
+    'provenanceEvidenceSha256', 'immutableSettingEvidenceTag',
+  ];
+  for (const name of required) if (!input[name]) throw new Error(`missing ${name}`);
+  return {
+    schemaVersion: 1,
+    package: { name: '@gnolith/seedbed', version: input.seedbedVersion, sha256: input.npmSha256, integrity: input.npmIntegrity },
+    source: {
+      repository: 'https://github.com/gnolith/seedbed', tag: input.releaseTag,
+      commit: input.releaseCommit, workflow: '.github/workflows/release.yml',
+      immutableReleaseSettingVerifiedFor: input.immutableSettingEvidenceTag,
+    },
+    components: { diamond: '0.4.0', taproot: '0.3.0', workshop: '0.3.3' },
+    closure: { sha256: input.closureSha256 },
+    image: {
+      reference: `ghcr.io/gnolith/seedbed@${input.imageDigest}`,
+      digest: input.imageDigest,
+      manifestSha256: input.imageManifestSha256,
+      sbomSha256: input.imageSbomSha256,
+      provenanceVerificationSha256: input.provenanceEvidenceSha256,
+    },
+  };
 }
 
 async function main() {
@@ -119,8 +166,10 @@ async function main() {
     result = classifyGhcrVersions(response.status, response.body, args[0]);
   } else if (kind === 'release') {
     result = classifyGitHubRelease(response.status, response.body, { tag: args[0] });
+  } else if (kind === 'attestation') {
+    result = classifyGitHubAttestations(response.status, response.body, { name: args[0], digest: args[1] });
   } else {
-    throw new Error('usage: release-preflight.mjs npm|ghcr|release URL ...');
+    throw new Error('usage: release-preflight.mjs npm|ghcr|release|attestation URL ...');
   }
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

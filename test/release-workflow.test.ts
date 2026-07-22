@@ -206,15 +206,20 @@ describe('release credential boundary', () => {
     expect(releaseJob).toContain('seedbed-production-closure-$CLOSURE_SHA256.tar.gz');
     expect(imageJob).toContain('image-evidence/image-manifest.json');
     expect(imageJob).toContain('image-evidence/image-sbom.json');
-    expect(imageJob).toContain('image-evidence/image-provenance-verification.txt');
-    expect(imageJob).toContain('uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35');
+    expect(imageJob).toContain('image-evidence/image-provenance-verification.json');
+    expect(imageJob).toContain('release-preflight.mjs attestation');
+    expect(imageJob).toContain("if: steps.attestation-preflight.outputs.state == 'absent'");
+    expect(imageJob).toContain('uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6');
     expect(imageJob).toContain('--signer-workflow gnolith/seedbed/.github/workflows/release.yml');
-    expect(imageJob).toContain('--source-ref "${{ github.ref }}"');
-    expect(imageJob).toContain('--source-digest "${{ github.sha }}"');
+    expect(imageJob).toContain('RELEASE_REF: ${{ github.ref }}');
+    expect(imageJob).toContain('RELEASE_COMMIT: ${{ github.sha }}');
+    expect(imageJob).toContain('--source-ref "$RELEASE_REF"');
+    expect(imageJob).toContain('--source-digest "$RELEASE_COMMIT"');
     expect(releaseJob).toContain('needs.image.outputs.evidence_artifact_id');
     expect(releaseJob).toContain('seedbed-image-manifest-$manifest_sha.json');
     expect(releaseJob).toContain('seedbed-image-sbom-$image_sbom_sha.json');
-    expect(releaseJob).toContain('seedbed-image-provenance-verification-$provenance_sha.txt');
+    expect(releaseJob).toContain('seedbed-image-provenance-verification-$provenance_sha.json');
+    expect(releaseJob).not.toMatch(/NPM_ARTIFACT_ID|STAGING_ARTIFACT_ID|IMAGE_EVIDENCE_ARTIFACT_ID/u);
     expect(workflow.match(/gh release create/gu)).toHaveLength(1);
   });
 

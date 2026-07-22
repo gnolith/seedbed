@@ -2,14 +2,30 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   classifyGhcrVersions,
   classifyGitHubRelease,
+  classifyGitHubAttestations,
   classifyNpmVersion,
   requestJson,
   validateTagEvidence,
+  createReleaseEvidence,
 } from '../scripts/release-preflight.mjs';
 
 const npmExpected = { name: '@gnolith/seedbed', version: '0.2.0', integrity: 'sha512-exact' };
 
 describe('release remote preflights', () => {
+  it('keeps immutable release evidence byte-identical across workflow attempts', () => {
+    const stable = {
+      releaseTag: 'v0.2.0', releaseCommit: 'a'.repeat(40), seedbedVersion: '0.2.0',
+      npmSha256: 'b'.repeat(64), npmIntegrity: 'sha512-exact', closureSha256: 'c'.repeat(64),
+      imageDigest: `sha256:${'d'.repeat(64)}`, imageSbomSha256: 'e'.repeat(64),
+      imageManifestSha256: 'd'.repeat(64), provenanceEvidenceSha256: 'f'.repeat(64),
+      immutableSettingEvidenceTag: 'v0.2.0',
+    };
+    const attempt1 = createReleaseEvidence({ ...stable, artifactId: '100', artifactDigest: 'sha256:old' });
+    const attempt2 = createReleaseEvidence({ ...stable, artifactId: '200', artifactDigest: 'sha256:new' });
+    expect(`${JSON.stringify(attempt1, null, 2)}\n`).toBe(`${JSON.stringify(attempt2, null, 2)}\n`);
+    expect(JSON.stringify(attempt1)).not.toMatch(/artifact|attempt|runId/iu);
+  });
+
   it('rejects lightweight, wrong-commit, non-main, and version-mismatched tags', () => {
     const commit = 'a'.repeat(40);
     const valid = {
@@ -70,6 +86,24 @@ describe('release remote preflights', () => {
     ]) expect(() => classifyGitHubRelease(200, body, { tag: 'v0.2.0' })).toThrow();
     expect(() => classifyGitHubRelease(403, {}, { tag: 'v0.2.0' })).toThrow();
     expect(() => classifyGitHubRelease(503, {}, { tag: 'v0.2.0' })).toThrow();
+  });
+
+  it('creates provenance only when the exact signed image subject is absent', () => {
+    const statement = (name: string, digest: string) => ({
+      predicateType: 'https://slsa.dev/provenance/v1',
+      subject: [{ name, digest: { sha256: digest } }],
+    });
+    const bundle = (value: unknown) => ({ bundle: { dsseEnvelope: { payload: Buffer.from(JSON.stringify(value)).toString('base64') } } });
+    const expected = { name: 'ghcr.io/gnolith/seedbed', digest: 'a'.repeat(64) };
+    expect(classifyGitHubAttestations(404, {}, expected)).toEqual({ state: 'absent' });
+    expect(classifyGitHubAttestations(200, { attestations: [bundle(statement(expected.name, expected.digest))] }, expected))
+      .toEqual({ state: 'match' });
+    expect(classifyGitHubAttestations(200, { attestations: [bundle(statement(expected.name, 'b'.repeat(64)))] }, expected))
+      .toEqual({ state: 'absent' });
+    expect(() => classifyGitHubAttestations(403, {}, expected)).toThrow();
+    expect(() => classifyGitHubAttestations(500, {}, expected)).toThrow();
+    expect(() => classifyGitHubAttestations(200, {}, expected)).toThrow();
+    expect(() => classifyGitHubAttestations(200, { attestations: [{ bundle: {} }] }, expected)).toThrow();
   });
 
   it('bounds malformed, timeout, and network failures without reflecting secrets', async () => {

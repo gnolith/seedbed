@@ -533,28 +533,71 @@ jobs:
           docker buildx imagetools inspect \
             "ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" \
             --format '{{json .SBOM}}' > image-evidence/image-sbom.json
-          node -e "const s=require('./image-evidence/image-sbom.json'); if(!JSON.stringify(s).includes('spdxVersion')) process.exit(1)"
+          node - <<'NODE'
+          const sbom = require('./image-evidence/image-sbom.json');
+          const documents = [];
+          const visit = (value) => {
+            if (!value || typeof value !== 'object') return;
+            if (typeof value.spdxVersion === 'string') documents.push(value);
+            for (const child of Object.values(value)) visit(child);
+          };
+          visit(sbom);
+          if (documents.length === 0) throw new Error('image SBOM has no SPDX document');
+          for (const document of documents) {
+            if (!/^SPDX-2\./u.test(document.spdxVersion)) throw new Error('unsupported SPDX version');
+            if (typeof document.SPDXID !== 'string' || !Array.isArray(document.packages)) throw new Error('malformed SPDX document');
+          }
+          NODE
       - name: Functionally verify the immutable published image
         env:
           SEEDBED_TEST_IMAGE: ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}
           SEEDBED_CLOSURE_SHA256: ${{ steps.closure.outputs.sha256 }}
         run: npm run test:docker
+      - id: attestation-preflight
+        name: Check for exact existing signed image provenance
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          digest_hex="${IMAGE_DIGEST#sha256:}"
+          result=$(node scripts/release-preflight.mjs attestation \
+            "https://api.github.com/repos/gnolith/seedbed/attestations/$IMAGE_DIGEST" \
+            'ghcr.io/gnolith/seedbed' "$digest_hex")
+          state=$(node -p "JSON.parse(process.argv[1]).state" "$result")
+          echo "state=$state" >> "$GITHUB_OUTPUT"
       - name: Create signed GitHub provenance for the exact verified image
-        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35
+        if: steps.attestation-preflight.outputs.state == 'absent'
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6
         with:
           subject-name: ghcr.io/gnolith/seedbed
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
       - name: Verify the signed image provenance identity
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_REF: ${{ github.ref }}
         shell: bash
         run: |
-          gh attestation verify "oci://ghcr.io/gnolith/seedbed@${{ steps.build.outputs.digest }}" \
+          gh attestation verify "oci://ghcr.io/gnolith/seedbed@$IMAGE_DIGEST" \
             --repo gnolith/seedbed \
             --signer-workflow gnolith/seedbed/.github/workflows/release.yml \
-            --source-ref "${{ github.ref }}" \
-            --source-digest "${{ github.sha }}" \
-            | tee image-evidence/image-provenance-verification.txt
-          test -s image-evidence/image-provenance-verification.txt
+            --source-ref "$RELEASE_REF" \
+            --source-digest "$RELEASE_COMMIT" >/dev/null
+          node --input-type=module - image-evidence/image-provenance-verification.json <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          const evidence = {
+            schemaVersion: 1,
+            subject: { name: 'ghcr.io/gnolith/seedbed', digest: process.env.IMAGE_DIGEST },
+            repository: 'gnolith/seedbed',
+            signerWorkflow: 'gnolith/seedbed/.github/workflows/release.yml',
+            sourceRef: process.env.RELEASE_REF,
+            sourceDigest: process.env.RELEASE_COMMIT,
+            verification: 'gh attestation verify passed',
+          };
+          writeFileSync(process.argv[2], `${JSON.stringify(evidence, null, 2)}\n`);
+          NODE
       - name: Move latest only after exact version verification
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -611,14 +654,8 @@ jobs:
           SEEDBED_VERSION: ${{ needs.package.outputs.version }}
           NPM_SHA256: ${{ needs.package.outputs.sha256 }}
           NPM_INTEGRITY: ${{ needs.package.outputs.integrity }}
-          NPM_ARTIFACT_ID: ${{ needs.package.outputs.artifact_id }}
-          NPM_ARTIFACT_DIGEST: ${{ needs.package.outputs.artifact_digest }}
-          STAGING_ARTIFACT_ID: ${{ needs.package.outputs.staging_artifact_id }}
-          STAGING_ARTIFACT_DIGEST: ${{ needs.package.outputs.staging_artifact_digest }}
           CLOSURE_SHA256: ${{ needs.image.outputs.closure_sha256 }}
           IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
-          IMAGE_EVIDENCE_ARTIFACT_ID: ${{ needs.image.outputs.evidence_artifact_id }}
-          IMAGE_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.image.outputs.evidence_artifact_digest }}
           IMMUTABLE_SETTING_EVIDENCE_TAG: ${{ vars.IMMUTABLE_RELEASES_VERIFIED_FOR }}
         shell: bash
         run: |
@@ -641,43 +678,24 @@ jobs:
           test "sha256:$manifest_sha" = "$IMAGE_DIGEST"
           manifest_asset="$assets/seedbed-image-manifest-$manifest_sha.json"
           mv "$assets/image-manifest.json" "$manifest_asset"
-          provenance_sha=$(sha256sum "$assets/image-provenance-verification.txt" | cut -d ' ' -f 1)
-          provenance_asset="$assets/seedbed-image-provenance-verification-$provenance_sha.txt"
-          mv "$assets/image-provenance-verification.txt" "$provenance_asset"
+          provenance_sha=$(sha256sum "$assets/image-provenance-verification.json" | cut -d ' ' -f 1)
+          provenance_asset="$assets/seedbed-image-provenance-verification-$provenance_sha.json"
+          mv "$assets/image-provenance-verification.json" "$provenance_asset"
           export IMAGE_SBOM_SHA="$image_sbom_sha" IMAGE_MANIFEST_SHA="$manifest_sha" PROVENANCE_EVIDENCE_SHA="$provenance_sha"
           evidence="$assets/seedbed-release-evidence.json"
-          node - "$evidence" <<'NODE'
-          const fs = require('fs');
-          const path = process.argv[2];
-          const required = [
-            'RELEASE_TAG', 'RELEASE_COMMIT', 'SEEDBED_VERSION', 'NPM_SHA256', 'NPM_INTEGRITY',
-            'NPM_ARTIFACT_ID', 'NPM_ARTIFACT_DIGEST', 'STAGING_ARTIFACT_ID',
-            'STAGING_ARTIFACT_DIGEST', 'CLOSURE_SHA256', 'IMAGE_DIGEST',
-            'IMAGE_EVIDENCE_ARTIFACT_ID', 'IMAGE_EVIDENCE_ARTIFACT_DIGEST',
-            'IMAGE_SBOM_SHA', 'IMAGE_MANIFEST_SHA', 'PROVENANCE_EVIDENCE_SHA',
-            'IMMUTABLE_SETTING_EVIDENCE_TAG',
-          ];
-          for (const name of required) if (!process.env[name]) throw new Error(`missing ${name}`);
-          const evidence = {
-            schemaVersion: 1,
-            package: { name: '@gnolith/seedbed', version: process.env.SEEDBED_VERSION, sha256: process.env.NPM_SHA256, integrity: process.env.NPM_INTEGRITY },
-            source: { repository: 'https://github.com/gnolith/seedbed', tag: process.env.RELEASE_TAG, commit: process.env.RELEASE_COMMIT, workflow: '.github/workflows/release.yml', immutableReleaseSettingVerifiedFor: process.env.IMMUTABLE_SETTING_EVIDENCE_TAG },
-            components: { diamond: '0.4.0', taproot: '0.3.0', workshop: '0.3.3' },
-            closure: { sha256: process.env.CLOSURE_SHA256 },
-            image: {
-              reference: `ghcr.io/gnolith/seedbed@${process.env.IMAGE_DIGEST}`,
-              digest: process.env.IMAGE_DIGEST,
-              manifestSha256: process.env.IMAGE_MANIFEST_SHA,
-              sbomSha256: process.env.IMAGE_SBOM_SHA,
-              provenanceVerificationSha256: process.env.PROVENANCE_EVIDENCE_SHA,
-            },
-            handoffs: {
-              npm: { artifactId: process.env.NPM_ARTIFACT_ID, digest: process.env.NPM_ARTIFACT_DIGEST },
-              staging: { artifactId: process.env.STAGING_ARTIFACT_ID, digest: process.env.STAGING_ARTIFACT_DIGEST },
-              image: { artifactId: process.env.IMAGE_EVIDENCE_ARTIFACT_ID, digest: process.env.IMAGE_EVIDENCE_ARTIFACT_DIGEST },
-            },
-          };
-          fs.writeFileSync(path, `${JSON.stringify(evidence, null, 2)}\n`);
+          node --input-type=module - "$evidence" <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          import { createReleaseEvidence } from './scripts/release-preflight.mjs';
+          const evidence = createReleaseEvidence({
+            releaseTag: process.env.RELEASE_TAG, releaseCommit: process.env.RELEASE_COMMIT,
+            seedbedVersion: process.env.SEEDBED_VERSION, npmSha256: process.env.NPM_SHA256,
+            npmIntegrity: process.env.NPM_INTEGRITY, closureSha256: process.env.CLOSURE_SHA256,
+            imageDigest: process.env.IMAGE_DIGEST, imageSbomSha256: process.env.IMAGE_SBOM_SHA,
+            imageManifestSha256: process.env.IMAGE_MANIFEST_SHA,
+            provenanceEvidenceSha256: process.env.PROVENANCE_EVIDENCE_SHA,
+            immutableSettingEvidenceTag: process.env.IMMUTABLE_SETTING_EVIDENCE_TAG,
+          });
+          writeFileSync(process.argv[2], `${JSON.stringify(evidence, null, 2)}\n`);
           NODE
           evidence_sha=$(sha256sum "$evidence" | cut -d ' ' -f 1)
           evidence_asset="$assets/seedbed-release-evidence-$evidence_sha.json"
