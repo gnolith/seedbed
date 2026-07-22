@@ -216,6 +216,9 @@ describe('release credential boundary', () => {
     expect(imageJob).toContain('GH_TOKEN: ${{ github.token }}');
     expect(imageJob).toContain('--source-ref "$RELEASE_REF"');
     expect(imageJob).toContain('--source-digest "$RELEASE_COMMIT"');
+    expect(imageJob).toContain('Create the portable image evidence artifact name');
+    expect(imageJob).toContain('node scripts/github-artifact-name.mjs');
+    expect(imageJob).toContain('name: ${{ steps.image-evidence-name.outputs.name }}');
     expect(releaseJob).toContain('needs.image.outputs.evidence_artifact_id');
     expect(releaseJob).toContain('seedbed-image-manifest-$manifest_sha.json');
     expect(releaseJob).toContain('seedbed-image-sbom-$image_sbom_sha.json');

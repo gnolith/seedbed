@@ -49,7 +49,7 @@ printf '%s\n' "$*" > "$MOCK_GH_LOG"
 export IMAGE_DIGEST=sha256:${'a'.repeat(64)}
 export MOCK_GH_LOG=gh.log
 export RELEASE_COMMIT=${'b'.repeat(40)}
-export RELEASE_REF=refs/tags/v0.2.1
+export RELEASE_REF=refs/tags/v0.2.2
 `;
 
     const result = spawnSync('bash', [], {
@@ -61,8 +61,12 @@ export RELEASE_REF=refs/tags/v0.2.1
     expect(result.stderr).toBe('');
     expect(result.status).toBe(0);
     expect(await readFile(join(root, 'gh.log'), 'utf8')).toContain('attestation verify oci://ghcr.io/gnolith/seedbed@sha256:');
-    expect(await readFile(join(root, 'image-evidence/image-provenance-verification.json'), 'utf8'))
-      .toContain('gh attestation verify passed');
+    const evidence = JSON.parse(await readFile(
+      join(root, 'image-evidence/image-provenance-verification.json'),
+      'utf8',
+    )) as { subject: { digest: string }; verification: string };
+    expect(evidence.subject.digest).toBe(`sha256:${'a'.repeat(64)}`);
+    expect(evidence.verification).toBe('gh attestation verify passed');
 
     const missingToken = spawnSync('bash', [], {
       cwd: root,

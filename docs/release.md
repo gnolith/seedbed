@@ -76,6 +76,12 @@ Actions run attempts, artifact IDs, and service handoff digests remain workflow 
 data and never change immutable Release evidence. Existing exact signed provenance is
 verified and reused rather than duplicated on a rerun.
 
+The transient image-evidence handoff name is derived deterministically from the exact
+container digest after replacing every GitHub-forbidden artifact-name character with
+`-`. This portability transformation applies only to the Actions artifact name. The
+unmodified `sha256:<hex>` identity remains inside the manifest, SBOM, signed-provenance
+verification, job outputs, and content-addressed immutable Release evidence.
+
 These gates accept the published package in its supported process and Docker runtimes.
 They do not assemble, provision, deploy, or accept a complete Gnolith Site; that work
 belongs to the agent constructing a Site.
@@ -94,7 +100,7 @@ checkout and artifact actions.
 
 ## Dependency release inputs
 
-Seedbed 0.2.1 binds Workshop 0.3.3 to annotated `v0.3.3` and exact source commit
+Seedbed 0.2.2 binds Workshop 0.3.3 to annotated `v0.3.3` and exact source commit
 `6c6accddc1d84351c16486ba36b65f711e822c8c`. Its authoritative npm tarball has
 SHA-256 `c2bc2f3763a3d693662b584d0ed2270936644ab3d23ecd699f0f8b4a2ed0cdc3`
 and integrity
@@ -131,7 +137,7 @@ acceptance paths.
 The historical 0.1.1 production tree contains
 `@modelcontextprotocol/sdk@1.29.0 -> @hono/node-server@1.19.14`, affected by moderate
 advisory GHSA-frvp-7c67-39w9. Seedbed is an application/CLI distribution whose MCP
-surface is stdio-only, so 0.2.1 compiles only the SDK server, protocol, and stdio code
+surface is stdio-only, so 0.2.2 compiles only the SDK server, protocol, and stdio code
 reachable from `src/mcp.ts` into a package-owned artifact. The SDK is an exact build
 dependency rather than a published runtime dependency; Gnolith and Node/native
 dependencies remain external. Hono HTTP server code is neither reachable nor shipped.
@@ -151,7 +157,7 @@ development audit and stdio build/tests verify that hardening. The override is a
 from the published runtime and Docker closure manifests and can be removed with the
 SDK build dependency when upstream provides the stable stdio-only surface.
 
-## 0.2.1 candidate acceptance
+## 0.2.2 candidate acceptance
 
 The authorization candidate was exercised on 2026-07-22 against only the exact
 public Diamond 0.4.0, Taproot 0.3.0, and Workshop 0.3.3 registry tarballs. Registry
@@ -164,7 +170,7 @@ in a new process.
 The production closure was realized from an empty npm cache, verified against the
 committed SHA-512 lock, and reinstalled offline with the registry set to an invalid
 local endpoint. The Node 24 image accepted only the exact
-`0.4.0 / 0.3.0 / 0.3.3 / 0.2.1` tuple, ran as non-root, exposed no ports, and had no
+`0.4.0 / 0.3.0 / 0.3.3 / 0.2.2` tuple, ran as non-root, exposed no ports, and had no
 listening TCP or TCP6 sockets while MCP stdio was active. A replacement container
 reopened the same named volume and authorized data; replacement with a different
 root secret failed closed. SIGTERM drained in-flight writes and the database reopened
@@ -187,9 +193,28 @@ The next verification step stopped because GitHub CLI requires its Actions token
 `GH_TOKEN`; the token was available to the job but was not mapped into that step.
 Consequently `latest` remained at its prior digest and no `v0.2.0` GitHub Release was
 created. Never move, delete, overwrite, reuse, or manually complete the `v0.2.0`
-identities. Version `0.2.1` is the reviewed fix-forward and maps `${{ github.token }}`
-only into the signed-attestation verification step before any `latest` or Release
-mutation.
+identities. Version `0.2.1` was the first reviewed fix-forward and maps
+`${{ github.token }}` only into the signed-attestation verification step before any
+`latest` or Release mutation.
+
+## Partial 0.2.1 publication evidence
+
+The protected annotated `v0.2.1` tag object
+`66a39a49c4d8097760654c50c5840d4277f7705b` peels to main commit
+`33c1042fcabe614b925505d0bc9c214d52c2e8f6`. Release workflow run
+[`29913671424`](https://github.com/gnolith/seedbed/actions/runs/29913671424)
+published `@gnolith/seedbed@0.2.1` through npm OIDC with integrity
+`sha512-zjUfEObjV1t9ZwViyZdZIWJfp1JQeOh0rYu010Lj0dFylKxk5GaZ46V8mrE9hlHq3TgCqhBTDisNgQwMpsURyA==`
+and SLSA v1 provenance. It published and functionally accepted the exact image
+`ghcr.io/gnolith/seedbed@sha256:9ec6b73aa9997e28da5a80f1b39e158532b744c42babf804257b15479a64be5f`,
+extracted its SPDX SBOM, created and verified signed GitHub provenance with the exact
+tag ref and commit, and moved `latest` to that verified digest.
+
+The subsequent Actions handoff failed closed because its artifact name embedded the
+literal digest and GitHub forbids `:` in artifact names. The immutable GitHub Release
+job was skipped. Never move, delete, overwrite, reuse, rerun, or manually complete the
+`v0.2.1` identities. Version `0.2.2` is the reviewed fix-forward; it changes only the
+transient artifact-name representation while keeping every content identity exact.
 
 ## Failed 0.1.0 publication evidence
 

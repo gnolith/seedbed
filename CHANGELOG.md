@@ -14,7 +14,7 @@
 - Add native headless, packed-package, Docker replacement-volume, stale-context,
   rollback, and concurrent-bootstrap acceptance coverage.
 - Upgrade the assembly to Taproot 0.3.0 and Workshop 0.3.3. This breaking pre-1.0
-  authorization boundary will be released completely as Seedbed 0.2.1.
+  authorization boundary will be released completely as Seedbed 0.2.2.
 - Compile the exact MCP SDK 1.29.0 stdio server surface into an audited, tree-shaken
   runtime artifact, externalizing Gnolith/native dependencies and excluding Hono HTTP
   code; ship an exact integrity/license/input SBOM and parsed zero-vulnerability
@@ -28,8 +28,20 @@
   conflicts, verify recoverable npm and GHCR publication by exact identity, and create
   the content-addressed immutable GitHub Release only after all package/runtime gates.
 - Map the built-in GitHub token only into signed image-attestation verification so the
-  `v0.2.1` fix-forward can complete after `v0.2.0` stopped safely before `latest` and
-  GitHub Release creation.
+  `v0.2.1` fix-forward can verify signed provenance after `v0.2.0` stopped safely.
+- Derive a portable, deterministic image-evidence artifact name that replaces every
+  GitHub-forbidden character while retaining the exact container digest inside the
+  evidence and immutable Release asset identities.
+
+## 0.2.1 - 2026-07-22
+
+- Published the OIDC-provenanced npm package and exact versioned GHCR image
+  `sha256:9ec6b73aa9997e28da5a80f1b39e158532b744c42babf804257b15479a64be5f`.
+- Verified the image runtime, SPDX SBOM, and signed GitHub provenance with the scoped
+  `GH_TOKEN`, then moved `latest` to that exact verified digest.
+- Stopped fail-closed when the image-evidence artifact name included the forbidden
+  colon from `sha256:<hex>`. No GitHub Release was created; `0.2.2` is the immutable
+  fix-forward.
 
 ## 0.2.0 - 2026-07-22
 

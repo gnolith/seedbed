@@ -46,7 +46,7 @@ const currentVersions = {
   diamond: '0.4.0',
   taproot: '0.3.0',
   workshop: '0.3.3',
-  seedbed: '0.2.1',
+  seedbed: '0.2.2',
 } as const;
 
 const futureVersions = {
@@ -596,7 +596,7 @@ describe('persistence coordinator', () => {
     await reached;
     const concurrent = await openDatabase(config);
     await concurrent.prepare("UPDATE seedbed_assembly SET seedbed_version = 'temporary', updated_at = '2026-07-21T23:59:58.000Z' WHERE singleton = 1").run();
-    await concurrent.prepare("UPDATE seedbed_assembly SET seedbed_version = '0.2.1', updated_at = '2026-07-21T23:59:59.000Z' WHERE singleton = 1").run();
+    await concurrent.prepare("UPDATE seedbed_assembly SET seedbed_version = '0.2.2', updated_at = '2026-07-21T23:59:59.000Z' WHERE singleton = 1").run();
     await concurrent.close();
     resumeMigration();
 

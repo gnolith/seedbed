@@ -114,7 +114,7 @@ docker run --rm -i \
   -v /host/secret/seedbed-root:/run/secrets/seedbed-root:ro \
   -e SEEDBED_BASE_IRI=https://example.com/my-gnolith/ \
   -e SEEDBED_ROOT_SECRET_FILE=/run/secrets/seedbed-root \
-  ghcr.io/gnolith/seedbed:0.2.1 init
+  ghcr.io/gnolith/seedbed:0.2.2 init
 ```
 
 See [`docs/migrations.md`](docs/migrations.md) for exact transition and recovery

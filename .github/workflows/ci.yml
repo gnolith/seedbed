@@ -130,9 +130,9 @@ jobs:
           cp "$RUNNER_TEMP"/gnolith-diamond-0.4.0.tgz .
           cp "$RUNNER_TEMP"/gnolith-taproot-0.3.0.tgz .
           cp "$RUNNER_TEMP"/gnolith-workshop-0.3.3.tgz .
-          seedbed_integrity="sha512-$(openssl dgst -sha512 -binary gnolith-seedbed-0.2.1.tgz | openssl base64 -A)"
+          seedbed_integrity="sha512-$(openssl dgst -sha512 -binary gnolith-seedbed-0.2.2.tgz | openssl base64 -A)"
           bash scripts/build-production-closure.sh \
-            gnolith-seedbed-0.2.1.tgz \
+            gnolith-seedbed-0.2.2.tgz \
             "$seedbed_integrity" \
             gnolith-diamond-0.4.0.tgz \
             gnolith-taproot-0.3.0.tgz \
