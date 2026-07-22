@@ -32,6 +32,7 @@ const plan = Object.freeze({
   builderId: 'https://github.com/actions/runner/github-hosted',
   invocationId: 'https://github.com/gnolith/seedbed/actions/runs/29915140208/attempts/1',
   dsseSignature: 'MEQCIHzKn9Ph19yd7VslMra+CswtwXVpiuDkac9+mj9PzZBZAiBFj6XJlPWx63cMw3THD6DTUnrBYjGKoQekkVAnynwQeg==',
+  dssePayloadSha256: 'c9252747694f2fad4bac03a08e441d75bd2f647c123f06412b0e007d0087e629',
   verificationMaterialSha256: '9ceb6efcdb35c412d8e87f785a19645c73c5dc3b117189c5ee63eca55da65c8b',
   tlogIndex: '2217599731',
   tlogIntegratedTime: '1784719198',
@@ -132,6 +133,10 @@ export function validateNpmProvenanceIdentity(expected, response) {
       verification.tlogEntries[0]?.kindVersion?.version !== '0.0.1') {
     throw new Error('unexpected npm provenance DSSE envelope');
   }
+  const payloadBytes = Buffer.from(envelope.payload, 'base64');
+  if (createHash('sha256').update(payloadBytes).digest('hex') !== expected.dssePayloadSha256) {
+    throw new Error('unexpected npm provenance DSSE payload identity');
+  }
   const tlog = verification.tlogEntries[0];
   if (tlog.logIndex !== expected.tlogIndex || tlog.integratedTime !== expected.tlogIntegratedTime ||
       !isCanonicalBase64(tlog.logId?.keyId) || !isCanonicalBase64(tlog.inclusionPromise?.signedEntryTimestamp) ||
@@ -142,7 +147,7 @@ export function validateNpmProvenanceIdentity(expected, response) {
       !isCanonicalBase64(tlog.canonicalizedBody) || stableSha256(verification) !== expected.verificationMaterialSha256) {
     throw new Error('unexpected npm provenance transparency-log verification material');
   }
-  const statement = JSON.parse(Buffer.from(envelope.payload, 'base64').toString('utf8'));
+  const statement = JSON.parse(payloadBytes.toString('utf8'));
   const expectedSha512 = Buffer.from(expected.npmIntegrity.slice('sha512-'.length), 'base64').toString('hex');
   if (statement?._type !== 'https://in-toto.io/Statement/v1' ||
       statement?.predicateType !== 'https://slsa.dev/provenance/v1' ||

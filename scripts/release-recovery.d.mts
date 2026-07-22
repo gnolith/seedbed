@@ -26,6 +26,7 @@ export function getV022RecoveryPlan(tag: string): {
   builderId: string;
   invocationId: string;
   dsseSignature: string;
+  dssePayloadSha256: string;
   verificationMaterialSha256: string;
   tlogIndex: string;
   tlogIntegratedTime: string;

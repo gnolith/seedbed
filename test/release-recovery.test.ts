@@ -70,6 +70,7 @@ describe('v0.2.2 immutable Release recovery', () => {
     expect(plan.builderId).toBe('https://github.com/actions/runner/github-hosted');
     expect(plan.invocationId).toBe('https://github.com/gnolith/seedbed/actions/runs/29915140208/attempts/1');
     expect(plan.dsseSignature).toBe('MEQCIHzKn9Ph19yd7VslMra+CswtwXVpiuDkac9+mj9PzZBZAiBFj6XJlPWx63cMw3THD6DTUnrBYjGKoQekkVAnynwQeg==');
+    expect(plan.dssePayloadSha256).toBe('c9252747694f2fad4bac03a08e441d75bd2f647c123f06412b0e007d0087e629');
     expect(plan.verificationMaterialSha256).toBe('9ceb6efcdb35c412d8e87f785a19645c73c5dc3b117189c5ee63eca55da65c8b');
     expect(plan.tlogIndex).toBe('2217599731');
     expect(plan.tlogIntegratedTime).toBe('1784719198');
@@ -114,6 +115,7 @@ describe('v0.2.2 immutable Release recovery', () => {
     const expected = {
       ...plan,
       dsseSignature: envelope.signatures[0]!.sig,
+      dssePayloadSha256: createHash('sha256').update(Buffer.from(envelope.payload, 'base64')).digest('hex'),
       tlogIndex: '1',
       tlogIntegratedTime: '2',
       verificationMaterialSha256: stableSha256(provenance.attestations[0]!.bundle.verificationMaterial),
@@ -121,6 +123,13 @@ describe('v0.2.2 immutable Release recovery', () => {
     expect(() => validateNpmProvenanceIdentity(expected, provenance)).not.toThrow();
     for (const mutate of [
       (value: ProvenanceResponse) => { value.attestations[0]!.bundle.dsseEnvelope.payload += '!!!'; },
+      (value: ProvenanceResponse) => {
+        const target = value.attestations[0]!.bundle.dsseEnvelope;
+        target.payload = Buffer.from(`${Buffer.from(target.payload, 'base64').toString('utf8')} `).toString('base64');
+      },
+      (value: ProvenanceResponse) => mutateStatement(value, (statement) => {
+        (statement as ProvenanceStatement & { unchecked?: boolean }).unchecked = true;
+      }),
       (value: ProvenanceResponse) => { value.attestations[0]!.bundle.dsseEnvelope.payloadType = 'text/plain'; },
       (value: ProvenanceResponse) => { value.attestations[0]!.bundle.mediaType = 'wrong'; },
       (value: ProvenanceResponse) => { value.attestations[0]!.bundle.dsseEnvelope.signatures[0]!.sig = 'wrong'; },
