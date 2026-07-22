@@ -96,6 +96,11 @@ describe('native headless combined runtime', () => {
       { name, arguments: argumentsValue },
       { principal: workerRuntime.principal, requestId: randomUUID() },
     );
+    expect(workerRuntime.dispatcher.listTools(workerRuntime.principal)).toMatchObject({
+      ok: true,
+      value: expect.not.arrayContaining([expect.objectContaining({ name: 'sparql_query' })]),
+    });
+    await expect(workerCall('sparql_query', { query: 'SELECT * WHERE { ?s ?p ?o }' })).resolves.toMatchObject({ ok: false, failure: { kind: 'forbidden' } });
     const page = await workerCall('list_memories', { limit: 1 });
     expect(page).toMatchObject({ ok: true, value: { items: [{ slug: expect.any(String) }], cursor: expect.any(String) } });
     const cursor = page.ok ? (page.value as { cursor: string }).cursor : '';

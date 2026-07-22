@@ -16,6 +16,7 @@ import {
   type SemanticSearchAdminV1,
 } from '@gnolith/taproot';
 import type { NodeSqliteDatabase } from '@gnolith/diamond/node-sqlite';
+import { createSparqlHandler } from '@gnolith/diamond';
 import type { WorkshopToolCall, WorkshopToolDispatchContext, WorkshopToolDispatcher, WorkshopToolDefinition } from '@gnolith/workshop/core';
 import { normalizeWorkshopError, type WorkshopPrincipal } from '@gnolith/workshop/protocol';
 import type { ResourcePayloadV1 } from '@gnolith/taproot';
@@ -89,6 +90,17 @@ export async function createSeedbedTaprootRuntime(
     content,
     semantic,
   });
+  const sparqlHandler = createSparqlHandler({
+    db,
+    readOnly: true,
+    servicePolicy: () => false,
+    maxQueryBytes: 64 * 1024,
+    maxResultBytes: 8 * 1024 * 1024,
+    maxAlgebraDepth: 64,
+    maxAlgebraOperations: 10_000,
+    timeoutMs: 10_000,
+    exposeErrors: false,
+  });
 
   const taprootTools = toolDefinitions();
   const byName = new Map(taprootTools.map((tool) => [tool.name, tool]));
@@ -130,7 +142,7 @@ export async function createSeedbedTaprootRuntime(
           return failure('forbidden', 'forbidden', `Exact ${tool.capability} capability is required`);
         }
         const args = objectArguments(call.arguments);
-        const value = await callTaprootTool(call.name, args, principal, content, search, semantic, materialization, context.signal);
+        const value = await callTaprootTool(call.name, args, principal, content, search, semantic, materialization, sparqlHandler, context.signal);
         if (call.name.startsWith('content_')) {
           const refreshed = await resolvePrincipal();
           if (refreshed.capabilities.includes('search:admin')) {
@@ -180,6 +192,7 @@ async function callTaprootTool(
   search: ReturnType<typeof createAuthorizedSearchServiceV1>,
   semantic: SemanticSearchAdminV1,
   materialization: Awaited<ReturnType<typeof createSearchMaterializationAdminGuardV1>>,
+  sparqlHandler: ReturnType<typeof createSparqlHandler>,
   signal?: AbortSignal,
 ): Promise<unknown> {
   const metadata = () => ({
@@ -219,6 +232,20 @@ async function callTaprootTool(
     case 'semantic_retry': await semantic.retry(requiredString(args.planId, 'planId'), context); return { retried: true };
     case 'semantic_retire': await semantic.retire(requiredString(args.configurationId, 'configurationId'), context); return { retired: true };
     case 'semantic_delete': await semantic.deleteEmbeddings(requiredString(args.configurationId, 'configurationId'), context); return { deleted: true };
+    case 'sparql_query': {
+      for (const capability of ['read', 'knowledge:policy']) {
+        if (!context.capabilities.includes(capability)) throw new Error(`Exact ${capability} capability is required for SPARQL administration`);
+      }
+      const query = requiredString(args.query, 'query');
+      const request = new Request(`https://seedbed.invalid/sparql?query=${encodeURIComponent(query)}`, {
+        method: 'GET', headers: { accept: typeof args.accept === 'string' ? args.accept : 'application/sparql-results+json' },
+        ...(signal === undefined ? {} : { signal }),
+      });
+      const response = await sparqlHandler(request);
+      const body = await response.text();
+      if (!response.ok) throw new Error(`SPARQL query failed with status ${response.status}`);
+      return { mediaType: response.headers.get('content-type'), body };
+    }
     default: throw new Error(`Unknown Taproot tool ${name}`);
   }
 }
@@ -227,14 +254,14 @@ function toolDefinitions(): readonly WorkshopToolDefinition[] {
   const read = ['search', 'search_hydrate', 'content_resource_get', 'content_resource_hydrate', 'content_annotation_get'] as const;
   const write = ['content_resource_create', 'content_resource_update', 'content_resource_delete', 'content_annotation_create', 'content_annotation_update', 'content_annotation_delete'] as const;
   const admin = ['search_admin_health', 'search_admin_run', 'search_admin_retry_dead', 'search_admin_rebuild', 'search_admin_activate', 'semantic_status', 'semantic_select', 'semantic_reconnect', 'semantic_estimate', 'semantic_approve', 'semantic_run', 'semantic_resume', 'semantic_pause', 'semantic_stop', 'semantic_retry', 'semantic_retire', 'semantic_delete'] as const;
-  const make = (name: string, capability: 'read' | 'knowledge-write' | 'search:admin'): WorkshopToolDefinition => ({
+  const make = (name: string, capability: 'read' | 'knowledge-write' | 'search:admin' | 'admin'): WorkshopToolDefinition => ({
     name,
     title: name.replaceAll('_', ' '),
     description: `Seedbed Taproot ${name.replaceAll('_', ' ')} operation`,
     capability,
     inputSchema: { type: 'object', properties: {}, additionalProperties: true },
   });
-  return Object.freeze([...read.map((name) => make(name, 'read')), ...write.map((name) => make(name, 'knowledge-write')), ...admin.map((name) => make(name, 'search:admin'))]);
+  return Object.freeze([...read.map((name) => make(name, 'read')), ...write.map((name) => make(name, 'knowledge-write')), ...admin.map((name) => make(name, 'search:admin')), make('sparql_query', 'admin')]);
 }
 
 function failure(kind: 'forbidden' | 'operation', code: Parameters<typeof normalizeWorkshopError>[0] extends never ? never : 'forbidden' | 'bad_request' | 'validation_failed' | 'unauthenticated' | 'not_found' | 'conflict' | 'limit_exceeded' | 'query_rejected' | 'query_timeout' | 'cancelled' | 'dependency_unavailable' | 'internal_error', message: string, details?: Readonly<Record<string, unknown>>) {
