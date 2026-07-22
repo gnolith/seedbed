@@ -183,7 +183,7 @@ describe('release credential boundary', () => {
     expect(packageJob).toContain('release-preflight.mjs npm');
     expect(packageJob).toContain('release-preflight.mjs ghcr');
     expect(packageJob).toContain('release-preflight.mjs release');
-    expect(workflow).not.toContain('repos/gnolith/seedbed/immutable-releases');
+    expect(packageJob).not.toContain('repos/gnolith/seedbed/immutable-releases');
     expect(publishJob).toContain('test "$registry_status" = 404');
     expect(imageJob).toContain('if test "$state" = absent');
     expect(imageJob).toContain('elif test "$state" = match');
@@ -224,7 +224,7 @@ describe('release credential boundary', () => {
     expect(releaseJob).toContain('seedbed-image-sbom-$image_sbom_sha.json');
     expect(releaseJob).toContain('seedbed-image-provenance-verification-$provenance_sha.json');
     expect(releaseJob).not.toMatch(/NPM_ARTIFACT_ID|STAGING_ARTIFACT_ID|IMAGE_EVIDENCE_ARTIFACT_ID/u);
-    expect(workflow.match(/gh release create/gu)).toHaveLength(1);
+    expect(releaseJob.match(/gh release create/gu)).toHaveLength(1);
   });
 
   it('serializes releases, prevents latest downgrade, and resumes partial drafts without clobbering', () => {
