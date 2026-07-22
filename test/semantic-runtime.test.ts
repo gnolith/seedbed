@@ -13,11 +13,18 @@ import { loadTaprootAssembly } from '../src/taproot-bridge.js';
 
 describe('native semantic executor', () => {
   it('executes an approved SQLite plan headlessly and survives restart', { timeout: 15_000 }, async () => {
+    let failingRequests = 0;
     const provider = createServer((request, response) => {
       let body = '';
       request.setEncoding('utf8');
       request.on('data', (chunk) => { body += chunk; });
       request.on('end', () => {
+        if (request.url?.startsWith('/fail/')) {
+          failingRequests += 1;
+          response.statusCode = 503;
+          response.end('{}');
+          return;
+        }
         const input = JSON.parse(body).input as string[];
         response.setHeader('content-type', 'application/json');
         response.end(JSON.stringify({ data: input.map(() => ({ embedding: [1, 0] })), usage: { total_tokens: input.length * 3 } }));
@@ -32,7 +39,10 @@ describe('native semantic executor', () => {
     const config: SeedbedConfig = {
       databasePath: join(directory, 'gnolith.sqlite'), blobPath: join(directory, 'blobs'), baseIri: 'https://semantic-runtime.seedbed.test/',
       rootSecretFile: secret, principalSelector: 'owner', workspaceSelector: 'workspace', logLevel: 'silent', shutdownTimeoutMs: 2_000,
-      semanticConfigurations: [{ id: 'deterministic', name: 'Deterministic fixture', selected: true, provider: { kind: 'openai-compatible', endpoint: `http://127.0.0.1:${address.port}/v1`, model: 'fixture', dimensions: 2, allowPrivateEndpoint: true }, vectorIndex: { kind: 'sqlite' } }],
+      semanticConfigurations: [
+        { id: 'deterministic', name: 'Deterministic fixture', selected: true, provider: { kind: 'openai-compatible', endpoint: `http://127.0.0.1:${address.port}/v1`, model: 'fixture', dimensions: 2, allowPrivateEndpoint: true }, vectorIndex: { kind: 'sqlite' } },
+        { id: 'failing', name: 'Failing fixture', provider: { kind: 'openai-compatible', endpoint: `http://127.0.0.1:${address.port}/fail`, model: 'fixture', dimensions: 2, allowPrivateEndpoint: true }, vectorIndex: { kind: 'sqlite' } },
+      ],
     };
     const taproot = await loadTaprootAssembly();
     try {
@@ -49,6 +59,7 @@ describe('native semantic executor', () => {
       let runtime = await createSeedbedRuntime(config, taproot);
       const call = (name: string, args: Record<string, unknown>) => runtime.dispatcher.callTool({ name, arguments: args }, { principal: runtime.principal, requestId: randomUUID() });
       const estimate = await call('semantic_estimate', { configurationId: 'deterministic', policy: { mode: 'asap', maxBatchesPerRun: 1 } });
+      expect(failingRequests).toBe(3);
       expect(estimate).toMatchObject({ ok: true, value: { planId: expect.any(String) } });
       const planId = (estimate as { ok: true; value: { planId: string } }).value.planId;
       expect(await call('semantic_approve', { planId })).toMatchObject({ ok: true });
@@ -62,6 +73,12 @@ describe('native semantic executor', () => {
       expect(complete).toBe(true);
       const semanticOnly = await call('search', { text: 'concept-with-no-lexical-overlap', kinds: ['resource'], limit: 5 });
       expect(semanticOnly).toMatchObject({ ok: true, value: { results: [expect.objectContaining({ sourceId: 'semantic-resource' })] } });
+      expect(await call('semantic_select', { configurationId: 'failing' })).toMatchObject({ ok: true });
+      await expect(call('search', { text: 'Magnesium', kinds: ['resource'], limit: 5 })).resolves.toMatchObject({ ok: true, value: { results: [expect.objectContaining({ sourceId: 'semantic-resource' })] } });
+      expect(failingRequests).toBe(3);
+      await expect(call('semantic_reconnect', { configurationId: 'failing' })).resolves.toMatchObject({ ok: true, value: { connected: false } });
+      expect(failingRequests).toBe(6);
+      expect(await call('semantic_select', { configurationId: 'deterministic' })).toMatchObject({ ok: true });
       await runtime.close();
 
       runtime = await createSeedbedRuntime(config, taproot);
