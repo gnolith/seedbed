@@ -1,7 +1,19 @@
 {
   "version": 1,
-  "fixtureResources": 25,
-  "maximumIngestAndMaterializeMilliseconds": 15000,
+  "fixtureResources": 100,
+  "maximumIngestAndMaterializeMilliseconds": 30000,
   "maximumSearchP95Milliseconds": 1000,
-  "maximumDatabaseBytes": 16777216
+  "maximumDatabaseBytes": 67108864,
+  "maximumPeakRssBytes": 536870912,
+  "recorded": {
+    "runtime": "Node.js 24, native SQLite, lexical-only reference run",
+    "corpus": "100 Resources attached to one Item; seven-token deterministic payloads",
+    "ingestAndMaterializeMilliseconds": 3414.4804,
+    "searchP95Milliseconds": 7.3678,
+    "databaseBytes": 2138112,
+    "peakRssBytes": 142995456,
+    "vectorCount": 0,
+    "vectorDimensions": 0,
+    "indexedTokens": 700
+  }
 }

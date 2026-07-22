@@ -123,7 +123,62 @@ describe('portable installation snapshots', () => {
 
     await expect(restoreInstallationSnapshot(target.config, taproot, snapshotPath)).resolves.toMatchObject({ valid: true });
   });
+
+  it('restores compatible chunks and replaces missing or incompatible chunks from canonical state', { timeout: 30_000 }, async () => {
+    const source = await fixture('source-derived');
+    const taproot = await loadTaprootAssembly();
+    await initializeDatabase(source.config, taproot);
+    const bootstrapDb = await openDatabase(source.config);
+    await bootstrapAuthorization(bootstrapDb, source.config, 'owner', 'workspace');
+    await bootstrapDb.close();
+    let runtime = await createSeedbedRuntime(source.config, taproot);
+    const call = (name: string, args: Record<string, unknown>) => runtime.dispatcher.callTool(
+      { name, arguments: args }, { principal: runtime.principal, requestId: randomUUID() },
+    );
+    await expect(call('upsert_memory', { slug: 'derived-proof', description: 'Canonical chrysotile record', content: 'Canonical chrysotile survives derived replacement' })).resolves.toMatchObject({ ok: true });
+    await runtime.close();
+
+    const compatible = join(source.directory, 'compatible.gz');
+    await createInstallationSnapshot(source.config, taproot, compatible);
+    const mutationDb = await openDatabase(source.config);
+    const chunks = await mutationDb.prepare('SELECT COUNT(*) AS count FROM taproot_search_chunks').all<{ count: number }>();
+    expect(Number(chunks.results[0]?.count ?? 0)).toBeGreaterThan(0);
+    await mutationDb.prepare('DELETE FROM taproot_search_chunks').run();
+    await mutationDb.close();
+    const missing = join(source.directory, 'missing.gz');
+    await createInstallationSnapshot(source.config, taproot, missing);
+
+    runtime = await createSeedbedRuntime(source.config, taproot);
+    await rebuildActiveCorpus(call);
+    await runtime.close();
+    const incompatibleDb = await openDatabase(source.config);
+    await incompatibleDb.prepare("UPDATE taproot_search_chunks SET chunk_text = 'deliberately incompatible derived text'").run();
+    await incompatibleDb.close();
+    const incompatible = join(source.directory, 'incompatible.gz');
+    await createInstallationSnapshot(source.config, taproot, incompatible);
+
+    for (const [name, snapshot] of [['compatible', compatible], ['missing', missing], ['incompatible', incompatible]] as const) {
+      const target = await fixture(`target-${name}`, source.secretBytes);
+      await restoreInstallationSnapshot(target.config, taproot, snapshot);
+      runtime = await createSeedbedRuntime(target.config, taproot);
+      await rebuildActiveCorpus(call);
+      const result = await call('search', { text: 'chrysotile', kinds: ['memory'], limit: 5 });
+      expect(result).toMatchObject({ ok: true, value: { results: [expect.objectContaining({ sourceId: 'derived-proof' })] } });
+      await runtime.close();
+    }
+  });
 });
+
+async function rebuildActiveCorpus(call: (name: string, args: Record<string, unknown>) => Promise<unknown>): Promise<void> {
+  const started = await call('search_admin_rebuild', {}) as { ok: boolean };
+  expect(started.ok).toBe(true);
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await call('search_admin_run', { maxJobs: 100, maxRebuildRoots: 100 });
+    const activated = await call('search_admin_activate', {}) as { ok: boolean };
+    if (activated.ok) return;
+  }
+  throw new Error('derived-state rebuild did not become activatable');
+}
 
 async function fixture(name: string, secretBytes: Uint8Array = Buffer.from('ROOT_SECRET_CANARY_1234567890ABC')): Promise<{
   directory: string;

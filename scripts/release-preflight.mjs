@@ -130,6 +130,9 @@ export function createReleaseEvidence(input) {
     'provenanceEvidenceSha256', 'immutableSettingEvidenceTag',
   ];
   for (const name of required) if (!input[name]) throw new Error(`missing ${name}`);
+  const components = input.seedbedVersion === '0.2.2'
+    ? { diamond: '0.4.0', taproot: '0.3.0', workshop: '0.3.3' }
+    : { diamond: '0.4.1', taproot: '0.4.0', workshop: '0.4.0' };
   return {
     schemaVersion: 1,
     package: { name: '@gnolith/seedbed', version: input.seedbedVersion, sha256: input.npmSha256, integrity: input.npmIntegrity },
@@ -138,7 +141,7 @@ export function createReleaseEvidence(input) {
       commit: input.releaseCommit, workflow: '.github/workflows/release.yml',
       immutableReleaseSettingVerifiedFor: input.immutableSettingEvidenceTag,
     },
-    components: { diamond: '0.4.0', taproot: '0.3.0', workshop: '0.3.3' },
+    components,
     closure: { sha256: input.closureSha256 },
     image: {
       reference: `ghcr.io/gnolith/seedbed@${input.imageDigest}`,

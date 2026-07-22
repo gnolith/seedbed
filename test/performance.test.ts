@@ -16,6 +16,18 @@ interface Baseline {
   maximumIngestAndMaterializeMilliseconds: number;
   maximumSearchP95Milliseconds: number;
   maximumDatabaseBytes: number;
+  maximumPeakRssBytes: number;
+  recorded: {
+    runtime: string;
+    corpus: string;
+    ingestAndMaterializeMilliseconds: number;
+    searchP95Milliseconds: number;
+    databaseBytes: number;
+    peakRssBytes: number;
+    vectorCount: number;
+    vectorDimensions: number;
+    indexedTokens: number;
+  };
 }
 
 describe('native performance qualification', () => {
@@ -36,13 +48,18 @@ describe('native performance qualification', () => {
     const call = (name: string, args: Record<string, unknown>) => runtime.dispatcher.callTool({ name, arguments: args }, { principal: runtime.principal, requestId: randomUUID() });
     try {
       const started = performance.now();
+      let indexedTokens = 0;
+      let peakRssBytes = process.memoryUsage().rss;
       for (let index = 0; index < baseline.fixtureResources; index += 1) {
         const text = `basalt performance specimen ${index} with olivine crystals`;
+        indexedTokens += text.split(/\s+/u).length;
         const bytes = Buffer.from(text);
         const result = await call('content_resource_create', { resource: { id: `performance-${index}`, itemId: 'Q1', title: `Specimen ${index}`, payload: { kind: 'inline-text', text }, mediaType: 'text/plain', language: 'en', integrity: { algorithm: 'sha256', digest: createHash('sha256').update(bytes).digest('hex'), byteLength: bytes.byteLength } } });
         expect(result.ok).toBe(true);
+        peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
       }
-      expect(performance.now() - started).toBeLessThan(baseline.maximumIngestAndMaterializeMilliseconds);
+      const ingestAndMaterializeMilliseconds = performance.now() - started;
+      expect(ingestAndMaterializeMilliseconds).toBeLessThan(baseline.maximumIngestAndMaterializeMilliseconds);
       const latencies: number[] = [];
       for (let index = 0; index < 10; index += 1) {
         const before = performance.now();
@@ -51,8 +68,14 @@ describe('native performance qualification', () => {
         expect(result).toMatchObject({ ok: true, value: { results: expect.any(Array) } });
       }
       latencies.sort((left, right) => left - right);
-      expect(latencies[Math.ceil(latencies.length * 0.95) - 1]).toBeLessThan(baseline.maximumSearchP95Milliseconds);
-      expect((await stat(config.databasePath)).size).toBeLessThan(baseline.maximumDatabaseBytes);
+      const searchP95Milliseconds = latencies[Math.ceil(latencies.length * 0.95) - 1]!;
+      const databaseBytes = (await stat(config.databasePath)).size;
+      peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
+      expect(searchP95Milliseconds).toBeLessThan(baseline.maximumSearchP95Milliseconds);
+      expect(databaseBytes).toBeLessThan(baseline.maximumDatabaseBytes);
+      expect(peakRssBytes).toBeLessThan(baseline.maximumPeakRssBytes);
+      expect(baseline.recorded).toMatchObject({ vectorCount: 0, vectorDimensions: 0, indexedTokens });
+      console.info(JSON.stringify({ ingestAndMaterializeMilliseconds, searchP95Milliseconds, databaseBytes, peakRssBytes, vectorCount: 0, vectorDimensions: 0, indexedTokens }));
     } finally {
       await runtime.close();
     }

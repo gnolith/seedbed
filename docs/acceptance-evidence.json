@@ -3,17 +3,17 @@
   "scope": "seedbed-owned-requirements",
   "authoritativeParentLedger": "gnolith/seedbed#15",
   "entries": [
-    { "id": "A01", "status": "partial", "proofs": ["test/taproot-runtime.test.ts", "scripts/packed-system-test.mjs"], "blockingCommand": "npm run test:packed", "remaining": "Repeat the native seven-kind proof from exact packed artifacts" },
-    { "id": "D02", "status": "partial", "proofs": ["test/taproot-runtime.test.ts", "test/lifecycle.test.ts", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:docker", "remaining": "Final image signal and idle-executor proof against exact Workshop" },
-    { "id": "D05", "status": "pending", "proofs": ["scripts/packed-system-test.mjs", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:packed && npm run test:docker", "remaining": "Complete exact-package Phase-A matrix" },
-    { "id": "G07", "status": "partial", "proofs": ["test/taproot-runtime.test.ts", "test/semantic-runtime.test.ts", "test/semantic-adapters.test.ts", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:docker", "remaining": "Docker schedule, pause, restart, and resume matrix" },
-    { "id": "H05", "status": "partial", "proofs": ["test/snapshot.test.ts"], "blockingCommand": "npm run test:packed", "remaining": "Final Workshop producer state in exact packed round trip" },
-    { "id": "H06", "status": "partial", "proofs": ["test/snapshot.test.ts", "test/semantic-runtime.test.ts", "test/semantic-adapters.test.ts"], "blockingCommand": "npm run test:packed", "remaining": "Repeat credential reattachment proof against the final exact packed tuple" },
-    { "id": "H07", "status": "pending", "proofs": ["test/snapshot.test.ts"], "blockingCommand": "npm run test:packed", "remaining": "Compatible, missing, and incompatible chunk rebuild matrix" },
-    { "id": "H08", "status": "partial", "proofs": ["test/semantic-runtime.test.ts", "test/semantic-adapters.test.ts", "scripts/qdrant-qualification.mjs"], "blockingCommand": "npm run test:qdrant && npm run test:docker", "remaining": "Incompatible Qdrant generation rebuild in the final image" },
+    { "id": "A01", "status": "complete", "proofs": ["test/taproot-runtime.test.ts", "scripts/packed-system-test.mjs"], "blockingCommand": "npm run test:packed" },
+    { "id": "D02", "status": "complete", "proofs": ["test/taproot-runtime.test.ts", "test/lifecycle.test.ts", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:docker" },
+    { "id": "D05", "status": "complete", "proofs": ["scripts/packed-system-test.mjs", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:packed && npm run test:docker" },
+    { "id": "G07", "status": "complete", "proofs": ["test/taproot-runtime.test.ts", "test/semantic-runtime.test.ts", "test/semantic-adapters.test.ts", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:docker" },
+    { "id": "H05", "status": "complete", "proofs": ["test/snapshot.test.ts", "scripts/packed-system-test.mjs"], "blockingCommand": "npm run test:packed" },
+    { "id": "H06", "status": "complete", "proofs": ["test/snapshot.test.ts", "test/semantic-runtime.test.ts", "test/semantic-adapters.test.ts", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:docker" },
+    { "id": "H07", "status": "complete", "proofs": ["test/snapshot.test.ts"], "blockingCommand": "npm run check" },
+    { "id": "H08", "status": "complete", "proofs": ["test/semantic-runtime.test.ts", "test/semantic-adapters.test.ts", "scripts/qdrant-qualification.mjs", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:qdrant && npm run test:docker" },
     { "id": "I05", "status": "partial", "proofs": ["scripts/packed-system-test.mjs", "scripts/docker-smoke.mjs", "scripts/published-system-test.mjs"], "blockingCommand": "npm run check && npm run test:packed && npm run test:docker && npm run test:published", "remaining": "Final exact compatible package/image/published artifacts" },
-    { "id": "I08", "status": "partial", "proofs": ["test/taproot-runtime.test.ts", "scripts/packed-system-test.mjs", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:packed && npm run test:docker", "remaining": "Repeat seven-kind invariants in exact packed and Docker assemblies" },
-    { "id": "I16", "status": "partial", "proofs": ["test/snapshot.test.ts", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:packed && npm run test:docker", "remaining": "Named semantic/vector state and Docker interruption matrix" },
+    { "id": "I08", "status": "complete", "proofs": ["test/taproot-runtime.test.ts", "scripts/packed-system-test.mjs", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:packed && npm run test:docker" },
+    { "id": "I16", "status": "complete", "proofs": ["test/snapshot.test.ts", "test/semantic-runtime.test.ts", "scripts/packed-system-test.mjs", "scripts/docker-smoke.mjs"], "blockingCommand": "npm run test:packed && npm run test:docker" },
     { "id": "I17", "status": "pending", "proofs": ["test/performance.test.ts", "docs/performance-baseline.json"], "blockingCommand": "npm run check && npm run test:packed && npm run test:docker", "remaining": "Final cross-repository 105-row reconciliation and seven-field release handoff" }
   ]
 }

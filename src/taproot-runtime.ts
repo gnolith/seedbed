@@ -2,11 +2,27 @@ import { readFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import {
   TaprootContentRepositoryV1,
+  addAlias,
+  addQualifier,
+  addReference,
+  addStatement,
   createAuthorizedSearchServiceV1,
+  createItem,
   createSqliteVectorIndexV1,
   createQdrantVectorIndexV1,
   createOpenAICompatibleEmbeddingProviderV1,
   createOllamaCompatibleEmbeddingProviderV1,
+  createProperty,
+  removeAlias,
+  removeQualifier,
+  removeReference,
+  removeSitelink,
+  removeStatement,
+  replaceStatement,
+  setDescription,
+  setLabel,
+  setSitelink,
+  setStatementRank,
   type AuthorizationContext,
   type PortableResourcePayloadStoreV1,
   type SearchRequest,
@@ -186,8 +202,8 @@ export async function createSeedbedTaprootRuntime(
           return failure('forbidden', 'forbidden', `Exact ${tool.capability} capability is required`);
         }
         const args = objectArguments(call.arguments);
-        const value = await callTaprootTool(call.name, args, principal, content, search, semantic, materialization, sparqlHandler, context.signal);
-        if (call.name.startsWith('content_')) {
+        const value = await callTaprootTool(call.name, args, principal, db, config.baseIri!, bundle, content, search, semantic, materialization, sparqlHandler, context.signal);
+        if (call.name.startsWith('content_') || knowledgeWriteToolNames.has(call.name)) {
           const refreshed = await resolvePrincipal();
           if (refreshed.capabilities.includes('search:admin')) {
             await advanceMaterialization(refreshed);
@@ -242,6 +258,9 @@ async function callTaprootTool(
   name: string,
   args: Record<string, unknown>,
   context: AuthorizationContext,
+  db: NodeSqliteDatabase,
+  baseIri: string,
+  bundle: SeedbedAuthorityBundle,
   content: TaprootContentRepositoryV1,
   search: WorkshopSearchIntegrationV1['service'],
   semantic: SemanticSearchAdminV1,
@@ -249,6 +268,19 @@ async function callTaprootTool(
   sparqlHandler: ReturnType<typeof createSparqlHandler>,
   signal?: AbortSignal,
 ): Promise<unknown> {
+  const authorization = () => ({
+    installationId: context.installationId,
+    workspaceId: context.activeWorkspaceId,
+    ownerPrincipalId: context.principalId,
+    visibility: (args.visibility ?? publicVisibility) as typeof publicVisibility,
+    statementRestrictions: (args.statementRestrictions ?? {}) as Readonly<Record<string, readonly (typeof publicVisibility)[]>>,
+    expectedAuthorizationRevision: context.authorizationRevision,
+  });
+  const edit = () => ({
+    expectedRevision: requiredInteger(args.expectedRevision, 'expectedRevision'),
+    attribution: { id: context.principalId, kind: 'human' as const },
+    authorization: authorization(),
+  });
   const metadata = () => ({
     context,
     attribution: { id: context.principalId, kind: 'human' as const },
@@ -258,6 +290,28 @@ async function callTaprootTool(
     expectedAuthorizationRevision: context.authorizationRevision,
   });
   switch (name) {
+    case 'create_item': {
+      const { visibility: _visibility, statementRestrictions: _restrictions, ...input } = args;
+      return createItem(db, { baseIri }, bundle.authorizationGuard, context, { ...input, attribution: { id: context.principalId, kind: 'human' }, authorization: authorization() } as never);
+    }
+    case 'create_property': {
+      const { visibility: _visibility, statementRestrictions: _restrictions, ...input } = args;
+      return createProperty(db, { baseIri }, bundle.authorizationGuard, context, { ...input, attribution: { id: context.principalId, kind: 'human' }, authorization: authorization() } as never);
+    }
+    case 'set_label': return setLabel(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredString(args.language, 'language'), requiredString(args.value, 'value'), edit());
+    case 'set_description': return setDescription(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredString(args.language, 'language'), requiredString(args.value, 'value'), edit());
+    case 'add_alias': return addAlias(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredString(args.language, 'language'), requiredString(args.value, 'value'), edit());
+    case 'remove_alias': return removeAlias(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredString(args.language, 'language'), requiredNonNegativeInteger(args.ordinal, 'ordinal'), edit());
+    case 'add_sitelink': return setSitelink(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredString(args.site, 'site'), requiredObject(args.sitelink, 'sitelink') as never, edit());
+    case 'remove_sitelink': return removeSitelink(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredString(args.site, 'site'), edit());
+    case 'add_statement': return addStatement(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredObject(args.statement, 'statement') as never, edit());
+    case 'replace_statement': return replaceStatement(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredString(args.statementId, 'statementId'), requiredObject(args.statement, 'statement') as never, edit());
+    case 'remove_statement': return removeStatement(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredString(args.statementId, 'statementId'), edit());
+    case 'set_statement_rank': return setStatementRank(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredString(args.statementId, 'statementId'), requiredString(args.rank, 'rank') as never, requiredString(args.text, 'text'), edit());
+    case 'add_qualifier': return addQualifier(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredString(args.statementId, 'statementId'), requiredObject(args.snak, 'snak') as never, requiredString(args.text, 'text'), edit());
+    case 'remove_qualifier': return removeQualifier(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredString(args.statementId, 'statementId'), requiredString(args.property, 'property') as never, requiredNonNegativeInteger(args.ordinal, 'ordinal'), requiredString(args.text, 'text'), edit());
+    case 'add_reference': return addReference(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredString(args.statementId, 'statementId'), requiredObject(args.reference, 'reference') as never, requiredString(args.text, 'text'), edit());
+    case 'remove_reference': return removeReference(db, { baseIri }, bundle.authorizationGuard, context, requiredString(args.entityId, 'entityId') as never, requiredString(args.statementId, 'statementId'), requiredString(args.hash, 'hash'), requiredString(args.text, 'text'), edit());
     case 'search': return search.search(args as unknown as SearchRequest, context);
     case 'search_hydrate': return search.hydrate(requiredObject(args.result, 'result') as unknown as SearchResultV1, context);
     case 'content_resource_create': return content.createResource(requiredObject(args.resource, 'resource') as never, metadata());
@@ -308,6 +362,7 @@ async function callTaprootTool(
 function toolDefinitions(): readonly WorkshopToolDefinition[] {
   const read = ['search', 'search_hydrate', 'content_resource_get', 'content_resource_hydrate', 'content_annotation_get'] as const;
   const write = ['content_resource_create', 'content_resource_update', 'content_resource_delete', 'content_annotation_create', 'content_annotation_update', 'content_annotation_delete'] as const;
+  const knowledgeWrite = [...knowledgeWriteToolNames] as const;
   const admin = ['search_admin_health', 'search_admin_run', 'search_admin_retry_dead', 'search_admin_rebuild', 'search_admin_activate', 'semantic_status', 'semantic_select', 'semantic_reconnect', 'semantic_estimate', 'semantic_approve', 'semantic_run', 'semantic_resume', 'semantic_pause', 'semantic_stop', 'semantic_retry', 'semantic_exclude', 'semantic_retire', 'semantic_delete'] as const;
   const make = (name: string, capability: 'read' | 'knowledge-write' | 'search:admin' | 'admin'): WorkshopToolDefinition => ({
     name,
@@ -316,8 +371,14 @@ function toolDefinitions(): readonly WorkshopToolDefinition[] {
     capability,
     inputSchema: { type: 'object', properties: {}, additionalProperties: true },
   });
-  return Object.freeze([...read.map((name) => make(name, 'read')), ...write.map((name) => make(name, 'knowledge-write')), ...admin.map((name) => make(name, 'search:admin')), make('sparql_query', 'admin')]);
+  return Object.freeze([...read.map((name) => make(name, 'read')), ...write.map((name) => make(name, 'knowledge-write')), ...knowledgeWrite.map((name) => make(name, 'knowledge-write')), ...admin.map((name) => make(name, 'search:admin')), make('sparql_query', 'admin')]);
 }
+
+const knowledgeWriteToolNames = new Set([
+  'create_item', 'create_property', 'set_label', 'set_description', 'add_alias', 'remove_alias',
+  'add_sitelink', 'remove_sitelink', 'add_statement', 'replace_statement', 'remove_statement',
+  'set_statement_rank', 'add_qualifier', 'remove_qualifier', 'add_reference', 'remove_reference',
+]);
 
 function failure(kind: 'forbidden' | 'operation', code: Parameters<typeof normalizeWorkshopError>[0] extends never ? never : 'forbidden' | 'bad_request' | 'validation_failed' | 'unauthenticated' | 'not_found' | 'conflict' | 'limit_exceeded' | 'query_rejected' | 'query_timeout' | 'cancelled' | 'dependency_unavailable' | 'internal_error', message: string, details?: Readonly<Record<string, unknown>>) {
   return { ok: false as const, failure: { kind, error: { code, message, ...(details ? { details } : {}) } } };
@@ -326,5 +387,6 @@ function objectArguments(value: unknown): Record<string, unknown> { return value
 function requiredObject(value: unknown, name: string): Record<string, unknown> { if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error(`${name} must be an object`); return value as Record<string, unknown>; }
 function requiredString(value: unknown, name: string): string { if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} must be a non-empty string`); return value; }
 function requiredInteger(value: unknown, name: string): number { if (!Number.isSafeInteger(value) || Number(value) < 1) throw new Error(`${name} must be a positive integer`); return Number(value); }
+function requiredNonNegativeInteger(value: unknown, name: string): number { if (!Number.isSafeInteger(value) || Number(value) < 0) throw new Error(`${name} must be a non-negative integer`); return Number(value); }
 function optionalBound(value: unknown, fallback: number): number { if (value === undefined) return fallback; return requiredInteger(value, 'limit'); }
 function isForbidden(error: unknown): boolean { return !!error && typeof error === 'object' && 'code' in error && error.code === 'forbidden'; }

@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createItem, createProperty, TaprootContentRepositoryV1 } from '@gnolith/taproot';
+import { TaprootContentRepositoryV1 } from '@gnolith/taproot';
 import type { SeedbedConfig } from '../src/config.js';
 import { bootstrapAuthorization, openAuthorization } from '../src/authorization.js';
 import { initializeDatabase, openDatabase } from '../src/persistence.js';
@@ -23,23 +23,7 @@ describe('Taproot content and authorized search assembly', () => {
     const taproot = await loadTaprootAssembly();
     await initializeDatabase(config, taproot);
     const maintenance = await openDatabase(config);
-    const owner = await bootstrapAuthorization(maintenance, config, 'owner', 'workspace');
-    const authority = await openAuthorization(maintenance, config);
-    const policy = (context: typeof owner, statementRestrictions: Record<string, readonly []> = {}) => ({
-      installationId: context.installationId, workspaceId: context.activeWorkspaceId,
-      ownerPrincipalId: context.principalId, visibility: { version: 1 as const, clauses: [] },
-      statementRestrictions, expectedAuthorizationRevision: context.authorizationRevision,
-    });
-    await createProperty(maintenance, { baseIri: config.baseIri! }, authority.authorizationGuard, owner, {
-      id: 'P1', datatype: 'string', labels: { en: { language: 'en', value: 'Petrology note' } },
-      authorization: policy(owner),
-    });
-    const itemContext = await authority.resolveContext('owner', 'workspace');
-    await createItem(maintenance, { baseIri: config.baseIri! }, authority.authorizationGuard, itemContext, {
-      id: 'Q1', labels: { en: { language: 'en', value: 'Petrology basalt sample' } }, descriptions: { en: { language: 'en', value: 'A volcanic stone' } },
-      claims: { P1: [{ id: 'Q1$petrology', type: 'statement', text: 'Petrology statement about basalt provenance', rank: 'normal', mainsnak: { snaktype: 'value', property: 'P1', datatype: 'string', datavalue: { type: 'string', value: 'igneous' } }, qualifiers: {}, 'qualifiers-order': [], references: [] }] },
-      authorization: policy(itemContext, { 'Q1$petrology': [] }),
-    });
+    await bootstrapAuthorization(maintenance, config, 'owner', 'workspace');
     await maintenance.close();
     const runtime = await createSeedbedRuntime(config, taproot);
     const call = (name: string, args: Record<string, unknown>) => runtime.dispatcher.callTool(
@@ -47,6 +31,14 @@ describe('Taproot content and authorized search assembly', () => {
     );
     try {
       const itemId = 'Q1' as const;
+      await expect(call('create_property', {
+        id: 'P1', datatype: 'string', labels: { en: { language: 'en', value: 'Petrology note' } },
+      })).resolves.toMatchObject({ ok: true, value: { entityId: 'P1' } });
+      await expect(call('create_item', {
+        id: itemId, labels: { en: { language: 'en', value: 'Petrology basalt sample' } }, descriptions: { en: { language: 'en', value: 'A volcanic stone' } },
+        claims: { P1: [{ id: 'Q1$petrology', type: 'statement', text: 'Petrology statement about basalt provenance', rank: 'normal', mainsnak: { snaktype: 'value', property: 'P1', datatype: 'string', datavalue: { type: 'string', value: 'igneous' } }, qualifiers: {}, 'qualifiers-order': [], references: [] }] },
+        statementRestrictions: { 'Q1$petrology': [] },
+      })).resolves.toMatchObject({ ok: true, value: { entityId: itemId } });
       const text = 'Microscopic olivine crystals in the petrology basalt specimen';
       const bytes = Buffer.from(text);
       const resource = await call('content_resource_create', { resource: {

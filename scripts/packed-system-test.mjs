@@ -1,4 +1,5 @@
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -60,8 +61,67 @@ try {
     runAsync(process.execPath, [...globals, 'migrate'], runtimeFixture),
     runAsync(process.execPath, [...globals, 'migrate'], runtimeFixture),
   ]);
-  const created = json(run(process.execPath, [...globals, 'call', 'upsert_memory', '--arguments', '{"slug":"packed-restart","description":"Packed restart","content":"Durable"}'], runtimeFixture).stdout);
+  const call = (name, argumentsValue = {}, selectedGlobals = globals) => json(run(
+    process.execPath,
+    [...selectedGlobals, 'call', name, '--arguments', JSON.stringify(argumentsValue)],
+    runtimeFixture,
+  ).stdout).value;
+  const statement = {
+    id: 'Q1$packed-corpus', type: 'statement', text: 'Packed corpus statement records igneous petrology provenance', rank: 'normal',
+    mainsnak: { snaktype: 'value', property: 'P1', datatype: 'string', datavalue: { type: 'string', value: 'packed corpus igneous' } },
+    qualifiers: {}, 'qualifiers-order': [], references: [],
+  };
+  if (call('create_property', { id: 'P1', datatype: 'string', labels: { en: { language: 'en', value: 'Packed corpus property' } } }).entityId !== 'P1') throw new Error('packed property write failed');
+  if (call('create_item', {
+    id: 'Q1', labels: { en: { language: 'en', value: 'Packed corpus item' } }, descriptions: { en: { language: 'en', value: 'Packed artifact entity' } },
+    claims: { P1: [statement] }, statementRestrictions: { [statement.id]: [] },
+  }).entityId !== 'Q1') throw new Error('packed item and statement write failed');
+  const resourceText = 'Packed corpus resource describes a basalt specimen';
+  const resourceBytes = Buffer.from(resourceText);
+  if (call('content_resource_create', { resource: {
+    id: 'packed-resource', itemId: 'Q1', title: 'Packed corpus resource', payload: { kind: 'inline-text', text: resourceText },
+    mediaType: 'text/plain', language: 'en', integrity: { algorithm: 'sha256', digest: createHash('sha256').update(resourceBytes).digest('hex'), byteLength: resourceBytes.byteLength },
+  } }).id !== 'packed-resource') throw new Error('packed resource write failed');
+  if (call('content_annotation_create', { annotation: {
+    id: 'packed-annotation', body: { kind: 'text', text: 'Packed corpus annotation identifies olivine' },
+    target: { kind: 'resource', sourceId: 'packed-resource' }, targetVisibility: { version: 1, clauses: [] },
+  } }).id !== 'packed-annotation') throw new Error('packed annotation write failed');
+  const created = json(run(process.execPath, [...globals, 'call', 'upsert_memory', '--arguments', '{"slug":"packed-restart","description":"Packed corpus restart","content":"Durable packed corpus guidance"}'], runtimeFixture).stdout);
   if (created.value?.slug !== 'packed-restart') throw new Error('packed memory write failed');
+  call('create_task', { description: 'Packed corpus task', prompt: 'Execute the packed corpus workflow', memorySlugs: ['packed-restart'] });
+  call('create_prompt', { id: 'packed-prompt', name: 'packed-prompt', title: 'Packed corpus prompt', promptText: 'Follow packed corpus procedure' });
+
+  const searchSevenKinds = (selectedGlobals = globals) => {
+    let page;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      page = call('search', { text: 'packed corpus', limit: 50 }, selectedGlobals);
+      if (new Set(page.results.map(({ kind }) => kind)).size >= 7) break;
+    }
+    const expectedKinds = ['statement', 'item', 'task', 'memory', 'prompt', 'resource', 'annotation'];
+    const actualKinds = new Set(page.results.map(({ kind }) => kind));
+    for (const kind of expectedKinds) {
+      if (!actualKinds.has(kind)) throw new Error(`packed unified search omitted ${kind}`);
+      const result = page.results.find((candidate) => candidate.kind === kind);
+      call('search_hydrate', { result }, selectedGlobals);
+    }
+    return page;
+  };
+  searchSevenKinds();
+  const sparql = call('sparql_query', { query: 'SELECT ?label WHERE { <https://packed.seedbed.test/instance/entity/Q1> <http://www.w3.org/2000/01/rdf-schema#label> ?label }' });
+  if (!sparql.body.includes('Packed corpus item')) throw new Error('packed SPARQL query omitted canonical item label');
+  const beforeRebuild = call('search_admin_health');
+  const shadow = call('search_admin_rebuild');
+  if (shadow.shadowCorpusGeneration !== beforeRebuild.activeCorpusGeneration + 1) throw new Error('packed shadow rebuild did not allocate the next generation');
+  let activated = false;
+  for (let attempt = 0; attempt < 30 && !activated; attempt += 1) {
+    call('search_admin_run', { maxJobs: 100, maxRebuildRoots: 100 });
+    const activation = run(process.execPath, [...globals, 'call', 'search_admin_activate', '--arguments', '{}'], runtimeFixture, false);
+    activated = activation.status === 0;
+  }
+  if (!activated) throw new Error('packed shadow rebuild did not become activatable');
+  const afterRebuild = call('search_admin_health');
+  if (afterRebuild.activeCorpusGeneration !== shadow.shadowCorpusGeneration || afterRebuild.shadowCorpusGeneration !== null || afterRebuild.blockedProducerKinds.length !== 0) throw new Error('packed shadow activation health is invalid');
+  searchSevenKinds();
   const reopened = json(run(process.execPath, [...globals, 'call', 'get_memory', '--arguments', '{"slug":"packed-restart"}'], runtimeFixture).stdout);
   if (reopened.value?.slug !== 'packed-restart') throw new Error('data did not survive process restart');
 
@@ -77,6 +137,7 @@ try {
   if (restoredSnapshot.manifest?.installationId !== snapshot.manifest?.installationId) throw new Error('packed snapshot identity changed on restore');
   const restoredMemory = json(run(process.execPath, [...restoredGlobals, 'call', 'get_memory', '--arguments', '{"slug":"packed-restart"}'], runtimeFixture).stdout);
   if (restoredMemory.value?.slug !== 'packed-restart') throw new Error('packed snapshot did not restore canonical behavior');
+  searchSevenKinds(restoredGlobals);
 
   const status = json(run(process.execPath, [...globals, 'auth', 'status'], runtimeFixture).stdout);
   const manifestPath = join(runtimeFixture, 'principal-authorization.json');
