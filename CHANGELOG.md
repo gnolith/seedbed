@@ -2,8 +2,19 @@
 
 ## Unreleased
 
-- Pin the native assembly to Diamond, Taproot, and Workshop 0.4.1 with one deduplicated
-  Diamond runtime and explicit migration from the released Seedbed 0.3.0 tuple.
+- Preserve canonical statement authorization across ordinary existing Item edits,
+  require exact post-mutation maps for explicit replacements, and publish strict,
+  nonempty MCP input schemas with bounded stable failures.
+- Add authorized bounded Item, Statement, Resource, and Annotation history/revision
+  tools across one-shot CLI, MCP stdio, packed, restart, and Docker paths; compose
+  Workshop 0.4.2 Task, Memory, and Prompt history through the same authorization boundary.
+- Make snapshot input and decoded payload memory explicitly bounded, replace
+  whole-string base64 regular-expression validation, and verify a temporary archive
+  before atomic publication. Cover 32 MiB+ blobs, tampering, interruptions, retries,
+  wrong roots, nonempty targets, and secret canaries.
+- Pin the native assembly to Diamond 0.4.1, Taproot 0.4.2, and Workshop 0.4.2 with one
+  deduplicated Diamond runtime and explicit migration from released Seedbed 0.3.0 and
+  0.3.1 tuples.
 - Permit durable Prompt list cursors under the same exact read-bound tagged-SQL guard as
   Task and Memory, with packed CLI/MCP continuation, restart, stale-row, and grant-revision proofs.
 - Gate every Taproot-owned knowledge/content mutation on exact `knowledge:write`, preserving
@@ -17,8 +28,6 @@
 - Add SQLite and Qdrant vector attachments plus OpenAI- and Ollama-compatible
   embedding attachments. Credentials are selected only by protected file or
   inherited descriptor and are never accepted as tool arguments or persisted.
-- Retain Workshop Task, Memory, and Prompt producer wiring as a release blocker
-  until an exact Workshop artifact compatible with Taproot 0.4 is published.
 
 ## Unreleased
 

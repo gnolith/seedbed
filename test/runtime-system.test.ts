@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { SeedbedConfig } from '../src/config.js';
-import { bootstrapAuthorization, replacePrincipalAuthorization } from '../src/authorization.js';
+import { bootstrapAuthorization, openAuthorization, replacePrincipalAuthorization } from '../src/authorization.js';
 import { createSeedbedRuntime } from '../src/runtime.js';
 import { initializeDatabase, openDatabase } from '../src/persistence.js';
 import { loadTaprootAssembly } from '../src/taproot-bridge.js';
@@ -38,17 +38,29 @@ describe('native headless combined runtime', () => {
       { principal: runtime.principal, requestId: randomUUID() },
     );
     expect((await call('upsert_memory', { slug: 'restart-proof', description: 'Restart proof', content: 'Durable guidance' })).ok).toBe(true);
+    const concurrentMemories = await Promise.all(Array.from({ length: 16 }, (_, index) => call('upsert_memory', {
+      slug: `concurrent-${index}`, description: `Concurrent ${index}`, content: `Durable concurrent guidance ${index}`,
+    })));
+    expect(concurrentMemories.every(({ ok }) => ok)).toBe(true);
     const created = await call('create_task', { description: 'Combined test', prompt: 'Verify the headless assembly', memorySlugs: ['restart-proof'] });
     expect(created.ok).toBe(true);
     const taskId = created.ok ? (created.value as { id: string }).id : '';
+    await expect(call('create_prompt', { id: 'restart-prompt', name: 'restart-prompt', title: 'Restart prompt', promptText: 'Durable prompt guidance' }))
+      .resolves.toMatchObject({ ok: true });
     await runtime.close();
 
     runtime = await createSeedbedRuntime(config, taproot);
     try {
       const memory = await call('get_memory', { slug: 'restart-proof' });
       const task = await call('get_task_packet', { id: taskId });
+      const memoryHistory = await call('memory_history', { slug: 'restart-proof', limit: 10 });
+      const taskHistory = await call('task_history', { id: taskId, limit: 10 });
+      const promptHistory = await call('prompt_history', { id: 'restart-prompt' });
       expect(memory).toMatchObject({ ok: true, value: { slug: 'restart-proof' } });
       expect(task).toMatchObject({ ok: true, value: { task: { id: taskId } } });
+      expect(memoryHistory).toMatchObject({ ok: true, value: [{ revision: 1 }] });
+      expect(taskHistory).toMatchObject({ ok: true, value: [{ revision: 1 }] });
+      expect(promptHistory).toMatchObject({ ok: true, value: [{ revision: 1 }] });
       expect(runtime.dispatcher.tools.map(({ name }) => name)).toEqual(expect.arrayContaining(['validate_sparql', 'dry_run_sparql', 'query_sparql']));
     } finally {
       await runtime.close();
@@ -88,6 +100,8 @@ describe('native headless combined runtime', () => {
     );
     await ownerCall('upsert_memory', { slug: 'cursor-a', description: 'Cursor A', content: 'A' });
     await ownerCall('upsert_memory', { slug: 'cursor-b', description: 'Cursor B', content: 'B' });
+    await expect(ownerCall('create_item', { id: 'Q1', labels: {}, descriptions: {}, claims: {}, statementRestrictions: {} }))
+      .resolves.toMatchObject({ ok: true });
     await ownerRuntime.close();
 
     const workerConfig = { ...ownerConfig, principalSelector: 'worker' };
@@ -106,14 +120,16 @@ describe('native headless combined runtime', () => {
     });
     await expect(workerCall('query_sparql', { query: 'SELECT * WHERE { ?s ?p ?o }' })).resolves.toMatchObject({ ok: true });
     await expect(workerCall('query_sparql', { query: 'INSERT DATA { <urn:s> <urn:p> <urn:o> }' })).resolves.toMatchObject({ ok: false, failure: { kind: 'operation' } });
+    await expect(workerCall('item_history', { entityId: 'Q1', limit: 10 })).resolves.toMatchObject({ ok: true, value: { items: [{ revision: 1 }] } });
     const page = await workerCall('list_memories', { limit: 1 });
     expect(page).toMatchObject({ ok: true, value: { items: [{ slug: expect.any(String) }], cursor: expect.any(String) } });
     const cursor = page.ok ? (page.value as { cursor: string }).cursor : '';
 
     const revoker = await openDatabase(ownerConfig);
     try {
+      const currentOwner = await openAuthorization(revoker, ownerConfig).then((bundle) => bundle.resolveContext('owner', 'workspace'));
       await replacePrincipalAuthorization(revoker, ownerConfig, 'owner', 'workspace', {
-        expectedAuthorizationRevision: worker.authorizationRevision,
+        expectedAuthorizationRevision: currentOwner.authorizationRevision,
         principalSelector: 'worker',
         enabled: false,
         workspaceSelectors: [],
@@ -124,6 +140,10 @@ describe('native headless combined runtime', () => {
     }
     try {
       await expect(workerCall('list_memories', { limit: 1, cursor })).resolves.toMatchObject({
+        ok: false,
+        failure: { kind: 'forbidden' },
+      });
+      await expect(workerCall('item_history', { entityId: 'Q1', limit: 10 })).resolves.toMatchObject({
         ok: false,
         failure: { kind: 'forbidden' },
       });
@@ -158,12 +178,13 @@ describe('native headless combined runtime', () => {
         ['reader', ['read']],
         ['policy-only', ['knowledge:policy']],
         ['admin-only', ['admin']],
+        ['other-reader', ['read']],
       ] as const) {
         const state = await replacePrincipalAuthorization(maintenance, baseConfig, 'owner', 'workspace', {
           expectedAuthorizationRevision: authorizationRevision,
           principalSelector,
           enabled: true,
-          workspaceSelectors: ['workspace'],
+          workspaceSelectors: principalSelector === 'other-reader' ? ['other-workspace'] : ['workspace'],
           capabilities,
         });
         authorizationRevision = state.authorizationRevision;
@@ -204,6 +225,14 @@ describe('native headless combined runtime', () => {
       }
       await expect(call(writer, 'create_item', { id: 'Q1', labels: {}, descriptions: {}, claims: {}, statementRestrictions: {} }))
         .resolves.toMatchObject({ ok: true, value: { entityId: 'Q1' } });
+      await expect(call(writer, 'create_item', {
+        id: 'Q2', labels: {}, descriptions: {}, claims: {}, statementRestrictions: {},
+        visibility: { version: 1, clauses: [[{ kind: 'principal', principalId: 'taproot-writer' }]] },
+      })).resolves.toMatchObject({ ok: true, value: { entityId: 'Q2' } });
+      await expect(call(writer, 'create_item', {
+        id: 'Q3', labels: {}, descriptions: {}, claims: {}, statementRestrictions: {},
+        visibility: { version: 1, clauses: [[{ kind: 'workspace', workspaceId: 'workspace' }]] },
+      })).resolves.toMatchObject({ ok: true, value: { entityId: 'Q3' } });
       await expect(call(writer, 'query_sparql', { query: 'ASK {}' })).resolves.toMatchObject({ ok: true });
     } finally {
       await writer.close();
@@ -217,14 +246,42 @@ describe('native headless combined runtime', () => {
         for (const name of ['validate_sparql', 'dry_run_sparql', 'query_sparql']) {
           expect(listed.value).toContainEqual(expect.objectContaining({ name, capability: 'read' }));
         }
+        for (const name of ['item_history', 'item_revision', 'statement_history', 'statement_revision',
+          'resource_history', 'resource_revision', 'annotation_history', 'annotation_revision']) {
+          expect(listed.value).toContainEqual(expect.objectContaining({ name, capability: 'read' }));
+        }
         expect(listed.value.map(({ name }) => name)).not.toEqual(expect.arrayContaining(taprootMutations));
       }
       await expect(call(reader, 'validate_sparql', { query: 'ASK {}' })).resolves.toMatchObject({ ok: true, value: { valid: true, dryRun: false } });
       await expect(call(reader, 'dry_run_sparql', { query: 'ASK {}' })).resolves.toMatchObject({ ok: true, value: { valid: true, dryRun: true } });
       await expect(call(reader, 'query_sparql', { query: 'ASK {}' })).resolves.toMatchObject({ ok: true, value: { body: expect.any(String) } });
       await expect(call(reader, 'query_sparql', { query: 'INSERT DATA { <urn:s> <urn:p> <urn:o> }' })).resolves.toMatchObject({ ok: false, failure: { kind: 'operation' } });
+      await expect(call(reader, 'item_history', { entityId: 'Q1', limit: 10 })).resolves.toMatchObject({ ok: true, value: { items: [{ revision: 1 }] } });
+      await expect(call(reader, 'item_revision', { entityId: 'Q2', revision: 1 })).resolves.toMatchObject({
+        ok: false, failure: { kind: 'operation', error: { code: 'not_found', message: 'Requested Taproot record was not found' } },
+      });
     } finally {
       await reader.close();
+    }
+
+    const restartedReader = await openFor('reader');
+    try {
+      await expect(call(restartedReader, 'item_history', { entityId: 'Q1', limit: 10 }))
+        .resolves.toMatchObject({ ok: true, value: { items: [{ revision: 1 }] } });
+    } finally {
+      await restartedReader.close();
+    }
+
+    const otherReader = await createSeedbedRuntime({ ...baseConfig, principalSelector: 'other-reader', workspaceSelector: 'other-workspace' }, taproot);
+    try {
+      await expect(call(otherReader, 'item_history', { entityId: 'Q3', limit: 10 })).resolves.toMatchObject({
+        ok: true, value: { items: [] },
+      });
+      await expect(call(otherReader, 'item_revision', { entityId: 'Q3', revision: 1 })).resolves.toMatchObject({
+        ok: false, failure: { kind: 'operation', error: { code: 'not_found', message: 'Requested Taproot record was not found' } },
+      });
+    } finally {
+      await otherReader.close();
     }
 
     for (const principalSelector of ['policy-only', 'admin-only']) {

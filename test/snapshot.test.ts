@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -122,6 +122,56 @@ describe('portable installation snapshots', () => {
     await expect(stat(target.config.blobPath!)).rejects.toMatchObject({ code: 'ENOENT' });
 
     await expect(restoreInstallationSnapshot(target.config, taproot, snapshotPath)).resolves.toMatchObject({ valid: true });
+  });
+
+  it('verifies and restores a 32 MiB+ archive with bounded validation and retry-safe interruptions', { timeout: 120_000 }, async () => {
+    const source = await fixture('source-large');
+    const target = await fixture('target-large', source.secretBytes);
+    const taproot = await loadTaprootAssembly();
+    await initializeDatabase(source.config, taproot);
+    const db = await openDatabase(source.config);
+    await bootstrapAuthorization(db, source.config, 'owner', 'workspace');
+    await db.close();
+    const large = Buffer.alloc((32 * 1024 * 1024) + 17);
+    for (let index = 0; index < large.length; index += 1) large[index] = index % 251;
+    await mkdir(join(source.config.blobPath!, 'large'), { recursive: true });
+    await writeFile(join(source.config.blobPath!, 'large', 'payload.bin'), large);
+
+    const snapshotPath = join(source.directory, 'large.gz');
+    await expect(createInstallationSnapshot(source.config, taproot, snapshotPath, new Date('2026-07-22T12:00:00.000Z'), {
+      afterArchiveVerified() { throw new Error('deterministic export interruption'); },
+    })).rejects.toThrow('deterministic export interruption');
+    await expect(stat(snapshotPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(createInstallationSnapshot(source.config, taproot, snapshotPath)).resolves.toMatchObject({ valid: true });
+    await expect(inspectInstallationSnapshot(snapshotPath)).resolves.toMatchObject({ valid: true });
+    await expect(inspectInstallationSnapshot(snapshotPath, true)).resolves.toMatchObject({ valid: true });
+
+    const rawArchive = gunzipSync(await readFile(snapshotPath));
+    expect(rawArchive.includes(Buffer.from(source.secretBytes))).toBe(false);
+    expect(rawArchive.toString('utf8')).not.toContain(Buffer.from(source.secretBytes).toString('base64'));
+    const envelope = JSON.parse(rawArchive.toString('utf8')) as { blobs: Array<{ data: string }> };
+    const middle = Math.floor(envelope.blobs[0]!.data.length / 2);
+    const original = envelope.blobs[0]!.data[middle]!;
+    envelope.blobs[0]!.data = `${envelope.blobs[0]!.data.slice(0, middle)}${original === 'A' ? 'B' : 'A'}${envelope.blobs[0]!.data.slice(middle + 1)}`;
+    const tampered = join(source.directory, 'large-tampered.gz');
+    await writeFile(tampered, gzipSync(Buffer.from(JSON.stringify(envelope))));
+    await expect(inspectInstallationSnapshot(tampered, true)).rejects.toMatchObject({ code: 'snapshot_invalid' });
+
+    await expect(restoreInstallationSnapshot(target.config, taproot, snapshotPath)).resolves.toMatchObject({ valid: true });
+    const restored = await readFile(join(target.config.blobPath!, 'large', 'payload.bin'));
+    expect(restored.byteLength).toBe(large.byteLength);
+    expect(createHash('sha256').update(restored).digest('hex')).toBe(createHash('sha256').update(large).digest('hex'));
+
+    const wrongRoot = await fixture('target-wrong-root', Buffer.alloc(32, 0x5a));
+    await expect(restoreInstallationSnapshot(wrongRoot.config, taproot, snapshotPath)).rejects.toBeDefined();
+    await expect(stat(wrongRoot.config.databasePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(wrongRoot.config.blobPath!)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const nonempty = await fixture('target-nonempty', source.secretBytes);
+    await mkdir(nonempty.config.blobPath!, { recursive: true });
+    await writeFile(join(nonempty.config.blobPath!, 'canary'), 'do not replace');
+    await expect(restoreInstallationSnapshot(nonempty.config, taproot, snapshotPath)).rejects.toMatchObject({ code: 'restore_target_exists' });
+    await expect(readFile(join(nonempty.config.blobPath!, 'canary'), 'utf8')).resolves.toBe('do not replace');
   });
 
   it('restores compatible chunks and replaces missing or incompatible chunks from canonical state', { timeout: 30_000 }, async () => {
