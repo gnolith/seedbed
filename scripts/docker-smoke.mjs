@@ -43,7 +43,7 @@ try {
     }
     process.stdout.write(JSON.stringify(versions));
   `]).stdout);
-  const expectedVersions = { diamond: '0.4.1', taproot: '0.4.1', workshop: '0.4.1', seedbed: '0.3.1' };
+  const expectedVersions = { diamond: '0.4.1', taproot: '0.4.2', workshop: '0.4.2', seedbed: '0.3.2' };
   if (JSON.stringify(installed) !== JSON.stringify(expectedVersions)) {
     throw new Error(`image package tuple is ${JSON.stringify(installed)}; expected ${JSON.stringify(expectedVersions)}`);
   }
@@ -86,19 +86,29 @@ try {
     id: 'Q1', labels: { en: { language: 'en', value: 'Docker corpus item' } }, descriptions: { en: { language: 'en', value: 'Docker image entity' } },
     claims: { P1: [statement] }, statementRestrictions: { [statement.id]: [] },
   }).entityId !== 'Q1') throw new Error('Docker item and statement write failed');
+  if (call('set_description', { entityId: 'Q1', language: 'en', value: 'Docker image entity revised', expectedRevision: 1 }).newRevision !== 2) {
+    throw new Error('Docker ordinary Item edit did not preserve statement authorization');
+  }
+  if (call('item_history', { entityId: 'Q1', limit: 2 }).items?.length !== 2) throw new Error('Docker Item history failed');
+  if (call('statement_history', { entityId: 'Q1', statementId: statement.id, limit: 2 }).items?.length !== 2) throw new Error('Docker Statement history failed');
   const resourceText = 'Docker corpus resource describes a basalt specimen';
   const resourceBytes = Buffer.from(resourceText);
   call('content_resource_create', { resource: {
     id: 'docker-resource', itemId: 'Q1', title: 'Docker corpus resource', payload: { kind: 'inline-text', text: resourceText },
     mediaType: 'text/plain', language: 'en', integrity: { algorithm: 'sha256', digest: createHash('sha256').update(resourceBytes).digest('hex'), byteLength: resourceBytes.byteLength },
   } });
+  if (call('resource_revision', { id: 'docker-resource', revision: 1 }).id !== 'docker-resource') throw new Error('Docker Resource revision failed');
   call('content_annotation_create', { annotation: {
     id: 'docker-annotation', body: { kind: 'text', text: 'Docker corpus annotation identifies olivine' },
     target: { kind: 'resource', sourceId: 'docker-resource' }, targetVisibility: { version: 1, clauses: [] },
   } });
+  if (call('annotation_history', { id: 'docker-annotation', limit: 10 }).items?.[0]?.revision !== 1) throw new Error('Docker Annotation history failed');
   call('upsert_memory', { slug: 'docker-restart', description: 'Docker corpus restart', content: 'Durable Docker corpus guidance' });
-  call('create_task', { description: 'Docker corpus task', prompt: 'Execute the Docker corpus workflow', memorySlugs: ['docker-restart'] });
+  const dockerTask = call('create_task', { description: 'Docker corpus task', prompt: 'Execute the Docker corpus workflow', memorySlugs: ['docker-restart'] });
   call('create_prompt', { id: 'docker-prompt', name: 'docker-prompt', title: 'Docker corpus prompt', promptText: 'Follow Docker corpus procedure' });
+  if (call('task_history', { id: dockerTask.id, limit: 10 })[0]?.revision !== 1) throw new Error('Docker Task history failed');
+  if (call('memory_history', { slug: 'docker-restart', limit: 10 })[0]?.revision !== 1) throw new Error('Docker Memory history failed');
+  if (call('prompt_history', { id: 'docker-prompt' })[0]?.revision !== 1) throw new Error('Docker Prompt history failed');
   const assertSevenKinds = (selectedMount = mount) => {
     let page;
     for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -114,6 +124,9 @@ try {
     if (scoped.results.some(({ kind }) => kind !== 'resource' && kind !== 'annotation')) throw new Error('Docker scoped search escaped requested kinds');
   };
   assertSevenKinds();
+  if (!call('search', { text: 'provenance', kinds: ['item'], limit: 10 }).results.some(({ sourceId }) => sourceId === 'Q1')) {
+    throw new Error('Docker Item aggregate omitted current Statement text');
+  }
   const semanticMount = ['-v', `${semanticConfig}:/run/seedbed-config.json:ro`];
   const semanticCall = (name, argumentsValue = {}, selectedMount = mount) => JSON.parse(docker([
     'run', '--rm', '--add-host', 'host.docker.internal:host-gateway', ...selectedMount, ...secretMount, ...semanticMount, ...baseEnvironment, image,

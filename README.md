@@ -87,6 +87,15 @@ Materialization and semantic maintenance tools require exact `search:admin`.
 Task, Memory, and Prompt results are enabled only when their exact Workshop-owned
 producer adapters are present; Seedbed does not duplicate those domain owners.
 
+Authorized `item_history`/`item_revision`, `statement_history`/`statement_revision`,
+`resource_history`/`resource_revision`, and
+`annotation_history`/`annotation_revision` expose bounded canonical revisions without
+bypassing current visibility. Existing Item mutations preserve the complete current
+statement authorization map when `statementRestrictions` is omitted; an explicitly
+supplied replacement must exactly cover the post-mutation statement IDs.
+Workshop-owned `task_history`, `memory_history`, and `prompt_history` are composed
+through the same current-authorization recheck across process and MCP boundaries.
+
 Structured results are one-line JSON on stdout. Diagnostics and JSON logs go only
 to stderr. Exit codes are `0` success, `2` usage, `3` configuration, `4`
 persistence/readiness, `5` authorization, and `6` operation failure.
@@ -127,7 +136,9 @@ Snapshot maintenance requires an authorized principal with exact `search:admin`.
 local blob with byte length and SHA-256 metadata, and writes a compressed portable
 envelope with an exclusive create. Root secrets, credential bytes, access tokens,
 and secret selectors are never included. Keep those separately in an OS secret
-facility.
+facility. The candidate archive is fully decoded and checksum-verified before it is
+atomically published. Compressed, expanded, and decoded payload sizes are explicitly
+bounded, including archives containing blobs larger than 32 MiB.
 
 `snapshot verify` checks the database and every blob before any restore write.
 `snapshot restore` accepts only an empty target installation, validates the exact
@@ -151,7 +162,7 @@ docker run --rm -i \
   -v /host/secret/seedbed-root:/run/secrets/seedbed-root:ro \
   -e SEEDBED_BASE_IRI=https://example.com/my-gnolith/ \
   -e SEEDBED_ROOT_SECRET_FILE=/run/secrets/seedbed-root \
-  ghcr.io/gnolith/seedbed:0.3.1 init
+  ghcr.io/gnolith/seedbed:0.3.2 init
 ```
 
 See [`docs/migrations.md`](docs/migrations.md) for exact transition and recovery

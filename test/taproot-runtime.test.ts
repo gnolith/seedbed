@@ -39,6 +39,48 @@ describe('Taproot content and authorized search assembly', () => {
         claims: { P1: [{ id: 'Q1$petrology', type: 'statement', text: 'Petrology statement about basalt provenance', rank: 'normal', mainsnak: { snaktype: 'value', property: 'P1', datatype: 'string', datavalue: { type: 'string', value: 'igneous' } }, qualifiers: {}, 'qualifiers-order': [], references: [] }] },
         statementRestrictions: { 'Q1$petrology': [] },
       })).resolves.toMatchObject({ ok: true, value: { entityId: itemId } });
+      const mutationTools = runtime.dispatcher.tools.filter(({ name }) => [
+        'create_item', 'set_label', 'set_description', 'add_statement', 'remove_statement',
+      ].includes(name));
+      expect(mutationTools).toHaveLength(5);
+      for (const tool of mutationTools) expect(Object.keys(tool.inputSchema.properties).length).toBeGreaterThan(0);
+      expect(mutationTools.find(({ name }) => name === 'set_label')?.inputSchema).toMatchObject({
+        properties: { expectedRevision: { type: 'integer' }, statementRestrictions: { type: 'object' } },
+        required: expect.arrayContaining(['entityId', 'expectedRevision']),
+        additionalProperties: false,
+      });
+
+      await expect(call('set_label', { entityId: itemId, language: 'en', value: 'Petrology basalt specimen', expectedRevision: 1 }))
+        .resolves.toMatchObject({ ok: true, value: { entityId: itemId, newRevision: 2 } });
+      let policyRows = await runtime.database.prepare(`SELECT statement_id, restrictions_json
+        FROM taproot_statement_authorization WHERE entity_id = ?`).bind(itemId)
+        .all<{ statement_id: string; restrictions_json: string }>();
+      expect(policyRows.results).toEqual([{ statement_id: 'Q1$petrology', restrictions_json: '[]' }]);
+
+      const ownerOnly = { version: 1, clauses: [[{ kind: 'principal', principalId: 'owner' }]] };
+      await expect(call('set_description', {
+        entityId: itemId, language: 'en', value: 'A restricted volcanic stone', expectedRevision: 2,
+        statementRestrictions: { 'Q1$petrology': [ownerOnly] },
+      })).resolves.toMatchObject({ ok: true, value: { entityId: itemId, newRevision: 3 } });
+      policyRows = await runtime.database.prepare(`SELECT statement_id, restrictions_json
+        FROM taproot_statement_authorization WHERE entity_id = ?`).bind(itemId)
+        .all<{ statement_id: string; restrictions_json: string }>();
+      expect(JSON.parse(policyRows.results[0]!.restrictions_json)).toEqual([ownerOnly]);
+      await expect(call('set_label', { entityId: itemId, language: 'en', value: 'stale', expectedRevision: 2 }))
+        .resolves.toMatchObject({ ok: false, failure: { error: { code: 'conflict', message: expect.not.stringContaining('Workshop operation failed') } } });
+      await expect(call('set_label', {
+        entityId: itemId, language: 'en', value: 'invalid policy', expectedRevision: 3, statementRestrictions: {},
+      })).resolves.toMatchObject({ ok: false, failure: { error: { code: 'validation_failed', message: expect.stringContaining('exactly match') } } });
+
+      await expect(call('item_revision', { entityId: itemId, revision: 2 })).resolves.toMatchObject({ ok: true, value: { revision: 2 } });
+      await expect(call('item_history', { entityId: itemId, limit: 2 })).resolves.toMatchObject({ ok: true, value: { items: [{ revision: 3 }, { revision: 2 }] } });
+      await expect(call('statement_revision', { entityId: itemId, statementId: 'Q1$petrology', revision: 3 }))
+        .resolves.toMatchObject({ ok: true, value: { statement: { id: 'Q1$petrology' } } });
+      await expect(call('statement_history', { entityId: itemId, statementId: 'Q1$petrology', limit: 2 }))
+        .resolves.toMatchObject({ ok: true, value: { items: [
+          expect.objectContaining({ revision: 3, statement: expect.objectContaining({ id: 'Q1$petrology' }) }),
+          expect.objectContaining({ revision: 2, statement: expect.objectContaining({ id: 'Q1$petrology' }) }),
+        ] } });
       const text = 'Microscopic olivine crystals in the petrology basalt specimen';
       const bytes = Buffer.from(text);
       const resource = await call('content_resource_create', { resource: {
@@ -46,11 +88,15 @@ describe('Taproot content and authorized search assembly', () => {
         mediaType: 'text/plain', language: 'en', integrity: { algorithm: 'sha256', digest: createHash('sha256').update(bytes).digest('hex'), byteLength: bytes.byteLength },
       } });
       expect(resource.ok).toBe(true);
+      await expect(call('resource_revision', { id: 'resource-basalt', revision: 1 })).resolves.toMatchObject({ ok: true, value: { id: 'resource-basalt', revision: 1 } });
+      await expect(call('resource_history', { id: 'resource-basalt', limit: 10 })).resolves.toMatchObject({ ok: true, value: { items: [{ id: 'resource-basalt', revision: 1 }] } });
       const annotation = await call('content_annotation_create', { annotation: {
         id: 'annotation-basalt', body: { kind: 'text', text: 'Petrology annotation for an olivine-rich margin' },
         target: { kind: 'resource', sourceId: 'resource-basalt' }, targetVisibility: { version: 1, clauses: [] },
       } });
       expect(annotation.ok).toBe(true);
+      await expect(call('annotation_revision', { id: 'annotation-basalt', revision: 1 })).resolves.toMatchObject({ ok: true, value: { id: 'annotation-basalt', revision: 1 } });
+      await expect(call('annotation_history', { id: 'annotation-basalt', limit: 10 })).resolves.toMatchObject({ ok: true, value: { items: [{ id: 'annotation-basalt', revision: 1 }] } });
       expect((await call('upsert_memory', { slug: 'petrology-memory', description: 'Petrology memory', content: 'Petrology field guidance' })).ok).toBe(true);
       expect((await call('create_task', { description: 'Petrology task', prompt: 'Perform the petrology workflow', memorySlugs: ['petrology-memory'] })).ok).toBe(true);
       expect((await call('create_prompt', { id: 'petrology-prompt', name: 'petrology-prompt', title: 'Petrology prompt', promptText: 'Use the petrology procedure' })).ok).toBe(true);
@@ -63,6 +109,9 @@ describe('Taproot content and authorized search assembly', () => {
       expect(completePage).toMatchObject({ ok: true });
       const completeResults = (completePage as { ok: true; value: { results: Array<{ kind: string; sourceId: string }> } }).value.results;
       expect(new Set(completeResults.map(({ kind }) => kind))).toEqual(new Set(['statement', 'item', 'task', 'memory', 'prompt', 'resource', 'annotation']));
+      await expect(call('search', { text: 'provenance', kinds: ['item'], limit: 10 })).resolves.toMatchObject({
+        ok: true, value: { results: [expect.objectContaining({ kind: 'item', sourceId: itemId })] },
+      });
       for (const kind of ['statement', 'item', 'task', 'memory', 'prompt', 'resource', 'annotation']) {
         const result = completeResults.find((candidate) => candidate.kind === kind)!;
         await expect(call('search_hydrate', { result })).resolves.toMatchObject({ ok: true });
@@ -95,7 +144,7 @@ describe('Taproot content and authorized search assembly', () => {
       expect(escape).toMatchObject({ ok: true });
       await expect(call('content_resource_hydrate', { id: 'resource-escape' })).resolves.toMatchObject({ ok: false, failure: { kind: 'operation' } });
       const sparql = await call('query_sparql', { query: 'SELECT ?label WHERE { <https://search.seedbed.test/installation/entity/Q1> <http://www.w3.org/2000/01/rdf-schema#label> ?label }' });
-      expect(sparql).toMatchObject({ ok: true, value: { mediaType: expect.stringContaining('application/sparql-results+json'), body: expect.stringContaining('Petrology basalt sample') } });
+      expect(sparql).toMatchObject({ ok: true, value: { mediaType: expect.stringContaining('application/sparql-results+json'), body: expect.stringContaining('Petrology basalt specimen') } });
 
       const direct = new TaprootContentRepositoryV1(runtime.database, { installationId: runtime.principal.installationId });
       const current = await openAuthorization(runtime.database, config).then((bundle) => bundle.resolveContext('owner', 'workspace'));

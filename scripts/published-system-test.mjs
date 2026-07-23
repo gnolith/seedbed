@@ -24,6 +24,16 @@ try {
   expectJson(run(process.execPath, [...globals, 'auth', 'bootstrap']).stdout, (value) => value.bootstrapped === true, 'published authorization bootstrap');
   expectJson(run(process.execPath, [...globals, 'call', 'upsert_memory', '--arguments', '{"slug":"published-restart","description":"Published restart","content":"Durable"}']).stdout, (value) => value.value?.slug === 'published-restart', 'published memory write');
   expectJson(run(process.execPath, [...globals, 'call', 'get_memory', '--arguments', '{"slug":"published-restart"}']).stdout, (value) => value.value?.slug === 'published-restart', 'published restart read');
+  expectJson(run(process.execPath, [...globals, 'call', 'memory_history', '--arguments', '{"slug":"published-restart","limit":10}']).stdout, (value) => value.value?.[0]?.revision === 1, 'published Memory history');
+  const task = JSON.parse(run(process.execPath, [...globals, 'call', 'create_task', '--arguments', '{"description":"Published task","prompt":"Verify published history","memorySlugs":["published-restart"]}']).stdout).value;
+  expectJson(run(process.execPath, [...globals, 'call', 'task_history', '--arguments', JSON.stringify({ id: task.id, limit: 10 })]).stdout, (value) => value.value?.[0]?.revision === 1, 'published Task history');
+  expectJson(run(process.execPath, [...globals, 'call', 'create_prompt', '--arguments', '{"id":"published-prompt","name":"published-prompt","title":"Published prompt","promptText":"Verify the public assembly"}']).stdout, (value) => value.value?.id === 'published-prompt', 'published Prompt create');
+  expectJson(run(process.execPath, [...globals, 'call', 'prompt_history', '--arguments', '{"id":"published-prompt"}']).stdout, (value) => value.value?.[0]?.revision === 1, 'published Prompt history');
+  expectJson(run(process.execPath, [...globals, 'call', 'create_property', '--arguments', '{"id":"P1","datatype":"string","labels":{"en":{"language":"en","value":"Published property"}}}']).stdout, (value) => value.value?.entityId === 'P1', 'published Property create');
+  const statement = { id: 'Q1$published', type: 'statement', text: 'Published statement-only chrysoberyl provenance', rank: 'normal', mainsnak: { snaktype: 'value', property: 'P1', datatype: 'string', datavalue: { type: 'string', value: 'published-value' } }, qualifiers: {}, 'qualifiers-order': [], references: [] };
+  expectJson(run(process.execPath, [...globals, 'call', 'create_item', '--arguments', JSON.stringify({ id: 'Q1', labels: { en: { language: 'en', value: 'Published item' } }, claims: { P1: [statement] }, statementRestrictions: { [statement.id]: [] } })]).stdout, (value) => value.value?.entityId === 'Q1', 'published Item create');
+  expectJson(run(process.execPath, [...globals, 'call', 'set_description', '--arguments', '{"entityId":"Q1","language":"en","value":"Published revised item","expectedRevision":1}']).stdout, (value) => value.value?.newRevision === 2, 'published Item policy-preserving edit');
+  expectJson(run(process.execPath, [...globals, 'call', 'item_history', '--arguments', '{"entityId":"Q1","limit":2}']).stdout, (value) => value.value?.items?.length === 2, 'published Item history');
   const snapshot = join(fixture, 'published.seedbed-snapshot.gz');
   expectJson(run(process.execPath, [...globals, 'snapshot', 'create', '--output', snapshot]).stdout, (value) => value.valid === true && value.manifest?.secretsExported === false, 'published snapshot create');
   expectJson(run(process.execPath, [...globals, 'snapshot', 'verify', '--input', snapshot]).stdout, (value) => value.valid === true, 'published snapshot verify');
@@ -35,11 +45,13 @@ try {
   const client = new Client({ name: 'seedbed-published-test', version: '1.0.0' });
   await client.connect(transport);
   const tools = await client.listTools();
-  for (const name of ['get_memory', 'validate_sparql', 'dry_run_sparql', 'query_sparql']) {
+  for (const name of ['get_memory', 'task_history', 'memory_history', 'prompt_history', 'item_history', 'statement_revision', 'resource_history', 'annotation_history', 'validate_sparql', 'dry_run_sparql', 'query_sparql']) {
     if (!tools.tools.some((tool) => tool.name === name)) throw new Error(`published MCP discovery omitted ${name}`);
   }
   const entity = await client.callTool({ name: 'get_memory', arguments: { slug: 'published-restart' } });
   if (entity.isError || entity.structuredContent?.slug !== 'published-restart') throw new Error('published MCP restart read failed');
+  const itemHistory = await client.callTool({ name: 'item_history', arguments: { entityId: 'Q1', limit: 2 } });
+  if (itemHistory.isError || itemHistory.structuredContent?.items?.length !== 2) throw new Error('published MCP Item history failed');
   const validation = await client.callTool({ name: 'validate_sparql', arguments: { query: 'ASK {}' } });
   if (validation.isError || validation.structuredContent?.valid !== true) throw new Error('published MCP SPARQL validation failed');
   const dryRun = await client.callTool({ name: 'dry_run_sparql', arguments: { query: 'ASK {}' } });

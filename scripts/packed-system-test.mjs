@@ -76,22 +76,38 @@ try {
     id: 'Q1', labels: { en: { language: 'en', value: 'Packed corpus item' } }, descriptions: { en: { language: 'en', value: 'Packed artifact entity' } },
     claims: { P1: [statement] }, statementRestrictions: { [statement.id]: [] },
   }).entityId !== 'Q1') throw new Error('packed item and statement write failed');
+  if (call('set_description', { entityId: 'Q1', language: 'en', value: 'Packed artifact entity revised', expectedRevision: 1 }).newRevision !== 2) {
+    throw new Error('packed ordinary Item edit did not preserve statement authorization');
+  }
+  const itemHistory = call('item_history', { entityId: 'Q1', limit: 2 });
+  if (itemHistory.items.length !== 2 || itemHistory.items[0].revision !== 2 || itemHistory.items[1].revision !== 1) throw new Error('packed Item history failed');
+  if (call('statement_revision', { entityId: 'Q1', statementId: statement.id, revision: 2 }).statement?.id !== statement.id) throw new Error('packed Statement revision failed');
   const resourceText = 'Packed corpus resource describes a basalt specimen';
   const resourceBytes = Buffer.from(resourceText);
   if (call('content_resource_create', { resource: {
     id: 'packed-resource', itemId: 'Q1', title: 'Packed corpus resource', payload: { kind: 'inline-text', text: resourceText },
     mediaType: 'text/plain', language: 'en', integrity: { algorithm: 'sha256', digest: createHash('sha256').update(resourceBytes).digest('hex'), byteLength: resourceBytes.byteLength },
   } }).id !== 'packed-resource') throw new Error('packed resource write failed');
+  if (call('resource_history', { id: 'packed-resource', limit: 10 }).items?.[0]?.revision !== 1) throw new Error('packed Resource history failed');
   if (call('content_annotation_create', { annotation: {
     id: 'packed-annotation', body: { kind: 'text', text: 'Packed corpus annotation identifies olivine' },
     target: { kind: 'resource', sourceId: 'packed-resource' }, targetVisibility: { version: 1, clauses: [] },
   } }).id !== 'packed-annotation') throw new Error('packed annotation write failed');
+  if (call('annotation_history', { id: 'packed-annotation', limit: 10 }).items?.[0]?.revision !== 1) throw new Error('packed Annotation history failed');
   const created = json(run(process.execPath, [...globals, 'call', 'upsert_memory', '--arguments', '{"slug":"packed-restart","description":"Packed corpus restart","content":"Durable packed corpus guidance"}'], runtimeFixture).stdout);
   if (created.value?.slug !== 'packed-restart') throw new Error('packed memory write failed');
-  call('create_task', { description: 'Packed corpus task', prompt: 'Execute the packed corpus workflow', memorySlugs: ['packed-restart'] });
+  await Promise.all(Array.from({ length: 8 }, (_, index) => runAsync(process.execPath, [
+    ...globals, 'call', 'upsert_memory', '--arguments', JSON.stringify({
+      slug: `packed-concurrent-${index}`, description: `Packed concurrent ${index}`, content: `Durable packed concurrent guidance ${index}`,
+    }),
+  ], runtimeFixture)));
+  const packedTask = call('create_task', { description: 'Packed corpus task', prompt: 'Execute the packed corpus workflow', memorySlugs: ['packed-restart'] });
   call('create_prompt', { id: 'packed-prompt-a', name: 'packed-prompt-a', title: 'Packed corpus prompt A', promptText: 'Follow packed corpus procedure A' });
   call('create_prompt', { id: 'packed-prompt-b', name: 'packed-prompt-b', title: 'Packed corpus prompt B', promptText: 'Follow packed corpus procedure B' });
   call('create_prompt', { id: 'packed-prompt-c', name: 'packed-prompt-c', title: 'Packed corpus prompt C', promptText: 'Follow packed corpus procedure C' });
+  if (call('task_history', { id: packedTask.id, limit: 10 })[0]?.revision !== 1) throw new Error('packed Task history failed');
+  if (call('memory_history', { slug: 'packed-restart', limit: 10 })[0]?.revision !== 1) throw new Error('packed Memory history failed');
+  if (call('prompt_history', { id: 'packed-prompt-a' })[0]?.revision !== 1) throw new Error('packed Prompt history failed');
 
   const promptFirst = call('list_prompts', { limit: 1 });
   if (promptFirst.items.length !== 1 || typeof promptFirst.cursor !== 'string') throw new Error('packed nonempty Prompt list did not create a durable cursor');
@@ -122,6 +138,9 @@ try {
     return page;
   };
   searchSevenKinds();
+  if (!call('search', { text: 'provenance', kinds: ['item'], limit: 10 }).results.some(({ sourceId }) => sourceId === 'Q1')) {
+    throw new Error('packed Item aggregate omitted current Statement text');
+  }
   const sparql = call('query_sparql', { query: 'SELECT ?label WHERE { <https://packed.seedbed.test/instance/entity/Q1> <http://www.w3.org/2000/01/rdf-schema#label> ?label }' });
   if (!sparql.body.includes('Packed corpus item')) throw new Error('packed SPARQL query omitted canonical item label');
   if (!call('validate_sparql', { query: 'ASK {}' }).valid) throw new Error('packed SPARQL validation failed under read');
@@ -177,6 +196,7 @@ try {
   if (readerValue.value?.slug !== 'packed-restart') throw new Error('declaratively granted packed reader could not read');
   if (!call('validate_sparql', { query: 'ASK {}' }, readerGlobals).valid || !call('dry_run_sparql', { query: 'ASK {}' }, readerGlobals).dryRun) throw new Error('packed read-only principal could not validate or dry-run SPARQL');
   if (!call('query_sparql', { query: 'ASK {}' }, readerGlobals).body) throw new Error('packed read-only principal could not query SPARQL');
+  if (call('item_history', { entityId: 'Q1', limit: 2 }, readerGlobals).items?.length !== 2) throw new Error('packed read-only principal could not read Item history');
   const readerUpdate = run(process.execPath, [...readerGlobals, 'call', 'query_sparql', '--arguments', JSON.stringify({ query: 'INSERT DATA { <urn:s> <urn:p> <urn:o> }' })], runtimeFixture, false);
   if (readerUpdate.status === 0) throw new Error('packed read-only principal executed a SPARQL update');
   const readerWrite = run(process.execPath, [...readerGlobals, 'call', 'create_item', '--arguments', JSON.stringify({ id: 'Q-reader-forbidden' })], runtimeFixture, false);
@@ -202,11 +222,25 @@ try {
   const client = new Client({ name: 'seedbed-packed-test', version: '1.0.0' });
   await client.connect(transport);
   const listed = await client.listTools();
-  for (const name of ['get_memory', 'list_prompts', 'validate_sparql', 'dry_run_sparql', 'query_sparql']) {
+  for (const name of ['get_memory', 'list_prompts', 'task_history', 'memory_history', 'prompt_history', 'item_history', 'statement_revision', 'resource_history', 'annotation_history', 'validate_sparql', 'dry_run_sparql', 'query_sparql']) {
     if (!listed.tools.some((tool) => tool.name === name)) throw new Error(`MCP tool discovery omitted ${name}`);
+  }
+  for (const name of ['set_label', 'item_history', 'statement_revision', 'resource_history', 'annotation_history']) {
+    const tool = listed.tools.find((candidate) => candidate.name === name);
+    if (!tool || tool.inputSchema?.additionalProperties !== false || Object.keys(tool.inputSchema?.properties ?? {}).length === 0) {
+      throw new Error(`MCP tool discovery returned a non-exact or empty schema for ${name}`);
+    }
   }
   const called = await client.callTool({ name: 'get_memory', arguments: { slug: 'packed-restart' } });
   if (called.isError || called.structuredContent?.slug !== 'packed-restart') throw new Error('MCP get_memory failed after restart');
+  const mcpHistory = await client.callTool({ name: 'item_history', arguments: { entityId: 'Q1', limit: 2 } });
+  if (mcpHistory.isError || mcpHistory.structuredContent?.items?.length !== 2) throw new Error('MCP Item history failed after restart');
+  const mcpTaskHistory = await client.callTool({ name: 'task_history', arguments: { id: packedTask.id, limit: 10 } });
+  if (mcpTaskHistory.isError || mcpTaskHistory.structuredContent?.value?.[0]?.revision !== 1) throw new Error('MCP Task history failed after restart');
+  const mcpMemoryHistory = await client.callTool({ name: 'memory_history', arguments: { slug: 'packed-restart', limit: 10 } });
+  if (mcpMemoryHistory.isError || mcpMemoryHistory.structuredContent?.value?.[0]?.revision !== 1) throw new Error('MCP Memory history failed after restart');
+  const mcpPromptHistory = await client.callTool({ name: 'prompt_history', arguments: { id: 'packed-prompt-a' } });
+  if (mcpPromptHistory.isError || mcpPromptHistory.structuredContent?.value?.[0]?.revision !== 1) throw new Error('MCP Prompt history failed after restart');
   const mcpPromptFirst = await client.callTool({ name: 'list_prompts', arguments: { limit: 1 } });
   const mcpPromptFirstValue = mcpPromptFirst.structuredContent;
   if (mcpPromptFirst.isError || mcpPromptFirstValue?.items?.length !== 1 || typeof mcpPromptFirstValue.cursor !== 'string') throw new Error('MCP nonempty Prompt list did not return a cursor');

@@ -88,9 +88,9 @@ export interface MigrationTestHooks {
 
 const versions: MigrationVersions = {
   diamond: '0.4.1',
-  taproot: '0.4.1',
-  workshop: '0.4.1',
-  seedbed: '0.3.1',
+  taproot: '0.4.2',
+  workshop: '0.4.2',
+  seedbed: '0.3.2',
 };
 
 const workshopKnownMigrations = workshopMigrations.map(({ id, sql }) => ({
@@ -157,6 +157,29 @@ const currentMigrationPlan: ComponentMigrationPlan = {
     },
   }, {
     versions: { diamond: '0.4.1', taproot: '0.4.0', workshop: '0.4.0', seedbed: '0.3.0' },
+    diamond: {
+      migrations: diamondMigrations,
+      async verify(db) {
+        const inspection = await inspectStoreSchema(db);
+        return inspection.valid ? { ready: true } : { ready: false, detail: inspection.errors.join('; ') };
+      },
+    },
+    taproot: {
+      async verify(db) {
+        try {
+          await verifyNamespace(db, '@gnolith/taproot', taprootMigrations);
+          return { ready: true };
+        } catch (error) {
+          return { ready: false, detail: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    },
+    workshop: {
+      migrations: workshopKnownMigrations,
+      verify: verifyCurrentWorkshopSchema,
+    },
+  }, {
+    versions: { diamond: '0.4.1', taproot: '0.4.1', workshop: '0.4.1', seedbed: '0.3.1' },
     diamond: {
       migrations: diamondMigrations,
       async verify(db) {

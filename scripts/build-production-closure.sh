@@ -135,8 +135,8 @@ const path = require('path');
 const root = process.argv[2];
 const expected = {
   diamond: '0.4.1',
-  taproot: '0.4.1',
-  workshop: '0.4.1',
+  taproot: '0.4.2',
+  workshop: '0.4.2',
   seedbed: JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version,
 };
 for (const [name, version] of Object.entries(expected)) {

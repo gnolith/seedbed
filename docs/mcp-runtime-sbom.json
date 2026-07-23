@@ -954,7 +954,7 @@
   "outputs": {
     "dist/mcp.js": {
       "bytes": 547447,
-      "sha256": "253af3338968252528ae3d37686168d4e8e62878e1e67bd5e572eb8e009ef024"
+      "sha256": "209a6d2f22e9cf4cbe8b152112ae48b9071f981191d7e5b034858ccfa2740b7e"
     },
     "dist/mcp.js.map": {
       "bytes": 325862,
