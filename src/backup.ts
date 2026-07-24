@@ -103,28 +103,62 @@ export async function createInstallationBackup(input: {
 }
 
 export async function inspectInstallationBackup(path: string, config: SeedbedConfig): Promise<BackupInspection> {
+  return (await loadInstallationBackup(path, config)).inspection;
+}
+
+async function loadInstallationBackup(
+  path: string,
+  config: SeedbedConfig,
+): Promise<{
+  readonly envelope: BackupEnvelope;
+  readonly inspection: BackupInspection;
+}> {
   const metadata = await stat(path);
   if (!metadata.isFile() || metadata.size > config.backup.maxArchiveBytes) throw new TypeError('Backup is not a bounded regular file');
   const bytes = await readFile(path);
   const envelope = parseEnvelope(bytes, config);
   return {
-    valid: true,
-    manifest: envelope.manifest,
-    archiveSha256: sha256(bytes),
-    bytes: bytes.byteLength,
-    retention: retentionReport(),
+    envelope,
+    inspection: {
+      valid: true,
+      manifest: envelope.manifest,
+      archiveSha256: sha256(bytes),
+      bytes: bytes.byteLength,
+      retention: retentionReport(),
+    },
   };
 }
 
 export async function verifyInstallationBackup(path: string, config: SeedbedConfig, ports: InstallationPorts): Promise<BackupInspection> {
-  const inspection = await inspectInstallationBackup(path, config);
-  const envelope = parseEnvelope(await readFile(path), config);
+  const loaded = await loadInstallationBackup(path, config);
+  return (await validateLoadedBackup(loaded, config, ports)).inspection;
+}
+
+async function validateLoadedBackup(
+  loaded: {
+    readonly envelope: BackupEnvelope;
+    readonly inspection: BackupInspection;
+  },
+  config: SeedbedConfig,
+  ports: InstallationPorts,
+): Promise<{
+  readonly inspection: BackupInspection;
+  readonly sections: readonly OwnerSection[];
+}> {
+  const sections = OWNER_ORDER.map((owner) =>
+    materializeSection(loaded.envelope, owner, config.backup.maxArchiveBytes),
+  );
   const reports: Partial<RetentionReport>[] = [];
-  for (const owner of OWNER_ORDER) {
-    const section = materializeSection(envelope, owner, config.backup.maxArchiveBytes);
-    reports.push(await ports[owner].validateBackup(section));
+  for (const section of sections) {
+    reports.push(await ports[section.owner].validateBackup(section));
   }
-  return { ...inspection, retention: mergeRetention(inspection.retention, reports) };
+  return {
+    inspection: {
+      ...loaded.inspection,
+      retention: mergeRetention(loaded.inspection.retention, reports),
+    },
+    sections,
+  };
 }
 
 export async function dryRunRestore(path: string, config: SeedbedConfig, ports: InstallationPorts): Promise<BackupInspection> {
@@ -138,9 +172,14 @@ export async function restoreInstallationBackup(input: {
   target: RestoreTarget;
   interruptAfter?: string;
 }): Promise<BackupInspection> {
-  const inspection = await verifyInstallationBackup(input.path, input.config, input.ports);
+  const loaded = await loadInstallationBackup(input.path, input.config);
+  const { inspection, sections } = await validateLoadedBackup(
+    loaded,
+    input.config,
+    input.ports,
+  );
   if (inspection.manifest.installationId !== input.config.installationId || inspection.manifest.baseIri !== input.config.baseIri) throw new TypeError('Backup identity does not match target configuration');
-  const envelope = parseEnvelope(await readFile(input.path), input.config);
+  const { envelope } = loaded;
   const operationId = digestObject({ restore: inspection.archiveSha256, config: digestObject(input.config) });
   const lock = await acquireOperationLock(join(input.config.paths.stateDirectory, 'operations', 'installation-operation.lock'), operationId);
   try {
@@ -157,9 +196,9 @@ export async function restoreInstallationBackup(input: {
       await input.ports.blobs.collisionCheck(staging);
       await input.ports.blobs.rebind(staging);
       if (input.interruptAfter === 'blobs-rebound') throw new Error('test interruption after blobs-rebound');
-      for (const owner of OWNER_ORDER) {
-        await input.ports[owner].importBackup(materializeSection(envelope, owner, input.config.backup.maxArchiveBytes), staging, operationId);
-        if (input.interruptAfter === owner) throw new Error(`test interruption after ${owner}`);
+      for (const section of sections) {
+        await input.ports[section.owner].importBackup(section, staging, operationId);
+        if (input.interruptAfter === section.owner) throw new Error(`test interruption after ${section.owner}`);
       }
       await input.ports.blobs.commit(staging);
       if (input.interruptAfter === 'blobs-committed') throw new Error('test interruption after blobs-committed');

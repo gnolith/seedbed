@@ -372,7 +372,7 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
 
   private operationTimeout(operation: string): number {
     const standard = operation === 'owner-diagnostics-v1'
-      ? 3_000
+      ? 30_000
       : operation === 'legacy-owner-inspect-v1'
         ? 8_000
         : operation.includes('inspect') || operation.includes('validate') || operation.includes('collision-check')
@@ -663,6 +663,9 @@ function safeOperatorDiagnostic(stderr: string): Readonly<Record<string, string 
       'tableCount', 'rowCount', 'credentialCount', 'distinctCredentialDigestCount',
       'documentSha256', 'causeName', 'causeCode', 'causeReason',
       'causeBackupReason', 'causeTable', 'causeLogicalKeyCount',
+      'ledgerNamespace', 'payloadKind', 'payloadBytes', 'quadCount', 'guardCount',
+      'declaredPayloadSha256', 'actualPayloadSha256', 'payloadSha256Matches',
+      'targetInstallationSha256',
     ]);
     const output: Record<string, string | number | boolean> = {};
     for (const [key, value] of Object.entries(parsed.diagnostic)) {

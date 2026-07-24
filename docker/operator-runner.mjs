@@ -210,7 +210,11 @@ async function validateOwnerBackup(context, encoded) {
       await validateDiamondBackupSectionV1(value);
       return retentionFor(section.owner);
     } catch (error) {
-      throw new Error(`diamond backup validation failed: ${error instanceof Error ? error.message : 'unknown owner error'}`);
+      const wrapped = new Error(
+        `diamond backup validation failed: ${error instanceof Error ? error.message : 'unknown owner error'}`,
+      );
+      wrapped.operatorDiagnostic = diamondBackupDiagnostic(value, context, error);
+      throw wrapped;
     }
   }
   // Verification is deliberately independent of the live installation. Owner
@@ -244,6 +248,67 @@ async function validateOwnerBackup(context, encoded) {
   } finally {
     await db.close();
   }
+}
+
+function diamondBackupDiagnostic(value, context, error) {
+  const payload = value?.payload;
+  let quadCount = -1;
+  let guardCount = -1;
+  if (payload instanceof Uint8Array && payload.byteLength <= context.backup.maxArchiveBytes) {
+    try {
+      const parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payload));
+      quadCount = Array.isArray(parsed?.quads) ? parsed.quads.length : -1;
+      guardCount = Array.isArray(parsed?.guards) ? parsed.guards.length : -1;
+    } catch {
+      // The stable reason code below distinguishes an invalid payload. Never
+      // expose payload rows or decoded text at this public error boundary.
+    }
+  }
+  const causeMessage = error instanceof Error ? error.message : '';
+  const actualPayloadSha256 = payload instanceof Uint8Array
+    ? sha256(payload)
+    : 'unavailable';
+  return {
+    format: 'gnolith-seedbed-owner-validation-diagnostic-v1',
+    owner: 'diamond',
+    documentFormat: value?.owner === 'diamond' ? 'diamond-backup-section-v1' : 'unexpected',
+    documentVersion: Number.isSafeInteger(value?.formatVersion) ? value.formatVersion : -1,
+    schemaVersion: Number.isSafeInteger(value?.schemaVersion) ? value.schemaVersion : -1,
+    ledgerNamespace: typeof value?.ledger?.namespace === 'string'
+      ? value.ledger.namespace.slice(0, 128)
+      : 'unexpected',
+    payloadKind: payload instanceof Uint8Array ? 'uint8array' : typeof payload,
+    payloadBytes: payload instanceof Uint8Array ? payload.byteLength : -1,
+    quadCount,
+    guardCount,
+    declaredPayloadSha256: typeof value?.sha256 === 'string'
+      && /^[0-9a-f]{64}$/u.test(value.sha256)
+      ? value.sha256
+      : 'unexpected',
+    actualPayloadSha256,
+    payloadSha256Matches: typeof value?.sha256 === 'string'
+      && value.sha256 === actualPayloadSha256,
+    documentSha256: sha256(encodeOpaqueOwnerValue(value)),
+    targetInstallationSha256: sha256(Buffer.from(context.installationId)),
+    causeName: error instanceof Error ? error.name.slice(0, 64) : 'unknown',
+    causeCode: typeof error?.code === 'string' ? error.code.slice(0, 64) : 'unknown',
+    causeBackupReason: typeof error?.details?.backupReason === 'string'
+      ? error.details.backupReason.slice(0, 64)
+      : 'unknown',
+    causeReason: /Unsupported Diamond backup section/iu.test(causeMessage)
+      ? 'unsupported-section'
+      : /payload checksum mismatch/iu.test(causeMessage)
+        ? 'payload-checksum-mismatch'
+        : /Invalid Diamond backup payload/iu.test(causeMessage)
+          ? 'invalid-payload'
+          : /Invalid Diamond backup migration ledger/iu.test(causeMessage)
+            ? 'invalid-migration-ledger'
+            : /migration ledger checksum mismatch/iu.test(causeMessage)
+              ? 'migration-ledger-checksum-mismatch'
+              : /migration ledger does not match/iu.test(causeMessage)
+                ? 'migration-ledger-manifest-mismatch'
+                : 'diamond-section-validation-failed',
+  };
 }
 
 function workshopBackupDiagnostic(value, context, error) {

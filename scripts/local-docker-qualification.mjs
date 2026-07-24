@@ -9,12 +9,11 @@ import { createServer } from 'node:net';
 import {
   decodeCanonicalTextSecret,
   digestObject,
-  restoreInstallationBackup,
   semanticConfigurationFingerprint,
   validateConfig,
 } from '../dist/index.js';
 import { createOperatorOwnerPorts } from '../dist/owner-ports.js';
-import { ComposeRestoreTarget, DockerComposeDriver } from '../dist/system-drivers.js';
+import { DockerComposeDriver } from '../dist/system-drivers.js';
 
 const exec = promisify(execFile);
 const root = resolve('.');
@@ -244,16 +243,27 @@ try {
     tokenFile: restoreTokenFile,
     port: await availablePort(),
   });
+  const restoreConfigPath = join(packed.project, 'restore-config.json');
+  await writeFile(
+    restoreConfigPath,
+    `${JSON.stringify(restoreConfig, null, 2)}\n`,
+  );
+  await expectPackedCliFailure(packed.cli, [
+    'backup', 'restore',
+    '--config', restoreConfigPath,
+    '--archive', tamperedPath,
+  ]);
+  await assertRestoreTargetAbsent(
+    restoreProjectName,
+    `${restoreProjectName}-data`,
+  );
+  await runPackedCli(packed.cli, [
+    'backup', 'restore',
+    '--config', restoreConfigPath,
+    '--archive', backupPath,
+  ]);
   const restoreDriver = new DockerComposeDriver(root);
-  await restoreDriver.prepare(restoreConfig);
-  await restoreDriver.buildOperator(restoreConfig);
   const restorePorts = createOperatorOwnerPorts(restoreConfig, restoreDriver);
-  await restoreInstallationBackup({
-    path: backupPath,
-    config: restoreConfig,
-    ports: restorePorts,
-    target: new ComposeRestoreTarget(restoreConfig, restoreDriver),
-  });
   for (const owner of ['diamond', 'taproot', 'workshop']) {
     const diagnostic = await restorePorts[owner].diagnose();
     if (
@@ -721,6 +731,33 @@ async function expectPackedCliFailure(cli, args) {
     throw error;
   }
   throw new Error('tampered packed backup unexpectedly verified');
+}
+
+async function assertRestoreTargetAbsent(projectName, dataVolume) {
+  const containers = await exec('docker', [
+    'ps', '--all', '--quiet',
+    '--filter', `label=com.docker.compose.project=${projectName}`,
+  ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  if (containers.stdout.trim()) {
+    throw new Error('failed restore created a target container');
+  }
+  for (const [kind, name] of [
+    ['volume', dataVolume],
+    ['network', projectName],
+  ]) {
+    try {
+      await exec('docker', [kind, 'inspect', name], {
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+      });
+      throw new Error(`failed restore created target ${kind}`);
+    } catch (error) {
+      if (
+        error instanceof Error
+        && error.message === `failed restore created target ${kind}`
+      ) throw error;
+    }
+  }
 }
 
 async function snapshotVolume(volume) {

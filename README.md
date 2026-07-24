@@ -128,9 +128,12 @@ floating runtime model pull and does not report Ollama ready without that proof.
 ## Backup and adoption
 
 Owner backup sections and namespace-sliced Diamond ledger evidence are opaque to
-Seedbed. Restore validates owner ports, stages Taproot blob streams first, imports
-Diamond/Taproot/Workshop in order, and exposes the canonical database last. Dry-run
-reports retained, rebuildable, deferred, expired, and unsupported data.
+Seedbed. A packed real restore first stages and builds only the checksum-pinned
+one-shot operator, validates every exact owner section before creating target
+storage, then passes those same opaque section values to the owner import APIs.
+Restore stages Taproot blob streams first, imports Diamond/Taproot/Workshop in
+order, and exposes the canonical database last. Dry-run reports retained,
+rebuildable, deferred, expired, and unsupported data.
 
 `legacy-local-v1` accepts only raw Seedbed 0.3.2 state or snapshot-v1 with the exact
 Diamond 0.4.1 / Taproot 0.4.2 / Workshop 0.4.2 / Seedbed 0.3.2 tuple. It refuses

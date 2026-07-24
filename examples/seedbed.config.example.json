@@ -6,8 +6,8 @@
     "diamond": {
       "version": "0.5.0",
       "artifact": "components/gnolith-diamond-0.5.0.tgz",
-      "sha256": "df6c1aa3703b35016156fb40926dd1aac4fb8d946128826a94b775dec67eb303",
-      "sourceCommit": "4673c35bb860e2b9a39b4e6cbc34e797e030e06b"
+      "sha256": "3ce5d33478667dc4ec9a8ae4b4c3e0a94c3bce61e741ba62511ab668d1c20228",
+      "sourceCommit": "e82f58ba8028ff9c16a34f4b8a9a2bc356495b64"
     },
     "taproot": {
       "version": "0.5.0",

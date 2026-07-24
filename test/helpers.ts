@@ -62,6 +62,8 @@ export async function createArtifacts(config: SeedbedConfig): Promise<void> {
 
 class MockOwner implements OwnerPort {
   readonly calls: string[] = [];
+  readonly validatedSections: OwnerSection[] = [];
+  readonly importedSections: OwnerSection[] = [];
   constructor(readonly owner: OwnerName) {}
   async planMigration(expectedVersion: string) {
     this.calls.push('plan');
@@ -85,11 +87,13 @@ class MockOwner implements OwnerPort {
   }
   async validateBackup(section: OwnerSection) {
     this.calls.push('validate-backup');
+    this.validatedSections.push(section);
     if (section.owner !== this.owner) throw new Error('wrong owner');
     return {};
   }
-  async importBackup(_section: OwnerSection, staging: string) {
+  async importBackup(section: OwnerSection, staging: string) {
     this.calls.push('import-backup');
+    this.importedSections.push(section);
     if (this.owner === 'workshop') await writeFile(join(staging, 'gnolith.sqlite'), 'database');
   }
   get digest() { return sha256(`${this.owner}-migration`); }
