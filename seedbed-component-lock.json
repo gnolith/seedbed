@@ -18,13 +18,13 @@
       "version": "0.5.0",
       "artifact": "components/gnolith-workshop-0.5.0.tgz",
       "sha256": "6d297b644b38aaacabb606521a916013ba61c0c7ebb5a0c7980f304caadefa77",
-      "sourceCommit": "1140631d7908920b2dc47d1baf3c729d25a4a409"
+      "sourceCommit": "423f3a75fe4ee197727866be7c9c6667720cd862"
     },
     "waystone": {
       "version": "0.3.0",
       "artifact": "components/waystone/waystone-assets.json",
       "sha256": "f341c3fe00d3a93d9af6ca379453c02eb02287fa486847a5cf0764f1fef87a65",
-      "sourceCommit": "bb1c7a41b83c3ff0834ccd4036920fe7405380c9"
+      "sourceCommit": "258a0e99a735cfe11452e822420796a1935caef3"
     }
   },
   "compose": {
