@@ -10,7 +10,16 @@ if (!origin || tokenFlag !== '--token-file' || !tokenPath || receiptFlag !== '--
     'usage: node scripts/populate-public-backup-fixture.mjs <origin> --token-file <path> --receipt-file <path>',
   );
 }
-const token = (await readFile(tokenPath, 'utf8')).replace(/\r?\n$/u, '');
+const token = decodeBearer(await readFile(tokenPath, 'utf8'));
+
+function decodeBearer(value) {
+  if (Buffer.byteLength(value) !== 43 && Buffer.byteLength(value) !== 44) {
+    throw new TypeError('Bearer file must contain exactly 43 base64url bytes with at most one trailing LF');
+  }
+  const decoded = value.endsWith('\n') ? value.slice(0, -1) : value;
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(decoded)) throw new TypeError('Bearer file is not canonical LF-only base64url');
+  return decoded;
+}
 
 let requestId = 1;
 const call = async (name, argumentsValue) => {

@@ -58,28 +58,38 @@ describe('digest-bound migration/bootstrap apply', () => {
     }
   });
 
-  it('normalizes at most one terminal LF or CRLF and rejects every other surrounding or control byte', async () => {
+  it('accepts at most one terminal LF and rejects CRLF and every other surrounding or control byte', async () => {
     expect(decodeCanonicalTextSecret('packed_exact_local_token')).toBe('packed_exact_local_token');
     expect(decodeCanonicalTextSecret('packed_exact_local_token\n')).toBe('packed_exact_local_token');
-    expect(decodeCanonicalTextSecret('packed_exact_local_token\r\n')).toBe('packed_exact_local_token');
     for (const invalid of [
       '',
       ' packed_exact_local_token',
       'packed_exact_local_token ',
       'packed_exact_local_token\t',
       'packed_exact_local_token\r',
+      'packed_exact_local_token\r\n',
       'packed_exact_local_token\n\n',
       'packed_exact\u0000local_token',
     ]) expect(() => decodeCanonicalTextSecret(invalid)).toThrow(/protected text secret/i);
 
     const root = await mkdtemp(join(tmpdir(), 'seedbed-secret-newline-'));
     const token = 'a'.repeat(43);
-    for (const [name, suffix] of [['none', ''], ['lf', '\n'], ['crlf', '\r\n']] as const) {
+    for (const [name, suffix] of [['none', ''], ['lf', '\n']] as const) {
       const path = join(root, name);
       await writeFile(path, `${token}${suffix}`, { mode: 0o600 });
       await expect(inspectProtectedCredential(path, process.platform)).resolves.toEqual({
         credentialDigest: sha256(token),
       });
+    }
+    for (const [name, value] of [
+      ['short', token.slice(1)],
+      ['crlf', `${token}\r\n`],
+      ['two-lfs', `${token}\n\n`],
+      ['control', `${token.slice(0, -1)}\u0000`],
+    ] as const) {
+      const path = join(root, name);
+      await writeFile(path, value, { mode: 0o600 });
+      await expect(inspectProtectedCredential(path, process.platform)).rejects.toThrow(/credential file|protected text secret/i);
     }
   });
 

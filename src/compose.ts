@@ -151,7 +151,7 @@ services:
 ${workshopSecrets}
     networks: [gnolith]${hostGateway}${qdrantDependency}
     healthcheck:
-      test: ["CMD", "node", "-e", "let t=require('fs').readFileSync('/run/secrets/gnolith-bearer','utf8');t=t.endsWith('\\\\r\\\\n')?t.slice(0,-2):t.endsWith('\\\\n')?t.slice(0,-1):t;if(!t||/^\\\\s|\\\\s$|[\\\\u0000-\\\\u001f\\\\u007f]/u.test(t))process.exit(1);fetch('http://127.0.0.1:4317/health/live',{headers:{authorization:'Bearer '+t}}).then(function(r){if(!r.ok)process.exit(1)}).catch(function(){process.exit(1)})"]
+      test: ["CMD", "node", "-e", "let t=require('fs').readFileSync('/run/secrets/gnolith-bearer','utf8');if(Buffer.byteLength(t)!==43&&Buffer.byteLength(t)!==44)process.exit(1);t=t.endsWith('\\\\n')?t.slice(0,-1):t;if(!/^[A-Za-z0-9_-]{43}$/u.test(t))process.exit(1);fetch('http://127.0.0.1:4317/health/live',{headers:{authorization:'Bearer '+t}}).then(function(r){if(!r.ok)process.exit(1)}).catch(function(){process.exit(1)})"]
       interval: 10s
       timeout: 3s
       retries: 12

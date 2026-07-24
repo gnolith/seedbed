@@ -90,8 +90,8 @@ No Seedbed-owned application image is published.
 
 For `local-bearer-v1`, apply creates a new protected user-state file outside the
 project using exactly 32 OS-CSPRNG bytes encoded as canonical base64url without
-padding and without a terminator. Readers accept the canonical text unchanged or
-with exactly one trailing LF or CRLF for compatibility; empty values, additional
+padding and without a terminator. Readers accept exactly 43 encoded bytes, or those
+same 43 bytes followed by exactly one LF. CRLF, empty values, additional newlines,
 surrounding whitespace, and control bytes are rejected. The file is exclusively
 created and owner-protected. Seedbed passes only its selector to
 `gnolith-workshop bootstrap-v1`.
@@ -196,5 +196,19 @@ npm run test:docker
 ```
 
 After committing a clean candidate, `npm run candidate` regenerates the exact package,
-Compose bundle, CycloneDX SBOM, rendered graph inventory, and lowercase SHA-256
+Compose bundle, complete CycloneDX composition/dependency SBOM, rendered graph inventory, and lowercase SHA-256
 checksums. It never tags, publishes npm, creates a Release, or pushes an image.
+
+## Eventual npm publication
+
+`.github/workflows/registry.yml` is the only npm publication path. A maintainer must
+manually dispatch it from `main` with the exact merged commit, the independently
+qualified package SHA-256, and the literal package/version confirmation. The job
+checks out that exact merged commit, reruns the complete candidate matrix, verifies
+the candidate ledger and release boundary, refuses an existing registry version,
+and publishes publicly with npm trusted publishing/OIDC provenance. It has no npm
+token, tag, GitHub Release, or container-image capability. Running `npm run
+candidate` locally remains non-publishing.
+The npm package settings must name repository `gnolith/seedbed`, workflow
+`registry.yml`, environment `npm`, and allow `npm publish`; the repository is
+public so npm can attach provenance.

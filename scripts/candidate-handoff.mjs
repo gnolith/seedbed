@@ -4,11 +4,14 @@ import { lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises
 import { join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import YAML from 'yaml';
+import { createCandidateSbom } from './candidate-sbom.mjs';
 
 const refreshAttestation = process.argv.includes('--refresh-attestation');
 const status = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' });
 if (!refreshAttestation && status.trim()) throw new Error('candidate handoff requires a clean committed worktree');
 const commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const tree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { encoding: 'utf8' }).trim();
+const commitTimestamp = execFileSync('git', ['show', '-s', '--format=%cI', 'HEAD'], { encoding: 'utf8' }).trim();
 if (!refreshAttestation) {
   runNpm(['run', 'check'], { stdio: 'inherit' });
   runNpm(['run', 'test:packed'], { stdio: 'inherit' });
@@ -26,11 +29,18 @@ await writeDeterministicTarGzip(
   join(output, 'seedbed-compose-bundle.tar.gz'),
   ['compose', 'docker', 'examples', 'fixtures', 'components', 'seedbed-component-lock.json', 'migration-order.json'],
 );
-const sbom = runNpm(['sbom', '--omit=dev', '--sbom-format', 'cyclonedx'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-await writeFile(join(output, 'seedbed-sbom.cdx.json'), sbom);
 const compose = YAML.parse(await readFile('compose/compose.yaml', 'utf8'));
 const componentLockBytes = await readFile('seedbed-component-lock.json');
 const componentLock = JSON.parse(componentLockBytes);
+const packageManifest = JSON.parse(await readFile('package.json', 'utf8'));
+const waystoneManifest = JSON.parse(await readFile(componentLock.packages.waystone.artifact, 'utf8'));
+const shippedArchives = {};
+for (const name of ['diamond', 'taproot', 'workshop', 'waystone']) {
+  const path = name === 'waystone'
+    ? `components/gnolith-waystone-${componentLock.packages.waystone.version}.tgz`
+    : componentLock.packages[name].artifact;
+  shippedArchives[name] = { path, sha256: sha256(await readFile(path)) };
+}
 const legacyFixture = JSON.parse(await readFile('fixtures/legacy-local-v1/fixture-evidence.json', 'utf8'));
 const localBuild = JSON.parse(await readFile('seedbed-assembly-attestation.json', 'utf8'));
 await writeFile(join(output, 'compose-graph.json'), `${JSON.stringify({
@@ -74,6 +84,20 @@ if (refreshAttestation) {
 if (JSON.stringify(localBuild) !== JSON.stringify(actualLocalBuild)) {
   throw new Error('public local-build attestation does not match the exact candidate graph');
 }
+const sbom = createCandidateSbom({
+  packageManifest,
+  componentLock,
+  waystoneManifest,
+  shippedArchives,
+  commit,
+  tree,
+  commitTimestamp,
+  packageSha256: sha256(await readFile(packagePath)),
+  composeBundleSha256: actualLocalBuild.composeBundleSha256,
+  graphSha256: actualLocalBuild.graphSha256,
+  componentLockSha256: actualLocalBuild.componentLockSha256,
+});
+await writeFile(join(output, 'seedbed-sbom.cdx.json'), `${JSON.stringify(sbom, null, 2)}\n`);
 const artifacts = [packagePath, join(output, 'seedbed-compose-bundle.tar.gz'), join(output, 'seedbed-sbom.cdx.json'), join(output, 'compose-graph.json')];
 const checksums = [];
 for (const artifact of artifacts) checksums.push(`${sha256(await readFile(artifact))}  ${artifact.split(/[\\/]/u).at(-1)}`);
@@ -81,6 +105,7 @@ await writeFile(join(output, 'SHA256SUMS'), `${checksums.sort().join('\n')}\n`);
 await writeFile(join(output, 'candidate.json'), `${JSON.stringify({
   format: 'gnolith-seedbed-candidate-handoff-v1',
   commit,
+  tree,
   version: '0.4.0',
   packageSha256: sha256(await readFile(packagePath)),
   composeBundleSha256: sha256(await readFile(join(output, 'seedbed-compose-bundle.tar.gz'))),
@@ -89,6 +114,7 @@ await writeFile(join(output, 'candidate.json'), `${JSON.stringify({
   componentLockSha256: sha256(componentLockBytes),
   localBuild,
   components: componentLock.packages,
+  shippedRuntimeArchives: shippedArchives,
   legacyFixture: {
     sha256: legacyFixture.snapshot.sha256,
     bytes: legacyFixture.snapshot.bytes,

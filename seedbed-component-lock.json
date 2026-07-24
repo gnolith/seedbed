@@ -11,20 +11,20 @@
     "taproot": {
       "version": "0.5.0",
       "artifact": "components/gnolith-taproot-0.5.0.tgz",
-      "sha256": "a685f1fa97194c54cd7b0abba6bfa8dc70587dd238edbb0601fea69ab09c047e",
-      "sourceCommit": "f5fa59fd4eba456dd819feab9d54da888df036d7"
+      "sha256": "030e0bc4b58873b1ba362cc7ea0a232b769fcd5163ce7679d397c47b8f15b818",
+      "sourceCommit": "98c7bc6e66b39d4bba0862a7e5dcb3a58a7882ac"
     },
     "workshop": {
       "version": "0.5.0",
       "artifact": "components/gnolith-workshop-0.5.0.tgz",
-      "sha256": "18667ff63f9ae917c0bbdfcfe822896224cd95a6aaae67f5e0266c1f5e009380",
-      "sourceCommit": "4744d11ef2838742a24a1e70a939697e9566470f"
+      "sha256": "6479db87d6c2529b4a5c9e5063cc705f8f2aa3057ae4c7d5a0668e36e48163e4",
+      "sourceCommit": "10ce0e1ae441094b28e61ad2772e10e1b391a464"
     },
     "waystone": {
       "version": "0.3.0",
       "artifact": "components/waystone/waystone-assets.json",
       "sha256": "f341c3fe00d3a93d9af6ca379453c02eb02287fa486847a5cf0764f1fef87a65",
-      "sourceCommit": "975c34f2f1470efc59c78b5df5a835eb48f26171"
+      "sourceCommit": "1d596bd838d142a57faff8a9f1146321fbe32ac2"
     }
   },
   "compose": {

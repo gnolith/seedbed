@@ -705,7 +705,7 @@ async function ensureSemanticApproval(
   const configurationId = request.semantic.configuration.id;
   const fingerprint = semanticConfigurationFingerprint(request.semantic.configuration);
   const path = join(config.paths.stateDirectory, 'semantic-approval-receipt.json');
-  const token = decodeCanonicalTextSecret(await readFile(tokenFile), 45);
+  const token = decodeCanonicalTextSecret(await readFile(tokenFile), 44);
   const reconnected = await callWorkshopTool(
     request.endpoint,
     token,
@@ -963,7 +963,7 @@ async function verifyExpectedWorkshopReadiness(
   request: DockerInstallationRequest,
   tokenFile: string,
 ): Promise<{ readonly semanticState: string }> {
-  const token = decodeCanonicalTextSecret(await readFile(tokenFile), 45);
+  const token = decodeCanonicalTextSecret(await readFile(tokenFile), 44);
   if (!/^[A-Za-z0-9_-]{43}$/u.test(token)) throw new TypeError('Protected local bearer selector is invalid');
   const endpoint = new URL('/health/ready', request.endpoint);
   const deadline = Date.now() + 90_000;
@@ -1114,7 +1114,7 @@ async function verifyExpectedWaystone(
   tokenFile: string,
   expectation: WaystoneLocalExpectation,
 ): Promise<void> {
-  const token = decodeCanonicalTextSecret(await readFile(tokenFile), 45);
+  const token = decodeCanonicalTextSecret(await readFile(tokenFile), 44);
   const origin = new URL(request.endpoint).origin;
   for (const pathname of ['/app', '/app/', `/app/${expectation.entrypoint.path}`]) {
     const response = await fetch(new URL(pathname, origin), {

@@ -66,7 +66,7 @@ try {
     },
   };
   const receipt = await control.apply(await control.plan(request));
-  const token = decodeCanonicalTextSecret(await readFile(receipt.protectedTokenFile.canonicalPath), 45);
+  const token = decodeCanonicalTextSecret(await readFile(receipt.protectedTokenFile.canonicalPath), 44);
   const response = await fetch(`http://127.0.0.1:${port}/health/ready`, {
     headers: { authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(10_000),
@@ -453,7 +453,7 @@ async function verifySemanticProfile(packed, vectorKind) {
     || digestObject(persistedReceipt.semanticApproval) !== digestObject(receipt.semanticApproval)
     || JSON.stringify(persistedReceipt).includes('/v1/embeddings')
   ) throw new Error(`${vectorKind} persisted semantic receipt was not finalized safely`);
-  const token = decodeCanonicalTextSecret(await readFile(receipt.protectedTokenFile.canonicalPath), 45);
+  const token = decodeCanonicalTextSecret(await readFile(receipt.protectedTokenFile.canonicalPath), 44);
   const response = await fetch(`http://127.0.0.1:${semanticPort}/health/ready`, {
     headers: { authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(10_000),
@@ -705,7 +705,7 @@ async function verifyUnavailableSemanticProfile(packed) {
     || JSON.stringify(persistedReceipt).includes('/v1/embeddings')
     || JSON.stringify(persistedReceipt).includes('qualification-profile-not-a-usable-api-key')
   ) throw new Error('unreachable persisted semantic receipt was not finalized safely');
-  const token = decodeCanonicalTextSecret(await readFile(receipt.protectedTokenFile.canonicalPath), 45);
+  const token = decodeCanonicalTextSecret(await readFile(receipt.protectedTokenFile.canonicalPath), 44);
   await assertDegradedSemanticStatus(semanticPort, token, unavailableProviderPort);
   const workshopContainer = `${semanticProjectName}-workshop-1`;
   const restartPolicy = await exec('docker', [

@@ -158,8 +158,7 @@ function decodeCanonicalTextSecret(bytes) {
   } catch {
     throw new TypeError('Protected text secret must contain bounded nonempty UTF-8');
   }
-  if (value.endsWith('\r\n')) value = value.slice(0, -2);
-  else if (value.endsWith('\n')) value = value.slice(0, -1);
+  if (value.endsWith('\n')) value = value.slice(0, -1);
   if (
     value.length === 0
     || /^[\s]/u.test(value)

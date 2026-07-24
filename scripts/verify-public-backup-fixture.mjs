@@ -8,9 +8,18 @@ if (!origin || tokenFlag !== '--token-file' || !tokenPath || !receiptPath) {
     'usage: node scripts/verify-public-backup-fixture.mjs <origin> --token-file <path> <protected-fixture-receipt.json>',
   );
 }
-const ownerToken = (await readFile(tokenPath, 'utf8')).replace(/\r?\n$/u, '');
+const ownerToken = decodeBearer(await readFile(tokenPath, 'utf8'));
 const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
 assert.equal(receipt.format, 'gnolith-workshop-public-backup-fixture-v1');
+
+function decodeBearer(value) {
+  if (Buffer.byteLength(value) !== 43 && Buffer.byteLength(value) !== 44) {
+    throw new TypeError('Bearer file must contain exactly 43 base64url bytes with at most one trailing LF');
+  }
+  const token = value.endsWith('\n') ? value.slice(0, -1) : value;
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(token)) throw new TypeError('Bearer file is not canonical LF-only base64url');
+  return token;
+}
 
 let requestId = 1;
 const call = async (token, name, argumentsValue) => {

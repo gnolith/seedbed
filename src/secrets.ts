@@ -28,8 +28,7 @@ export function decodeCanonicalTextSecret(
   } catch {
     throw new TypeError('Protected text secret must contain bounded nonempty UTF-8');
   }
-  if (value.endsWith('\r\n')) value = value.slice(0, -2);
-  else if (value.endsWith('\n')) value = value.slice(0, -1);
+  if (value.endsWith('\n')) value = value.slice(0, -1);
   if (
     value.length === 0
     || /^[\s]/u.test(value)
@@ -87,10 +86,12 @@ export async function inspectProtectedCredential(path: string, platform: NodeJS.
   if (!isAbsolute(path) || /^\\\\/u.test(path)) throw new TypeError('Credential path must be an absolute local path');
   const metadata = await lstat(path);
   if (!metadata.isFile() || metadata.isSymbolicLink()) throw new TypeError('Credential selector must identify a regular non-link file');
-  if (metadata.size < 43 || metadata.size > 45) throw new TypeError('Credential file must contain canonical 32-byte base64url text');
+  if (metadata.size !== 43 && metadata.size !== 44) {
+    throw new TypeError('Credential file must contain exactly 43 base64url bytes with at most one trailing LF');
+  }
   if (platform !== 'win32' && (metadata.mode & 0o077) !== 0) throw new TypeError('Credential file permissions are not owner-only');
   const encoded = await readFile(path);
-  const token = decodeCanonicalTextSecret(encoded, 45);
+  const token = decodeCanonicalTextSecret(encoded, 44);
   if (!/^[A-Za-z0-9_-]{43}$/u.test(token)) throw new TypeError('Credential file encoding is not canonical base64url without padding');
   if (Buffer.from(token, 'base64url').byteLength !== 32) throw new TypeError('Credential file does not encode exactly 32 bytes');
   return { credentialDigest: sha256(token) };

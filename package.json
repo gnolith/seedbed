@@ -86,10 +86,12 @@
     "test:legacy-docker": "node scripts/legacy-docker-qualification.mjs",
     "check:inventory": "node scripts/verify-inventory.mjs",
     "check:secrets": "node scripts/secret-canary.mjs",
+    "check:sbom": "node scripts/sbom-qualification.mjs",
+    "check:publication": "node scripts/verify-publication-workflow.mjs",
     "check:legacy-fixture": "node scripts/verify-legacy-fixture.mjs",
     "check:examples": "node scripts/sync-example-from-lock.mjs --check",
     "sync:example": "node scripts/sync-example-from-lock.mjs --write",
-    "check": "npm run typecheck && npm test && npm run build && npm run check:inventory && npm run check:examples && npm run check:secrets && npm run check:legacy-fixture && npm run security:runtime-check && npm run pack:check",
+    "check": "npm run typecheck && npm test && npm run build && npm run check:inventory && npm run check:examples && npm run check:secrets && npm run check:sbom && npm run check:publication && npm run check:legacy-fixture && npm run security:runtime-check && npm run pack:check",
     "security:runtime-check": "node scripts/audit-zero.mjs --full && node scripts/audit-zero.mjs",
     "pack:check": "npm pack --dry-run",
     "candidate": "node scripts/candidate-handoff.mjs",
@@ -98,9 +100,9 @@
   },
   "devDependencies": {
     "@types/node": "24.0.0",
-    "@vitest/coverage-v8": "3.2.6",
+    "@vitest/coverage-v8": "4.1.10",
     "typescript": "5.9.2",
-    "vitest": "3.2.6",
+    "vitest": "4.1.10",
     "yaml": "2.9.0"
   }
 }

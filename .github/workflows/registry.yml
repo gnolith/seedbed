@@ -1,19 +1,101 @@
-name: Registry package gate
+name: Public npm trusted-publisher release
 
 on:
   workflow_dispatch:
+    inputs:
+      commit:
+        description: Exact merged main commit to publish
+        required: true
+        type: string
+      package_sha256:
+        description: Exact SHA-256 from the qualified candidate
+        required: true
+        type: string
+      confirmation:
+        description: Type "publish @gnolith/seedbed@0.4.0"
+        required: true
+        type: string
 
 permissions:
   contents: read
+  id-token: write
+
+concurrency:
+  group: seedbed-public-npm-release
+  cancel-in-progress: false
 
 jobs:
-  registry-only:
+  publish:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: npm
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.commit }}
       - uses: ./.github/actions/setup-node
+      - name: Validate immutable release request
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.commit }}
+          EXPECTED_PACKAGE_SHA256: ${{ inputs.package_sha256 }}
+          RELEASE_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_PACKAGE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$RELEASE_CONFIRMATION" = 'publish @gnolith/seedbed@0.4.0'
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse origin/main)" = "$EXPECTED_COMMIT"
+          test -z "$(git status --porcelain)"
       - run: npm config set registry https://registry.npmjs.org
       - run: npm ci --ignore-scripts
-      - run: npm run check
-      - run: npm audit --omit=dev --audit-level=high
-      - run: npm pack --dry-run
+      - name: Rebuild and qualify exact candidate
+        run: npm run candidate
+      - name: Verify candidate hash and release boundary
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.commit }}
+          EXPECTED_PACKAGE_SHA256: ${{ inputs.package_sha256 }}
+        run: |
+          set -euo pipefail
+          candidate="candidate/seedbed-0.4.0-${EXPECTED_COMMIT:0:12}"
+          package="$candidate/gnolith-seedbed-0.4.0.tgz"
+          test -f "$candidate/candidate.json"
+          test -f "$candidate/SHA256SUMS"
+          echo "$EXPECTED_PACKAGE_SHA256  $package" | sha256sum --check
+          grep --fixed-strings "$EXPECTED_PACKAGE_SHA256  gnolith-seedbed-0.4.0.tgz" "$candidate/SHA256SUMS"
+          node - "$candidate/candidate.json" "$EXPECTED_COMMIT" "$EXPECTED_PACKAGE_SHA256" <<'NODE'
+          const fs = require('node:fs');
+          const [path, commit, sha256] = process.argv.slice(2);
+          const candidate = JSON.parse(fs.readFileSync(path, 'utf8'));
+          if (
+            candidate.commit !== commit
+            || candidate.packageSha256 !== sha256
+            || candidate.releaseCreated !== false
+            || candidate.imagePublished !== false
+          ) throw new Error('candidate release boundary mismatch');
+          const manifest = require('./package.json');
+          if (
+            manifest.private !== false
+            || manifest.publishConfig?.access !== 'public'
+            || manifest.publishConfig?.provenance !== true
+          ) throw new Error('package public provenance boundary mismatch');
+          NODE
+          test -z "$(git status --porcelain)"
+          if npm view '@gnolith/seedbed@0.4.0' version --json >"$RUNNER_TEMP/published-version.json" 2>"$RUNNER_TEMP/npm-view.err"; then
+            echo '@gnolith/seedbed@0.4.0 already exists; refusing overwrite' >&2
+            exit 1
+          fi
+          grep --fixed-strings 'E404' "$RUNNER_TEMP/npm-view.err"
+      - name: Publish public package with npm trusted publishing
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          unset NODE_AUTH_TOKEN NPM_TOKEN
+          package="candidate/seedbed-0.4.0-${EXPECTED_COMMIT:0:12}/gnolith-seedbed-0.4.0.tgz"
+          npm publish "$package" --access public --provenance
