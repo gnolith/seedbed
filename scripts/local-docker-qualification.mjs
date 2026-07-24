@@ -73,7 +73,7 @@ try {
   });
   const status = await response.json();
   if (
-    response.status !== 503
+    !response.ok
     || status.installationId !== installationId
     || status.baseIri !== request.baseIri
     || status.versions?.server !== lock.packages.workshop.version
@@ -637,27 +637,40 @@ async function verifyUnavailableSemanticProfile(packed) {
 }
 
 async function assertDegradedSemanticStatus(workshopPort, token, unavailableProviderPort) {
-  const response = await fetch(`http://127.0.0.1:${workshopPort}/health/ready`, {
-    headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(10_000),
-  });
-  const status = await response.json();
-  const serialized = JSON.stringify(status);
-  const diagnostic = status.semanticState?.diagnostic;
-  if (
-    !response.ok
-    || status.lexicalReady !== true
-    || status.semanticState?.state !== 'degraded'
-    || status.semanticState?.configured !== true
-    || status.semanticState?.ready !== false
-    || diagnostic?.code !== 'provider-unavailable'
-    || diagnostic?.retryable !== true
-    || Object.keys(diagnostic).sort().join(',') !== 'code,retryable'
-    || serialized.length > 65_536
-    || serialized.includes('qualification-profile-not-a-usable-api-key')
-    || serialized.includes(`:${unavailableProviderPort}`)
-    || serialized.includes('/v1/embeddings')
-  ) throw new Error(`unreachable semantic status was not bounded, actionable, secret-safe, and lexical-ready: ${serialized.slice(0, 2048)}`);
+  const deadline = Date.now() + 60_000;
+  let last = '';
+  while (Date.now() < deadline) {
+    const response = await fetch(`http://127.0.0.1:${workshopPort}/health/ready`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    const status = await response.json();
+    const serialized = JSON.stringify(status);
+    last = serialized;
+    const diagnostic = status.semanticState?.diagnostic;
+    const safeDegraded = (
+      response.status === 503
+      && status.lexicalReady === true
+      && status.semanticState?.state === 'degraded'
+      && status.semanticState?.configured === true
+      && status.semanticState?.ready === false
+      && diagnostic?.retryable === true
+      && Object.keys(diagnostic).sort().join(',') === 'code,retryable'
+      && serialized.length <= 65_536
+      && !serialized.includes('qualification-profile-not-a-usable-api-key')
+      && !serialized.includes(`:${unavailableProviderPort}`)
+      && !serialized.includes('/v1/embeddings')
+    );
+    if (!safeDegraded) {
+      throw new Error(`unreachable semantic status was not bounded, actionable, secret-safe, and lexical-ready: ${serialized.slice(0, 2048)}`);
+    }
+    if (diagnostic.code === 'provider-unavailable') return;
+    if (diagnostic.code !== 'materialization-pending') {
+      throw new Error(`unreachable semantic status exposed an unsupported diagnostic: ${serialized.slice(0, 2048)}`);
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
+  }
+  throw new Error(`unreachable semantic status did not settle to provider-unavailable: ${last.slice(0, 2048)}`);
 }
 
 async function waitForLexicalSearch(workshopPort, token, entityId, text) {

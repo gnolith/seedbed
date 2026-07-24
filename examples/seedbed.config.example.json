@@ -12,14 +12,14 @@
     "taproot": {
       "version": "0.5.0",
       "artifact": "components/gnolith-taproot-0.5.0.tgz",
-      "sha256": "322c54ce4c604c73b86935a33d1980a96b75ca3dd5fde0671fba70b9681ecc41",
-      "sourceCommit": "0ece9a07263ed9e3981e9db48c3f6e04e957d848"
+      "sha256": "c2e35fec79a09c595928a5da1063f37bd96576262a85bd3a5876d191e82bd1f0",
+      "sourceCommit": "a2ab40d38e4b2a03255bb1349194eecb93dfee11"
     },
     "workshop": {
       "version": "0.5.0",
       "artifact": "components/gnolith-workshop-0.5.0.tgz",
-      "sha256": "1a59399eb253b7085d581726f3e9314ecbe5c52f4780fb14e43df1af8df484b3",
-      "sourceCommit": "13db3690053bea331d341f6f848d2641441ecc0c"
+      "sha256": "207c7ff4a84a9a4188c1d471ff892c4c32e0a2589c687c4e4a45e4426d5f7ebd",
+      "sourceCommit": "299961c51f4aacdabd423ad77762c6359f5a2854"
     },
     "waystone": {
       "version": "0.3.0",
@@ -53,7 +53,7 @@
     "diamond": "0001-current-rdf-schema",
     "taproot": "0009-architecture-reset",
     "workshop": "11",
-    "expectedCatalogDigest": "7a66ccb7ed6c5ae33be526a318376b895d2ecb122d7e723fb3117baf8ad66224"
+    "expectedCatalogDigest": "e2d1e0f09e4dbad786d14cb4a9dd86dbe56a64d274e252bbbb1956b2c8933c85"
   },
   "backup": {
     "maxArchiveBytes": 268435456,
