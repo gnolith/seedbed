@@ -1,4 +1,13 @@
-import { OWNER_LEDGER_NAMESPACES, type OwnerDiagnostic, type OwnerLedgerEvidence, type OwnerName, type RetentionReport, type SeedbedConfig } from './types.js';
+import {
+  OWNER_LEDGER_NAMESPACES,
+  type OwnerDiagnostic,
+  type OwnerLedgerEvidence,
+  type OwnerName,
+  type RetentionReport,
+  type SeedbedConfig,
+  type SemanticConfigurationReceiptV1,
+  type SemanticConfigurationV1,
+} from './types.js';
 
 export interface OwnerSection {
   readonly owner: OwnerName;
@@ -42,6 +51,11 @@ export interface WorkshopOwnerPort extends OwnerPort {
     credentialId: string;
     credentialDigest: string;
   }>;
+  configureSemanticV1(input: {
+    configuration: SemanticConfigurationV1;
+    expectedRevision: number;
+    idempotencyKey: string;
+  }): Promise<SemanticConfigurationReceiptV1>;
 }
 
 export interface TaprootBlobPort {
@@ -124,6 +138,14 @@ export class OperatorWorkshopOwnerPort extends OperatorOwnerPort implements Work
       ...input,
       tokenFile: '/run/secrets/gnolith-bearer',
     });
+  }
+
+  async configureSemanticV1(input: Parameters<WorkshopOwnerPort['configureSemanticV1']>[0]) {
+    return this.executor.invoke<SemanticConfigurationReceiptV1>(
+      this.config,
+      'workshop-semantic-configure-v1',
+      { version: 1, ...input },
+    );
   }
 }
 

@@ -5,36 +5,55 @@ import { join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import YAML from 'yaml';
 
+const refreshAttestation = process.argv.includes('--refresh-attestation');
 const status = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' });
-if (status.trim()) throw new Error('candidate handoff requires a clean committed worktree');
+if (!refreshAttestation && status.trim()) throw new Error('candidate handoff requires a clean committed worktree');
 const commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-runNpm(['run', 'check'], { stdio: 'inherit' });
-runNpm(['run', 'test:packed'], { stdio: 'inherit' });
-runNpm(['run', 'test:compose'], { stdio: 'inherit' });
-runNpm(['run', 'test:docker'], { stdio: 'inherit' });
+if (!refreshAttestation) {
+  runNpm(['run', 'check'], { stdio: 'inherit' });
+  runNpm(['run', 'test:packed'], { stdio: 'inherit' });
+  runNpm(['run', 'test:compose'], { stdio: 'inherit' });
+  runNpm(['run', 'test:docker'], { stdio: 'inherit' });
+  runNpm(['run', 'test:legacy-docker'], { stdio: 'inherit' });
+}
 
-const output = resolve('candidate', `seedbed-0.4.0-${commit.slice(0, 12)}`);
+const output = resolve('candidate', refreshAttestation ? '.attestation-refresh' : `seedbed-0.4.0-${commit.slice(0, 12)}`);
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 const packed = JSON.parse(runNpm(['pack', '--json', '--ignore-scripts', '--pack-destination', output], { encoding: 'utf8' }))[0];
 const packagePath = join(output, packed.filename);
 await writeDeterministicTarGzip(
   join(output, 'seedbed-compose-bundle.tar.gz'),
-  ['compose', 'docker', 'examples', 'components', 'seedbed-component-lock.json', 'migration-order.json'],
+  ['compose', 'docker', 'examples', 'fixtures', 'components', 'seedbed-component-lock.json', 'migration-order.json'],
 );
 const sbom = runNpm(['sbom', '--omit=dev', '--sbom-format', 'cyclonedx'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
 await writeFile(join(output, 'seedbed-sbom.cdx.json'), sbom);
 const compose = YAML.parse(await readFile('compose/compose.yaml', 'utf8'));
 const componentLockBytes = await readFile('seedbed-component-lock.json');
 const componentLock = JSON.parse(componentLockBytes);
+const legacyFixture = JSON.parse(await readFile('fixtures/legacy-local-v1/fixture-evidence.json', 'utf8'));
 const localBuild = JSON.parse(await readFile('seedbed-assembly-attestation.json', 'utf8'));
 await writeFile(join(output, 'compose-graph.json'), `${JSON.stringify({
-  profiles: { default: ['workshop'], qdrant: ['workshop', 'qdrant'], ollama: ['workshop', 'ollama'], waystone: ['workshop'] },
+  profiles: { default: ['workshop'], qdrant: ['workshop', 'qdrant'], waystone: ['workshop'] },
+  unavailableProfiles: {
+    ollama: {
+      disposition: 'unavailable',
+      requires: 'immutable-model-artifact-selector-and-digest-v1',
+    },
+  },
   services: Object.keys(compose.services).sort(),
-  publishedPorts: { workshop: ['127.0.0.1:${WORKSHOP_PORT}:4317'], qdrant: [], ollama: [] },
+  publishedPorts: { workshop: ['127.0.0.1:${WORKSHOP_PORT}:4317'], qdrant: [] },
   nodeImage: componentLock.compose.nodeImage,
+  qdrantImage: componentLock.compose.qdrantImage,
   components: componentLock.packages,
   migrations: componentLock.migrations,
+  legacyFixture: {
+    format: legacyFixture.format,
+    sha256: legacyFixture.snapshot.sha256,
+    counts: legacyFixture.expectedOwnerCounts,
+    semanticConfigurationCount: legacyFixture.dispositions.semanticConfiguration.count,
+    onboarding: legacyFixture.dispositions.onboarding,
+  },
   applicationImagePublished: false,
 }, null, 2)}\n`);
 const actualLocalBuild = {
@@ -45,6 +64,12 @@ const actualLocalBuild = {
   graphSha256: sha256(await readFile(join(output, 'compose-graph.json'))),
   composeBundleSha256: sha256(await readFile(join(output, 'seedbed-compose-bundle.tar.gz'))),
 };
+if (refreshAttestation) {
+  await writeFile('seedbed-assembly-attestation.json', `${JSON.stringify(actualLocalBuild, null, 2)}\n`);
+  await rm(output, { recursive: true, force: true });
+  console.log('refreshed seedbed-assembly-attestation.json');
+  process.exit(0);
+}
 if (JSON.stringify(localBuild) !== JSON.stringify(actualLocalBuild)) {
   throw new Error('public local-build attestation does not match the exact candidate graph');
 }
@@ -63,6 +88,11 @@ await writeFile(join(output, 'candidate.json'), `${JSON.stringify({
   componentLockSha256: sha256(componentLockBytes),
   localBuild,
   components: componentLock.packages,
+  legacyFixture: {
+    sha256: legacyFixture.snapshot.sha256,
+    bytes: legacyFixture.snapshot.bytes,
+    evidenceFormat: legacyFixture.format,
+  },
   releaseCreated: false,
   imagePublished: false,
 }, null, 2)}\n`);

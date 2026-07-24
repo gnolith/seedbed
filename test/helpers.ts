@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sha256 } from '../src/canonical.js';
 import { inspectProtectedCredential } from '../src/secrets.js';
+import { semanticConfigurationFingerprint } from '../src/semantic.js';
 import type { BlobDescriptor, InstallationPorts, OwnerPort, OwnerSection, WorkshopOwnerPort } from '../src/owner-ports.js';
 import { OWNER_LEDGER_NAMESPACES, type OwnerDiagnostic, type OwnerName, type SeedbedConfig } from '../src/types.js';
 
@@ -15,7 +16,7 @@ export function fixtureConfig(root: string): SeedbedConfig {
   return {
     formatVersion: 1,
     installationId: 'installation-test',
-    baseIri: 'https://test.invalid/installation/',
+    baseIri: 'https://test.invalid/installation',
     packages: {
       diamond: { version: '0.5.0-candidate.1', artifact: 'artifacts/diamond.tgz', sha256: hashes.diamond, sourceCommit: 'a'.repeat(40) },
       taproot: { version: '0.5.0-candidate.1', artifact: 'artifacts/taproot.tgz', sha256: hashes.taproot, sourceCommit: 'b'.repeat(40) },
@@ -114,6 +115,15 @@ class MockWorkshop extends MockOwner implements WorkshopOwnerPort {
       catalogDigest: this.catalogDigest,
       credentialId: `credential:${credentialDigest.slice(0, 32)}`,
       credentialDigest,
+    };
+  }
+  async configureSemanticV1(input: Parameters<WorkshopOwnerPort['configureSemanticV1']>[0]) {
+    this.calls.push('configure-semantic-v1');
+    this.order?.push('semantic');
+    return {
+      fingerprint: semanticConfigurationFingerprint(input.configuration),
+      revision: input.expectedRevision + 1,
+      state: 'unvalidated',
     };
   }
 }

@@ -52,7 +52,7 @@ describe('Alembic-compatible fixed local control adapter', () => {
         authorizationReady: true,
         lexicalReady: true,
         blobReady: true,
-        producerStatus: 'absent',
+        producerStatus: 'ready',
         semanticState: 'absent',
         allowLexicalOnly: true,
       },
@@ -88,6 +88,92 @@ describe('Alembic-compatible fixed local control adapter', () => {
       ...request,
       expected: { ...request.expected, catalogDigest: 'f'.repeat(64) },
     })).rejects.toThrow(/catalog/u);
+    const semanticCredential = join(root, 'semantic-credential');
+    await writeFile(semanticCredential, 'protected-test-selector');
+    const semanticRequest: DockerInstallationRequest = {
+      ...request,
+      expected: {
+        ...request.expected,
+        producerStatus: 'ready',
+        semanticState: 'degraded',
+        allowLexicalOnly: true,
+      },
+      semantic: {
+        configuration: {
+          version: 1,
+          id: 'semantic-default',
+          name: 'Semantic default',
+          provider: {
+            kind: 'openai-compatible',
+            endpoint: 'https://api.openai.com/v1',
+            model: 'text-embedding-3-small',
+            dimensions: 1536,
+            metric: 'cosine',
+            credentialSelector: 'openai-profile',
+            allowPrivateEndpoint: false,
+            redirectPolicy: 'error',
+          },
+          vector: { kind: 'sqlite' },
+        },
+        expectedRevision: 0,
+        credentialSelectors: [{
+          id: 'openai-profile',
+          kind: 'protected-file-v1',
+          path: semanticCredential,
+        }],
+      },
+    };
+    expect((await control.plan(semanticRequest)).request.semantic).toEqual(semanticRequest.semantic);
+    const qdrantControl = createSeedbedControl({
+      ...policy,
+      compose: {
+        ...policy.compose,
+        profiles: ['qdrant'],
+        qdrantImage: `qdrant/qdrant@sha256:${'4'.repeat(64)}`,
+      },
+    });
+    const qdrantRequest: DockerInstallationRequest = {
+      ...semanticRequest,
+      semantic: {
+        ...semanticRequest.semantic!,
+        configuration: {
+          ...semanticRequest.semantic!.configuration,
+          vector: {
+            kind: 'qdrant',
+            endpoint: 'http://qdrant:6333',
+            collection: 'gnolith-test',
+            credentialSelector: null,
+            allowPrivateEndpoint: true,
+            redirectPolicy: 'error',
+          },
+        },
+      },
+    };
+    expect((await qdrantControl.plan(qdrantRequest)).request.semantic?.configuration.vector.kind).toBe('qdrant');
+    await expect(control.plan({
+      ...semanticRequest,
+      semantic: {
+        ...semanticRequest.semantic!,
+        credentialSelectors: [{
+          id: 'openai-profile',
+          kind: 'protected-file-v1',
+          path: join(root, 'missing-semantic-credential'),
+        }],
+      },
+    })).rejects.toThrow(/existing local file/u);
+    const emptyCredential = join(root, 'empty-semantic-credential');
+    await writeFile(emptyCredential, '');
+    await expect(control.plan({
+      ...semanticRequest,
+      semantic: {
+        ...semanticRequest.semantic!,
+        credentialSelectors: [{
+          id: 'openai-profile',
+          kind: 'protected-file-v1',
+          path: emptyCredential,
+        }],
+      },
+    })).rejects.toThrow(/1\.\.1048576 bytes/u);
 
     const componentLock = {
       format: 'gnolith-seedbed-component-lock-v1',

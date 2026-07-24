@@ -21,6 +21,7 @@ const OPERATOR_OPERATIONS = new Set([
   'owner-migration-plan-v1', 'owner-migration-apply-v1', 'owner-diagnostics-v1',
   'owner-backup-inspect-v1', 'owner-backup-export-v1', 'owner-backup-validate-v1',
   'owner-backup-import-v1', 'workshop-bootstrap-v1', 'taproot-blob-enumerate-v1',
+  'workshop-semantic-configure-v1',
   'taproot-blob-open-v1', 'taproot-blob-stage-v1', 'taproot-blob-collision-check-v1',
   'taproot-blob-rebind-v1', 'taproot-blob-commit-v1', 'taproot-blob-rollback-v1',
   'adoption-owner-import-v1', 'adoption-payload-stage-v1', 'adoption-payload-collision-check-v1',
@@ -31,7 +32,7 @@ const OPERATOR_OPERATIONS = new Set([
 ]);
 
 export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecutor, LegacyAdapterExecutor {
-  constructor(private readonly artifactRoot = process.cwd()) {}
+  constructor(private readonly artifactRoot = SEEDBED_PACKAGE_ROOT) {}
 
   async prepare(config: SeedbedConfig): Promise<void> {
     const render = renderCompose(config);
@@ -106,7 +107,7 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
       adapterModule: './workshop-local-adapter.mjs',
       ...(config.compose.profiles.includes('waystone') ? {
         assetMount: {
-          prefix: '/',
+          prefix: '/app',
           manifest: { kind: 'file', value: '/srv/waystone/waystone-assets.json' },
           root: { kind: 'file', value: '/srv/waystone' },
         },
@@ -129,6 +130,11 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
       })),
       cursorGeneration: 'seedbed-local-v1',
       maxBlobBytes: config.backup.maxBlobBytes,
+      semanticCredentialFiles: Object.fromEntries(
+        (config.semantic?.credentialSelectors ?? [])
+          .map(({ id }): [string, string] => [id, `/run/secrets/gnolith-semantic-${sha256(id).slice(0, 16)}`])
+          .sort(([left], [right]) => left.localeCompare(right)),
+      ),
     };
     await writeFile(join(build, 'workshop.config.json'), `${canonicalJson(workshopConfig)}\n`, { encoding: 'utf8', mode: 0o600 });
     await writeFile(join(build, 'assembly.config.json'), `${canonicalJson(assemblyConfig)}\n`, { encoding: 'utf8', mode: 0o600 });
@@ -140,7 +146,7 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
   async up(config: SeedbedConfig): Promise<void> {
     const args = this.args(config);
     for (const profile of config.compose.profiles) args.push('--profile', profile);
-    args.push('up', '--build', '--detach', '--wait');
+    args.push('up', '--build', '--detach', '--wait', '--force-recreate');
     await exec('docker', args, { windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
   }
 
@@ -268,9 +274,7 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
 
   private operatorProcess(config: SeedbedConfig, operation: string, mode: readonly string[] = [], mounts: readonly string[] = []) {
     if (!OPERATOR_OPERATIONS.has(operation)) throw new TypeError('Unsupported Seedbed operator operation');
-    const secretMount = operation === 'workshop-bootstrap-v1'
-      ? ['--volume', `${config.authentication.tokenFile}:/run/secrets/gnolith-bearer:ro`]
-      : [];
+    const secretMount = protectedOperatorMountArgs(operation, config.authentication.tokenFile);
     return spawn('docker', [
       ...this.args(config),
       '--profile', 'seedbed-operator',
@@ -285,6 +289,12 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
       '--volume', `${source.blobPath}:/seedbed-legacy/blobs:ro`,
     ];
   }
+}
+
+export function protectedOperatorMountArgs(operation: string, tokenFile: string): readonly string[] {
+  return operation === 'workshop-bootstrap-v1' || operation === 'workshop-semantic-configure-v1'
+    ? ['--volume', `${tokenFile}:/run/secrets/gnolith-bearer:ro`]
+    : [];
 }
 
 export class DockerDiagnosticHost implements DiagnosticHost {

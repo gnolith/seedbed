@@ -6,6 +6,7 @@ import { applyInstallationPlan, createInstallationPlan } from '../src/migration.
 import { createLocalBearerCredential } from '../src/secrets.js';
 import { fixtureConfig, mockPorts } from './helpers.js';
 import { acquireOperationLock } from '../src/operation-lock.js';
+import { semanticConfigurationFingerprint } from '../src/semantic.js';
 
 describe('digest-bound migration/bootstrap apply', () => {
   it('orders owner migrations and Workshop-only bootstrap before listener, resumes after interruption, and emits selector-only receipt', async () => {
@@ -54,6 +55,63 @@ describe('digest-bound migration/bootstrap apply', () => {
       await symlink(join(root, 'real'), join(root, 'linked'));
       await expect(createLocalBearerCredential('credential', join(root, 'linked', 'bearer'))).rejects.toThrow(/link|junction/u);
     }
+  });
+
+  it('configures semantics offline after bootstrap and before listener with a selector-free receipt', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seedbed-semantic-apply-'));
+    const base = fixtureConfig(root);
+    const semanticCredential = join(root, 'openai-profile');
+    await writeFile(semanticCredential, 'protected-openai-profile');
+    const config = {
+      ...base,
+      semantic: {
+        configuration: {
+          version: 1 as const,
+          id: 'semantic',
+          name: 'Semantic',
+          provider: {
+            kind: 'openai-compatible' as const,
+            endpoint: 'https://api.openai.com/v1',
+            model: 'text-embedding-3-small',
+            dimensions: 1536,
+            metric: 'cosine' as const,
+            credentialSelector: 'openai-profile',
+            allowPrivateEndpoint: false,
+            redirectPolicy: 'error' as const,
+          },
+          vector: { kind: 'sqlite' as const },
+        },
+        expectedRevision: 0,
+        credentialSelectors: [{
+          id: 'openai-profile',
+          kind: 'protected-file-v1' as const,
+          path: semanticCredential,
+        }],
+      },
+    };
+    const ports = mockPorts(config);
+    const order: string[] = [];
+    const bootstrap = ports.workshop.bootstrapV1.bind(ports.workshop);
+    ports.workshop.bootstrapV1 = async (input) => { order.push('bootstrap'); return bootstrap(input); };
+    const configure = ports.workshop.configureSemanticV1.bind(ports.workshop);
+    ports.workshop.configureSemanticV1 = async (input) => { order.push('semantic'); return configure(input); };
+    const compose = {
+      async prepare() {},
+      async up() { order.push('up'); },
+      async health() { return { healthy: true }; },
+      async downRetainData() {},
+    };
+    const receipt = await applyInstallationPlan({ config, plan: createInstallationPlan(config), ports, compose });
+    expect(order).toEqual(['bootstrap', 'semantic', 'up']);
+    expect(receipt.semantic).toEqual({
+      fingerprint: semanticConfigurationFingerprint(config.semantic.configuration),
+      revision: 1,
+      state: 'unvalidated',
+    });
+    expect(receipt.semantic?.fingerprint).toBe('3d83111a63b5005e56cc809e094771e98102e94db725755a9eb41b8fa04c7924');
+    expect(JSON.stringify(receipt)).not.toContain('api.openai.com');
+    expect(JSON.stringify(receipt)).not.toContain('text-embedding-3-small');
+    expect(JSON.stringify(receipt)).not.toContain('protected-openai-profile');
   });
 
   it('rejects plan drift without mutation', async () => {

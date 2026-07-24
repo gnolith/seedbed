@@ -3,10 +3,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createInstallationBackup, inspectInstallationBackup } from '../src/backup.js';
-import { canonicalJson } from '../src/canonical.js';
+import { canonicalJson, redactFilesystemPaths } from '../src/canonical.js';
 import { fixtureConfig, mockPorts } from './helpers.js';
 
 describe('backup adversarial bounds', () => {
+  it('redacts filesystem paths without corrupting safe package namespaces', () => {
+    expect(redactFilesystemPaths('Migration history for @gnolith/diamond is incomplete')).toBe(
+      'Migration history for @gnolith/diamond is incomplete',
+    );
+    expect(redactFilesystemPaths('failed at /var/lib/gnolith/secret and C:\\Gnolith\\secret')).toBe(
+      'failed at [redacted-path] and [redacted-path]',
+    );
+  });
+
   it('rejects duplicate owners, noncanonical base64, bombs, and existing destinations', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seedbed-backup-hostile-'));
     const config = fixtureConfig(root);

@@ -5,20 +5,20 @@
     "diamond": {
       "version": "0.5.0",
       "artifact": "components/gnolith-diamond-0.5.0.tgz",
-      "sha256": "6a8075a70162fe2567579f7fe110e674509b648923b18fdb310833b44739c300",
-      "sourceCommit": "fe9185a4dae73330969866d8871cefad6fc7e87c"
+      "sha256": "df6c1aa3703b35016156fb40926dd1aac4fb8d946128826a94b775dec67eb303",
+      "sourceCommit": "4673c35bb860e2b9a39b4e6cbc34e797e030e06b"
     },
     "taproot": {
       "version": "0.5.0",
       "artifact": "components/gnolith-taproot-0.5.0.tgz",
-      "sha256": "de43e8a8bc99a6045efe4bb924ee5de528b28b338c7974cb74fea98911427f30",
-      "sourceCommit": "992b0c5a4dff72500f9c1014bed779252560e808"
+      "sha256": "74c4a49eb224003f574c7bcd7eb3e5c47ff253bc9608d0ce748db6a83efbe0a2",
+      "sourceCommit": "25e00ffe7557738f1dc79d38b4f9d87df678e1ba"
     },
     "workshop": {
       "version": "0.5.0",
       "artifact": "components/gnolith-workshop-0.5.0.tgz",
-      "sha256": "477ce5b388aa75f4d451555341fbdd7cc74092d90256de2ec6ae054aff019b70",
-      "sourceCommit": "c2e345c0b287af7c8622e226943af83a11a33ac7"
+      "sha256": "6d466fa1f91ba93efe070dada9ad8b1e14bde6b4d9cc7e94bdefcb3f25fe95d4",
+      "sourceCommit": "abbdb1c3f07d8466883c9f00ad3927c81ca78769"
     },
     "waystone": {
       "version": "0.3.0",
@@ -30,13 +30,14 @@
   "compose": {
     "nodeImage": "node@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8",
     "profiles": [],
-    "publishIpv6Loopback": false
+    "publishIpv6Loopback": false,
+    "qdrantImage": "qdrant/qdrant@sha256:0bd98fa7977f1e75694779359ca4e212822e5a71334e28421182f72f209d5286"
   },
   "migrations": {
     "diamond": "0001-current-rdf-schema",
     "taproot": "0009-architecture-reset",
-    "workshop": "9",
-    "expectedCatalogDigest": "577cc1de501b0ae3556eb1d32e7dd516c70a09c5b6226d671cec312068fba3dd"
+    "workshop": "11",
+    "expectedCatalogDigest": "a57799a792a075a5e359567240a7241a48df4155fae3a9e73b092ccf9035955b"
   },
   "backup": {
     "maxArchiveBytes": 268435456,

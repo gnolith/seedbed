@@ -1,6 +1,6 @@
 import { createHash, webcrypto } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import {
@@ -17,6 +17,7 @@ import {
   adoptDiamond041LegacyOwnerV1,
   createDiamondBackupV1,
   decodeDiamond041LegacyOwnerV1,
+  validateDiamondBackupSectionV1,
 } from '@gnolith/diamond/backup';
 import { NodeSqliteDatabase } from '@gnolith/diamond/node-sqlite';
 import {
@@ -35,6 +36,7 @@ import {
   convertLegacyTaproot042ToBackupSectionV1,
   openVerifiedResourceBlobV1,
   registerTaprootMigrationLedgerOwnerHandleV1,
+  restoreTaprootMigrationLedgerV1,
 } from '@gnolith/taproot/backup';
 import {
   createLocalFilesystemResourceBlobPortsV1,
@@ -47,6 +49,7 @@ import {
 import {
   applyWorkshopMigrations,
   planWorkshopMigrations,
+  workshopMigrations,
   workshopNamespacedMigrationsV1,
 } from '@gnolith/workshop/migrations';
 import { decodeOpaqueOwnerValue, encodeOpaqueOwnerValue } from './opaque-codec.mjs';
@@ -56,7 +59,7 @@ const exec = promisify(execFile);
 const TARGETS = {
   diamond: '0001-current-rdf-schema',
   taproot: '0009-architecture-reset',
-  workshop: '9',
+  workshop: '11',
 };
 const VERSIONS = { diamond: '0.5.0', taproot: '0.5.0', workshop: '0.5.0' };
 const NAMESPACES = {
@@ -81,7 +84,7 @@ try {
   if (result !== STREAMED) process.stdout.write(`${JSON.stringify(result)}\n`);
 } catch (error) {
   const message = error instanceof Error ? error.message : 'Seedbed operator failed';
-  process.stderr.write(`${message.slice(0, 2048).replaceAll(/(?:[A-Za-z]:)?[\\/][^\s"']+/gu, '[redacted-path]')}\n`);
+  process.stderr.write(`${message.slice(0, 2048).replaceAll(/(?:[A-Za-z]:[\\/][^\s"']+|(?<![A-Za-z0-9@._-])\/[^\s"']+)/gu, '[redacted-path]')}\n`);
   process.exitCode = 1;
 }
 
@@ -105,6 +108,8 @@ async function dispatch(name, context, input, request) {
       return importOwnerBackup(context, input);
     case 'workshop-bootstrap-v1':
       return workshopBootstrap(context, input);
+    case 'workshop-semantic-configure-v1':
+      return workshopSemanticConfigure(context, input);
     case 'taproot-blob-enumerate-v1':
       return enumerateBlobs(context, input);
     case 'taproot-blob-open-v1':
@@ -196,34 +201,30 @@ async function exportOwnerBackup(context, owner) {
 
 async function validateOwnerBackup(context, encoded) {
   const section = decodeTransportSection(encoded, context.backup.maxArchiveBytes);
-  const liveDatabase = await exists(context.databasePath);
-  const db = new NodeSqliteDatabase(liveDatabase ? context.databasePath : ':memory:');
+  const value = decodeOpaqueOwnerValue(section.bytes, { maxBytes: context.backup.maxArchiveBytes });
+  if (section.owner === 'diamond') {
+    try {
+      await validateDiamondBackupSectionV1(value);
+      return retentionFor(section.owner);
+    } catch (error) {
+      throw new Error(`diamond backup validation failed: ${error instanceof Error ? error.message : 'unknown owner error'}`);
+    }
+  }
+  // Verification is deliberately independent of the live installation. Owner
+  // import/dry-run APIs require an empty target, so bind them to an isolated
+  // in-memory database and close it after this single bounded validation.
+  const db = new NodeSqliteDatabase(':memory:');
   try {
     const binding = await backupBinding(db, context, section.owner);
-    const value = decodeOpaqueOwnerValue(section.bytes, { maxBytes: context.backup.maxArchiveBytes });
-    if (section.owner === 'diamond') {
-      const inspection = await binding.diamondBackup.inspect();
-      await binding.diamondBackup.dryRunImport(value, {
-        mode: section.disposition === 'rebuildable'
-          ? 'rebuild'
-          : liveDatabase && inspection.schemaPresent
-            ? 'migration-bound'
-            : 'empty',
-      });
-    }
     if (section.owner === 'taproot') {
-      if (!liveDatabase) {
-        await binding.ledgerBackup.restoreNamespace(binding.ownerHandle, value.ledger, { mode: 'empty' });
-      }
+      await restoreTaprootMigrationLedgerV1(db, binding.taprootLedgerHandle, value.ledger);
       await importTaprootBackupSectionV1(db, value, binding.taprootLedgerHandle, { dryRun: true, importDerived: false });
     }
     if (section.owner === 'workshop') {
-      if (!liveDatabase) {
-        await binding.workshopHandles.ledger.importOwnedSlice({
-          state: value.sections.migrationLedgerSlice,
-          signal: new AbortController().signal,
-        });
-      }
+      await binding.workshopHandles.ledger.importOwnedSlice({
+        state: value.sections.migrationLedgerSlice,
+        signal: new AbortController().signal,
+      });
       await binding.workshopBackup.inspectBackup(value);
     }
     return retentionFor(section.owner);
@@ -249,12 +250,24 @@ async function importOwnerBackup(context, input) {
     }
     if (section.owner === 'taproot') {
       try {
-        await binding.ledgerBackup.restoreNamespace(binding.ownerHandle, value.ledger, { mode: 'empty' });
+        await restoreTaprootMigrationLedgerV1(db, binding.taprootLedgerHandle, value.ledger);
       } catch (error) {
         throw new Error(`Taproot ledger/schema restore failed: ${error instanceof Error ? error.message : 'unknown owner error'}`);
       }
       try {
         await importTaprootBackupSectionV1(db, value, binding.taprootLedgerHandle, { importDerived: false });
+        const inspection = await inspectTaprootPersistence(db);
+        if (!inspection.current) {
+          throw new TypeError(`Taproot canonical restore did not leave exact current persistence: ${JSON.stringify({
+            readinessErrors: inspection.readinessErrors,
+            baseIriMatchesContext: inspection.baseIri === context.baseIri,
+            baseIriLength: inspection.baseIri?.length,
+            expectedBaseIriLength: context.baseIri.length,
+            baseIri: inspection.baseIri,
+            schema: inspection.schema,
+            migrations: inspection.migrations,
+          })}`);
+        }
       } catch (error) {
         throw new Error(`Taproot canonical restore failed: ${error instanceof Error ? error.message : 'unknown owner error'}`);
       }
@@ -318,7 +331,7 @@ async function backupBinding(db, context, owner) {
   return {
     ...ledger,
     workshopHandles: handles,
-    workshopBackup: createWorkshopBackupApi({ ...handles, schemaVersion: 9 }),
+    workshopBackup: createWorkshopBackupApi({ ...handles, schemaVersion: 11 }),
   };
 }
 
@@ -382,16 +395,9 @@ async function stageBlob(context, input) {
   const descriptor = decodeBlobDescriptor(input);
   if (input.bytes !== descriptor.byteLength || input.sha256 !== descriptor.sha256) throw new TypeError('Blob staging metadata does not match owner descriptor');
   const staging = assertStaging(context, input.stagingDirectory);
-  const ports = await createLocalFilesystemResourceBlobPortsV1({
-    root: '/var/lib/gnolith/blobs',
-    maxBlobBytes: context.backup.maxBlobBytes,
-    maxEntries: 10_000,
-  });
-  const stageId = await ports.restore.stage(descriptor, readableFromStdin());
-  await ports.restore.verify(stageId);
   const entries = await readStageEntries(staging);
   if (entries.some((entry) => entry.descriptor.referenceId === descriptor.referenceId)) throw new TypeError('Blob is duplicated in restore staging');
-  entries.push({ descriptor, stageId });
+  entries.push(await stageIncomingPayload(staging, descriptor, context.backup.maxBlobBytes));
   await writeStageEntries(staging, entries);
   return STREAMED;
 }
@@ -405,18 +411,11 @@ async function stageAdoptionPayload(context, input) {
   const adoption = await readAdoptionEvidence(staging);
   const descriptor = adoption.descriptors.find((entry) => entry.referenceId === input.id);
   if (!descriptor) throw new TypeError('Legacy payload descriptor is absent from the owner export');
-  const ports = await createLocalFilesystemResourceBlobPortsV1({
-    root: '/var/lib/gnolith/blobs',
-    maxBlobBytes: context.backup.maxBlobBytes,
-    maxEntries: 10_000,
-  });
-  const stageId = await ports.restore.stage(descriptor, readableFromStdin());
-  await ports.restore.verify(stageId);
   const entries = await readStageEntries(staging);
   if (entries.some((entry) => entry.descriptor.referenceId === descriptor.referenceId)) {
     throw new TypeError('Legacy payload is duplicated in adoption staging');
   }
-  entries.push({ descriptor, stageId });
+  entries.push(await stageIncomingPayload(staging, descriptor, context.backup.maxBlobBytes));
   await writeStageEntries(staging, entries);
   return STREAMED;
 }
@@ -428,7 +427,10 @@ async function adoptionDiagnostics(context, input) {
   try {
     for (const owner of ['diamond', 'taproot', 'workshop']) {
       const diagnostic = await ownerDiagnosticWithDb(db, context, owner);
-      if (!diagnostic.ready) throw new TypeError(`${owner} adoption target is not migration-ready`);
+      if (!diagnostic.ready) {
+        const plan = await inspectOwnerPlan(db, owner, context);
+        throw new TypeError(`${owner} adoption target is not migration-ready: ${JSON.stringify({ diagnostic, plan })}`);
+      }
     }
   } finally {
     await db.close();
@@ -460,11 +462,31 @@ async function inspectStagedBlobs(context, input, action) {
       if (result === 'conflict') throw new TypeError(`Blob ${entry.descriptor.referenceId} conflicts with restore target`);
     }
   }
+  // Rebinding is intentionally completed in the same owner-port process as
+  // commit. Workshop stage handles are process-local capabilities.
   if (action === 'rebind') {
-    for (const entry of entries) await ports.restore.rebind(entry.stageId, entry.descriptor.referenceId);
+    for (const entry of entries) await readStagedPayload(staging, entry, context.backup.maxBlobBytes);
   }
-  if (action === 'commit') await ports.restore.commit(entries.map((entry) => entry.stageId));
-  if (action === 'rollback') await ports.restore.rollback(entries.map((entry) => entry.stageId));
+  if (action === 'commit') {
+    const stageIds = [];
+    try {
+      for (const entry of entries) {
+        const bytes = await readStagedPayload(staging, entry, context.backup.maxBlobBytes);
+        const stageId = await ports.restore.stage(entry.descriptor, readableFromBytes(bytes));
+        await ports.restore.verify(stageId);
+        await ports.restore.rebind(stageId, entry.descriptor.referenceId);
+        stageIds.push(stageId);
+      }
+      await ports.restore.commit(stageIds);
+      await Promise.all(entries.map((entry) => rm(join(staging, 'payloads', entry.file), { force: true })));
+    } catch (error) {
+      await ports.restore.rollback(stageIds).catch(() => undefined);
+      throw error;
+    }
+  }
+  if (action === 'rollback') {
+    await Promise.all(entries.map((entry) => rm(join(staging, 'payloads', entry.file), { force: true })));
+  }
   return { [action]: entries.length };
 }
 
@@ -566,7 +588,7 @@ async function inspectOwnerPlan(db, owner, context) {
   }
   const plan = await planWorkshopMigrations(db, DIAMOND_LEDGER_API).catch(() => ({
     currentVersion: 0,
-    targetVersion: 9,
+    targetVersion: 11,
     ready: false,
     pending: [],
   }));
@@ -638,6 +660,54 @@ async function workshopBootstrap(context, input) {
     credentialId: receipt.credentialId,
     credentialDigest: receipt.credentialDigest,
   };
+}
+
+async function workshopSemanticConfigure(context, input) {
+  if (
+    !input
+    || input.version !== 1
+    || !Number.isSafeInteger(input.expectedRevision)
+    || input.expectedRevision < 0
+    || typeof input.idempotencyKey !== 'string'
+    || !/^seedbed-semantic-[0-9a-f]{64}$/u.test(input.idempotencyKey)
+    || !input.configuration
+    || typeof input.configuration !== 'object'
+    || Array.isArray(input.configuration)
+  ) throw new TypeError('Workshop semantic configuration input is invalid');
+  const transient = `/tmp/${input.idempotencyKey}.json`;
+  await writeFile(transient, `${JSON.stringify(input)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  try {
+    const result = await exec('gnolith-workshop', [
+      'configure-semantics-v1',
+      '--config', '/app/seedbed/workshop.config.json',
+      '--input', transient,
+    ], {
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+      env: { PATH: process.env.PATH, NODE_ENV: 'production' },
+    });
+    const receipt = JSON.parse(result.stdout);
+    if (
+      receipt?.version !== 1
+      || receipt.configurationId !== input.configuration.id
+      || !Number.isSafeInteger(receipt.revision)
+      || typeof receipt.fingerprint !== 'string'
+      || !/^[0-9a-f]{64}$/u.test(receipt.fingerprint)
+      || typeof receipt.state !== 'string'
+      || receipt.state.length < 1
+      || receipt.state.length > 128
+      || typeof receipt.ready !== 'boolean'
+      || typeof receipt.replayed !== 'boolean'
+    ) throw new TypeError('Workshop semantic configuration receipt is invalid');
+    return {
+      fingerprint: receipt.fingerprint,
+      revision: receipt.revision,
+      state: receipt.state,
+    };
+  } finally {
+    await rm(transient, { force: true });
+  }
 }
 
 async function prepareStaging(context, input) {
@@ -771,7 +841,7 @@ async function exportLegacyOwners(context, source, input) {
     });
     const workshopSection = await createWorkshopBackupApi({
       ...workshopHandles,
-      schemaVersion: 9,
+      schemaVersion: 11,
     }).exportBackup(decoded.taproot.installationId);
 
     const evidence = legacyEvidence(decoded);
@@ -801,24 +871,37 @@ async function openLegacyPayload(context, source, input) {
   try {
     const descriptor = decoded.taproot.blobDescriptors.find((entry) => entry.referenceId === input?.payloadId);
     if (!descriptor) throw new TypeError('Legacy payload identifier is not owned by the exact source');
-    const ports = await createLocalFilesystemResourceBlobPortsV1({
-      root: '/seedbed-legacy/blobs',
-      maxBlobBytes: context.backup.maxBlobBytes,
-      maxEntries: 10_000,
-    });
-    const stream = await openVerifiedResourceBlobV1(
-      decoded.sourceDb,
-      decoded.taproot.installationId,
-      ports.backup,
-      descriptor,
-    );
-    for await (const chunk of stream) {
-      if (!process.stdout.write(chunk)) await new Promise((resolveDrain) => process.stdout.once('drain', resolveDrain));
+    const root = await realpath('/seedbed-legacy/blobs');
+    const relativePath = safeLegacyBlobReference(descriptor.referenceId);
+    const payloadPath = join(root, ...relativePath.split('/'));
+    const resolvedPayload = await realpath(payloadPath);
+    if (resolvedPayload !== payloadPath || !resolvedPayload.startsWith(`${root}/`)) {
+      throw new TypeError('Legacy payload path escapes the verified blob source');
     }
+    const metadata = await lstat(resolvedPayload);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size !== descriptor.byteLength || metadata.size > context.backup.maxBlobBytes) {
+      throw new TypeError('Legacy payload is not an exact bounded regular file');
+    }
+    const bytes = await readFile(resolvedPayload);
+    if (sha256(bytes) !== descriptor.sha256) throw new TypeError('Legacy payload digest does not match its owner descriptor');
+    if (!process.stdout.write(bytes)) await new Promise((resolveDrain) => process.stdout.once('drain', resolveDrain));
     return STREAMED;
   } finally {
     await decoded.sourceDb.close();
   }
+}
+
+function safeLegacyBlobReference(value) {
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value.length > 1024
+    || value.includes('\\')
+    || value.startsWith('/')
+    || /^[A-Za-z]:/u.test(value)
+    || value.split('/').some((part) => !part || part === '.' || part === '..')
+  ) throw new TypeError('Legacy payload reference is unsafe');
+  return value;
 }
 
 async function decodeLegacyOwners(context, source, options = {}) {
@@ -833,20 +916,17 @@ async function decodeLegacyOwners(context, source, options = {}) {
     const diamond = await decodeDiamond041LegacyOwnerV1({
       source: sourceDb,
       attestation: { packageName: '@gnolith/diamond', packageVersion: '0.4.1' },
-      limits: { maxQuads: 1_000_000, maxPayloadBytes: context.backup.maxArchiveBytes },
+      limits: { maxQuads: 1_000_000, maxPayloadBytes: Math.min(context.backup.maxArchiveBytes, 64 * 1024 * 1024) },
     });
-    const migrations = [];
-    for (const migration of workshopNamespacedMigrationsV1.slice(0, 6)) {
-      migrations.push({ id: migration.id, checksum: `sha256:${await checksumMigration(migration)}` });
-    }
+    const migrations = workshopMigrations.slice(0, 6).map(({ id, checksum }) => ({ id, checksum }));
     const workshop = await decodeWorkshopLegacyOwnerV042(sourceDb, {
       packageName: '@gnolith/workshop',
       packageVersion: '0.4.2',
       schemaVersion: 6,
       migrationLedger: { namespace: '@gnolith/workshop', migrations },
     }, {
-      maxRows: 1_000_000,
-      maxBytes: context.backup.maxArchiveBytes,
+      maxRows: 100_000,
+      maxBytes: Math.min(context.backup.maxArchiveBytes, 32 * 1024 * 1024),
     });
     return { sourceDb, diamond, taproot, workshop };
   } catch (error) {
@@ -949,18 +1029,55 @@ function decodeBlobDescriptor(input) {
   return descriptor;
 }
 
-function readableFromStdin() {
-  const iterator = process.stdin[Symbol.asyncIterator]();
+function readableFromBytes(bytes) {
   return new ReadableStream({
-    async pull(controller) {
-      const result = await iterator.next();
-      if (result.done) controller.close();
-      else controller.enqueue(new Uint8Array(result.value));
-    },
-    async cancel() {
-      await iterator.return?.();
+    start(controller) {
+      controller.enqueue(new Uint8Array(bytes));
+      controller.close();
     },
   });
+}
+
+async function stageIncomingPayload(staging, descriptor, maxBlobBytes) {
+  const chunks = [];
+  let byteLength = 0;
+  for await (const chunk of process.stdin) {
+    byteLength += chunk.byteLength;
+    if (byteLength > descriptor.byteLength || byteLength > maxBlobBytes) {
+      throw new TypeError('Staged blob exceeds its exact owner descriptor');
+    }
+    chunks.push(Buffer.from(chunk));
+  }
+  const bytes = Buffer.concat(chunks);
+  if (bytes.byteLength !== descriptor.byteLength || sha256(bytes) !== descriptor.sha256) {
+    throw new TypeError('Staged blob does not match its exact owner descriptor');
+  }
+  const file = `${sha256(encodeOpaqueOwnerValue(descriptor))}.blob`;
+  const directory = join(staging, 'payloads');
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await writeFile(join(directory, file), bytes, { flag: 'wx', mode: 0o600 });
+  return { descriptor, file };
+}
+
+async function readStagedPayload(staging, entry, maxBlobBytes) {
+  if (
+    !entry
+    || !entry.descriptor
+    || typeof entry.file !== 'string'
+    || !/^[0-9a-f]{64}\.blob$/u.test(entry.file)
+    || entry.file !== `${sha256(encodeOpaqueOwnerValue(entry.descriptor))}.blob`
+  ) throw new TypeError('Blob stage inventory entry is invalid');
+  const path = join(staging, 'payloads', entry.file);
+  const metadata = await lstat(path);
+  if (
+    !metadata.isFile()
+    || metadata.isSymbolicLink()
+    || metadata.size !== entry.descriptor.byteLength
+    || metadata.size > maxBlobBytes
+  ) throw new TypeError('Blob stage payload is invalid');
+  const bytes = await readFile(path);
+  if (sha256(bytes) !== entry.descriptor.sha256) throw new TypeError('Blob stage payload digest is invalid');
+  return bytes;
 }
 
 async function readStageEntries(staging) {

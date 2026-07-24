@@ -1,4 +1,5 @@
 import type { SeedbedConfig } from './types.js';
+import { sha256 } from './canonical.js';
 import { join } from 'node:path';
 
 export interface ComposeRender {
@@ -10,6 +11,9 @@ export interface ComposeRender {
 }
 
 export function renderCompose(config: SeedbedConfig): ComposeRender {
+  if (config.compose.profiles.includes('ollama')) {
+    throw new TypeError('Local Ollama requires an immutable model artifact selector and digest and is unavailable in this Seedbed candidate');
+  }
   const services = ['workshop'];
   const extra: string[] = [];
   if (config.compose.profiles.includes('qdrant')) {
@@ -21,6 +25,9 @@ export function renderCompose(config: SeedbedConfig): ComposeRender {
     read_only: true
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    environment:
+      QDRANT__STORAGE__SNAPSHOTS_PATH: /qdrant/storage/snapshots
+      QDRANT__TELEMETRY_DISABLED: "true"
     volumes:
       - qdrant-data:/qdrant/storage
     networks: [gnolith]
@@ -33,26 +40,30 @@ export function renderCompose(config: SeedbedConfig): ComposeRender {
       resources:
         limits: { cpus: "2.0", memory: 2G }`);
   }
-  if (config.compose.profiles.includes('ollama')) {
-    services.push('ollama');
-    extra.push(`  ollama:
-    image: \${OLLAMA_IMAGE}
-    profiles: ["ollama"]
-    restart: unless-stopped
-    read_only: true
-    cap_drop: ["ALL"]
-    security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp:rw,noexec,nosuid,size=256m"]
-    networks: [gnolith]
-    deploy:
-      resources:
-        limits: { cpus: "4.0", memory: 8G }`);
-  }
   const portBindings = [`127.0.0.1:\${WORKSHOP_PORT}:4317`];
   if (config.compose.publishIpv6Loopback) portBindings.push(`[::1]:\${WORKSHOP_PORT}:4317`);
   const waystoneMount = config.compose.profiles.includes('waystone')
     ? '\n      - type: bind\n        source: ${WAYSTONE_ASSET_DIRECTORY}\n        target: /srv/waystone\n        read_only: true'
     : '';
+  const semanticSecrets = (config.semantic?.credentialSelectors ?? [])
+    .map((selector) => {
+      const suffix = sha256(selector.id).slice(0, 16);
+      return {
+        id: selector.id,
+        composeName: `gnolith-semantic-${suffix}`,
+        target: `gnolith-semantic-${suffix}`,
+        environment: `GNOLITH_SEMANTIC_${suffix.toUpperCase()}_FILE`,
+        path: selector.path,
+      };
+    })
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const workshopSecrets = [
+    '      - gnolith-bearer',
+    ...semanticSecrets.map((entry) => `      - source: ${entry.composeName}\n        target: ${entry.target}`),
+  ].join('\n');
+  const operatorSecrets = semanticSecrets.length === 0
+    ? ''
+    : `\n    secrets:\n${semanticSecrets.map((entry) => `      - source: ${entry.composeName}\n        target: ${entry.target}`).join('\n')}`;
   const volumes = [
     '  application-data:\n    name: ${APPLICATION_DATA_VOLUME}',
     ...(config.compose.profiles.includes('qdrant') ? ['  qdrant-data:\n    name: ${QDRANT_DATA_VOLUME}'] : []),
@@ -83,7 +94,7 @@ services:
     volumes:
       - application-data:/var/lib/gnolith${waystoneMount}
     secrets:
-      - gnolith-bearer
+${workshopSecrets}
     networks: [gnolith]
     healthcheck:
       test: ["CMD", "node", "-e", "const t=require('fs').readFileSync('/run/secrets/gnolith-bearer','utf8').trim();fetch('http://127.0.0.1:4317/health/ready',{headers:{authorization:'Bearer '+t}}).then(function(r){if(!r.ok)process.exit(1)}).catch(function(){process.exit(1)})"]
@@ -104,7 +115,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
     volumes:
-      - application-data:/var/lib/gnolith
+      - application-data:/var/lib/gnolith${operatorSecrets}
     networks: [gnolith]
     deploy:
       resources:
@@ -119,6 +130,7 @@ ${volumes.join('\n')}
 secrets:
   gnolith-bearer:
     file: \${GNOLITH_BEARER_FILE}
+${semanticSecrets.map((entry) => `  ${entry.composeName}:\n    file: \${${entry.environment}}`).join('\n')}
 `;
   const environment = {
     COMPOSE_PROJECT_NAME: config.compose.projectName,
@@ -138,7 +150,7 @@ secrets:
     } : {}),
     ...(config.compose.profiles.includes('qdrant') ? { QDRANT_DATA_VOLUME: config.compose.qdrantVolume! } : {}),
     ...(config.compose.qdrantImage === undefined ? {} : { QDRANT_IMAGE: config.compose.qdrantImage }),
-    ...(config.compose.ollamaImage === undefined ? {} : { OLLAMA_IMAGE: config.compose.ollamaImage }),
+    ...Object.fromEntries(semanticSecrets.map((entry) => [entry.environment, entry.path])),
   };
   return { yaml, environment, services, profiles: [...config.compose.profiles], oneShotServices: ['seedbed-operator'] };
 }

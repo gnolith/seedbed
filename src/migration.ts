@@ -2,9 +2,10 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { canonicalJson, digestObject } from './canonical.js';
 import { createLocalBearerCredential, inspectProtectedCredential } from './secrets.js';
-import { OWNER_LEDGER_NAMESPACES, OWNER_ORDER, type InstallationPlan, type InstallationReceipt, type OwnerDiagnostic, type SeedbedConfig } from './types.js';
+import { OWNER_LEDGER_NAMESPACES, OWNER_ORDER, type InstallationPlan, type InstallationReceipt, type OwnerDiagnostic, type SeedbedConfig, type SemanticConfigurationReceiptV1 } from './types.js';
 import type { InstallationPorts } from './owner-ports.js';
 import { acquireOperationLock } from './operation-lock.js';
+import { semanticConfigurationFingerprint } from './semantic.js';
 
 export interface ComposeDriver {
   prepare(config: SeedbedConfig): Promise<void>;
@@ -21,6 +22,7 @@ interface OperationState {
   readonly completed: readonly string[];
   readonly quarantined: boolean;
   readonly issue?: { code: string; phase: string; remediation: string };
+  readonly semantic?: SemanticConfigurationReceiptV1;
 }
 
 export function createInstallationPlan(config: SeedbedConfig): InstallationPlan {
@@ -30,14 +32,16 @@ export function createInstallationPlan(config: SeedbedConfig): InstallationPlan 
     expectedVersion: config.migrations[owner],
     packageSha256: config.packages[owner].sha256,
   }));
+  const steps: InstallationPlan['steps'] = [
+    'validate-inputs', 'prepare-storage', 'diamond-migrate', 'taproot-migrate',
+    'workshop-migrate', 'workshop-bootstrap-v1',
+    ...(config.semantic === undefined ? [] : ['workshop-semantic-configure-v1'] as const),
+    'compose-up', 'verify-owner-state', 'write-receipt',
+  ];
   const body = {
     format: 'gnolith-seedbed-install-plan-v1' as const,
     configDigest: digest,
-    steps: [
-      'validate-inputs', 'prepare-storage', 'diamond-migrate', 'taproot-migrate',
-      'workshop-migrate', 'workshop-bootstrap-v1', 'compose-up',
-      'verify-owner-state', 'write-receipt',
-    ] as const,
+    steps,
     migrations,
   };
   return { ...body, operationId: digestObject(body) };
@@ -69,6 +73,7 @@ export async function applyInstallationPlan(input: {
     const completed = new Set(state.completed);
     const diagnostics = new Map<string, OwnerDiagnostic>();
     let credential: Awaited<ReturnType<typeof createLocalBearerCredential>> | undefined;
+    let semantic: InstallationReceipt['semantic'] = state.semantic;
     for (const step of input.plan.steps) {
       if (completed.has(step)) continue;
       try {
@@ -126,6 +131,25 @@ export async function applyInstallationPlan(input: {
               credential = { ...credential, credentialId: result.credentialId };
             }
             break;
+          case 'workshop-semantic-configure-v1': {
+            if (input.config.semantic === undefined) throw new TypeError('Semantic configuration step lacks configuration');
+            const configured = await input.ports.workshop.configureSemanticV1({
+              configuration: input.config.semantic.configuration,
+              expectedRevision: input.config.semantic.expectedRevision,
+              idempotencyKey: `seedbed-semantic-${input.plan.operationId}`,
+            });
+            const expectedFingerprint = semanticConfigurationFingerprint(input.config.semantic.configuration);
+            if (
+              configured.fingerprint !== expectedFingerprint
+              || configured.revision !== input.config.semantic.expectedRevision + 1
+              || typeof configured.state !== 'string'
+              || configured.state.length === 0
+              || configured.state.length > 128
+            ) throw new TypeError('Workshop semantic configuration receipt does not match the digest-bound plan');
+            semantic = configured;
+            state = { ...state, semantic };
+            break;
+          }
           case 'compose-up':
             await input.compose.up(input.config);
             break;
@@ -183,6 +207,7 @@ export async function applyInstallationPlan(input: {
       protectedTokenFile: credential.protectedFile,
       requiredEnvironmentSelector: 'GNOLITH_BEARER_TOKEN',
       clientVerified: false,
+      ...(semantic === undefined ? {} : { semantic }),
     };
     await atomicWrite(join(input.config.paths.stateDirectory, 'installation-receipt.json'), receipt);
     return receipt;

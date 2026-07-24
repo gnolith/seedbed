@@ -8,6 +8,7 @@ export { validateLegacyManifest, loadLegacyManifest, planLegacyAdoption, applyLe
 export { diagnoseInstallation } from './diagnostics.js';
 export { SEEDBED_LOCAL_BUILD_SELECTOR, SeedbedLocalControl, createSeedbedControl, createDefaultSeedbedControl, defaultSeedbedControlPolicy, defaultSeedbedArtifactRoot, defaultSeedbedStateRoot } from './local-control.js';
 export { acquireOperationLock } from './operation-lock.js';
+export { semanticConfigurationFingerprint } from './semantic.js';
 export type * from './types.js';
 export type * from './owner-ports.js';
 export type * from './migration.js';

@@ -1,0 +1,85 @@
+{
+  "format": "gnolith-seedbed-legacy-fixture-provenance-v1",
+  "replacement": {
+    "supersededSha256": "581de9721f35a103054910610edaff12091341c8d69593760376696950afd409",
+    "disqualification": [
+      "dirty-source accidental entity ghosts",
+      "embedded usable loopback provider endpoint"
+    ],
+    "cleanSource": "single empty exact public-package installation"
+  },
+  "generatedWith": {
+    "seedbedRepositoryBaseCommit": "6c9d67716bcb08000e98b0f979081a5632a9fe6e",
+    "runtime": "node-24",
+    "nodeVersion": "24.14.0",
+    "sqliteVersion": "3.51.2",
+    "packageSource": "public-npm-tarballs",
+    "ownerMutationBoundary": "public-package-and-seedbed-cli-apis-only",
+    "rawSqlUsedBySeedbed": false,
+    "deepImportsUsedBySeedbed": false
+  },
+  "immutability": {
+    "canonicalSnapshotSha256": "7e9722a1a1d993e13207d5bb2900e2f7e5457ee70c572566c6c9ddb2e637d736",
+    "createdAt": "2026-07-24T05:54:45.024Z",
+    "verification": "byte-deterministic",
+    "generation": "Legacy public APIs issue UUIDs and timestamps; Seedbed freezes and verifies the resulting bytes and does not claim that a second mutation run is byte-identical."
+  },
+  "publicApiTranscript": [
+    "seedbed init",
+    "seedbed migrate",
+    "seedbed auth bootstrap",
+    "create_property",
+    "create_item",
+    "set_label",
+    "add_statement",
+    "upsert_memory x2",
+    "create_task",
+    "claim_task",
+    "update_task",
+    "create_prompt",
+    "TaprootContentRepositoryV1.createResource",
+    "TaprootContentRepositoryV1.updateResource",
+    "TaprootContentRepositoryV1.createAnnotation",
+    "TaprootContentRepositoryV1.updateAnnotation",
+    "search_admin materialize",
+    "search_status",
+    "seedbed snapshot create",
+    "seedbed snapshot verify",
+    "seedbed snapshot inspect"
+  ],
+  "content": [
+    "one-item-with-three-authored-revisions-label-alias-description-and-statement",
+    "one-property-with-one-authored-revision-label-and-description",
+    "one-resource-with-two-authored-revisions-and-one-externalized-payload",
+    "one-annotation-with-two-authored-revisions",
+    "one-memory-with-two-authored-revisions",
+    "one-claimed-task-with-three-authored-revisions",
+    "one-prompt-with-one-authored-revision-and-attribution",
+    "authorization-and-audit-history",
+    "materialized-lexical-search-state"
+  ],
+  "excluded": [
+    "credential-bytes",
+    "external-provider-endpoints",
+    "semantic-configuration",
+    "raw-foreign-sql",
+    "non-public-onboarding-deep-import"
+  ],
+  "verification": {
+    "legacySnapshotCli": [
+      "snapshot create",
+      "snapshot verify",
+      "snapshot inspect"
+    ],
+    "searchStatus": {
+      "semanticConfigured": 0,
+      "selectedConfigurationId": null,
+      "selectedReady": false
+    },
+    "onboarding": {
+      "count": 0,
+      "disposition": "unavailable-in-public-legacy-api"
+    },
+    "endpointAndCredentialFree": true
+  }
+}

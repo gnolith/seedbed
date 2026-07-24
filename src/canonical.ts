@@ -31,3 +31,10 @@ export function assertLowerSha256(value: unknown, label: string): asserts value 
     throw new TypeError(`${label} must be lowercase hexadecimal SHA-256`);
   }
 }
+
+export function redactFilesystemPaths(value: string): string {
+  return value.replaceAll(
+    /(?:[A-Za-z]:[\\/][^\s"']+|(?<![A-Za-z0-9@._-])\/[^\s"']+)/gu,
+    '[redacted-path]',
+  );
+}

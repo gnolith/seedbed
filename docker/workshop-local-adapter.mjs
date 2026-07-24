@@ -35,6 +35,14 @@ export async function createWorkshopBootstrapDependencies(config, protectedReade
   return adapter.createWorkshopBootstrapDependencies(config, protectedReader);
 }
 
+export async function createWorkshopSemanticConfigurationDependencies(config, protectedReader) {
+  const adapter = await localAdapter(config, protectedReader);
+  if (!adapter.createWorkshopSemanticConfigurationDependencies) {
+    throw new TypeError('Packed Workshop local adapter does not support semantic configuration');
+  }
+  return adapter.createWorkshopSemanticConfigurationDependencies(config, protectedReader);
+}
+
 function localAdapter(config, protectedReader) {
   adapterPromise ??= assemble(config, protectedReader);
   return adapterPromise;
@@ -104,6 +112,9 @@ async function assemble(config, protectedReader) {
       },
       migrationAssemblyAuthority: createMigrationAssemblyAuthorityV1(db, assembly.installationId),
       assets: verifyConfiguredAssets,
+      semantic: {
+        resolveCredential: (selector) => readSemanticCredential(assembly, selector),
+      },
       dependencies: [{ close: () => db.close() }],
     });
     return adapter;
@@ -111,6 +122,31 @@ async function assemble(config, protectedReader) {
     protectedBytes.fill(0);
     await db.close().catch(() => undefined);
     throw error;
+  }
+}
+
+async function readSemanticCredential(assembly, selector) {
+  if (
+    typeof selector !== 'string'
+    || !Object.prototype.hasOwnProperty.call(assembly.semanticCredentialFiles, selector)
+  ) throw new TypeError('Semantic credential selector is not configured by Seedbed');
+  const target = assembly.semanticCredentialFiles[selector];
+  const metadata = await lstat(target);
+  const canonical = resolve(await realpath(target));
+  if (
+    !metadata.isFile()
+    || metadata.isSymbolicLink()
+    || canonical !== target
+    || metadata.size < 1
+    || metadata.size > 1024 * 1024
+  ) throw new TypeError('Semantic credential selector must resolve to a bounded direct regular file');
+  const bytes = await readFile(target);
+  try {
+    const value = new TextDecoder('utf-8', { fatal: true }).decode(bytes).trim();
+    if (!value) throw new TypeError('Semantic credential selector is empty');
+    return value;
+  } finally {
+    bytes.fill(0);
   }
 }
 
@@ -188,6 +224,7 @@ async function readAssemblyConfig() {
     'registrationFingerprint',
     'cursorGeneration',
     'maxBlobBytes',
+    'semanticCredentialFiles',
   ].sort();
   if (
     !value
@@ -208,6 +245,19 @@ async function readAssemblyConfig() {
     || value.maxBlobBytes < 1
     || value.maxBlobBytes > 1024 * 1024 * 1024
   ) throw new TypeError('Seedbed assembly config digest or blob bound is invalid');
+  if (
+    !value.semanticCredentialFiles
+    || typeof value.semanticCredentialFiles !== 'object'
+    || Array.isArray(value.semanticCredentialFiles)
+    || Object.keys(value.semanticCredentialFiles).length > 2
+  ) throw new TypeError('Seedbed semantic credential selector mapping is invalid');
+  for (const [selector, target] of Object.entries(value.semanticCredentialFiles)) {
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/u.test(selector)
+      || typeof target !== 'string'
+      || !/^\/run\/secrets\/gnolith-semantic-[0-9a-f]{16}$/u.test(target)
+    ) throw new TypeError('Seedbed semantic credential selector mapping is invalid');
+  }
   if (!value.databasePath.startsWith('/var/lib/gnolith/') || !value.blobRoot.startsWith('/var/lib/gnolith/')) {
     throw new TypeError('Seedbed assembly storage paths must remain in the application-data volume');
   }

@@ -1,9 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, normalize, relative, resolve } from 'node:path';
 import { assertLowerSha256, canonicalJson, digestObject } from './canonical.js';
-import type { ImmutableCoordinate, SecretSelector, SeedbedConfig } from './types.js';
+import type { ImmutableCoordinate, SecretSelector, SeedbedConfig, SemanticConfigurationV1 } from './types.js';
 
-const TOP_KEYS = ['formatVersion', 'installationId', 'baseIri', 'packages', 'compose', 'paths', 'authentication', 'endpoints', 'migrations', 'backup'] as const;
+const TOP_KEYS = ['formatVersion', 'installationId', 'baseIri', 'packages', 'compose', 'paths', 'authentication', 'endpoints', 'semantic', 'migrations', 'backup'] as const;
 const PROJECT_RE = /^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$/u;
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 
@@ -15,7 +15,7 @@ export async function loadConfig(path: string, cwd = process.cwd()): Promise<See
 
 export function validateConfig(value: unknown, options: { projectDirectory: string }): SeedbedConfig {
   const root = object(value, 'config');
-  exactKeys(root, TOP_KEYS, 'config');
+  exactKeys(root, TOP_KEYS, 'config', ['semantic']);
   if (root.formatVersion !== 1) fail('formatVersion must be 1');
   const installationId = identifier(root.installationId, 'installationId');
   const baseIri = canonicalBaseIri(root.baseIri);
@@ -75,6 +75,39 @@ export function validateConfig(value: unknown, options: { projectDirectory: stri
     ...(endpointsValue.vectorCredential === undefined ? {} : { vectorCredential: selector(endpointsValue.vectorCredential, 'endpoints.vectorCredential') }),
   };
 
+  const semantic = root.semantic === undefined ? undefined : semanticConfiguration(root.semantic);
+  if (semantic !== undefined) {
+    if (semantic.credentialSelectors.some(({ path }) => isWithin(path, project))) {
+      fail('semantic protected credential files must be outside the project/worktree');
+    }
+    const expectsOllama = semantic.configuration.provider.kind === 'ollama-compatible';
+    const expectsQdrant = semantic.configuration.vector.kind === 'qdrant';
+    if (expectsOllama || profiles.includes('ollama')) {
+      fail('local Ollama is unavailable until Seedbed can verify a separately supplied immutable model artifact selector and digest');
+    }
+    if (profiles.includes('qdrant') !== expectsQdrant) {
+      fail('compose qdrant profile must exactly match the semantic vector kind');
+    }
+    if (expectsQdrant && semantic.configuration.vector.kind === 'qdrant' && semantic.configuration.vector.endpoint !== 'http://qdrant:6333') {
+      fail('qdrant profile requires the exact internal http://qdrant:6333 endpoint');
+    }
+    if (
+      semantic.configuration.provider.kind === 'openai-compatible'
+      && semantic.configuration.provider.credentialSelector === null
+    ) fail('openai-compatible semantic provider requires a protected credential selector');
+    const referenced = [
+      semantic.configuration.provider.credentialSelector,
+      semantic.configuration.vector.kind === 'qdrant' ? semantic.configuration.vector.credentialSelector : null,
+    ].filter((entry): entry is string => entry !== null);
+    const declared = semantic.credentialSelectors.map(({ id }) => id);
+    if (
+      new Set(declared).size !== declared.length
+      || canonicalJson([...new Set(referenced)].sort()) !== canonicalJson([...declared].sort())
+    ) fail('semantic credential selectors must declare exactly the referenced protected selector IDs');
+  } else if (profiles.includes('ollama') || profiles.includes('qdrant')) {
+    fail('ollama/qdrant profiles require semantic configuration');
+  }
+
   const migrationsValue = object(root.migrations, 'migrations');
   exactKeys(migrationsValue, ['diamond', 'taproot', 'workshop', 'expectedCatalogDigest'], 'migrations');
   assertLowerSha256(migrationsValue.expectedCatalogDigest, 'migrations.expectedCatalogDigest');
@@ -106,6 +139,7 @@ export function validateConfig(value: unknown, options: { projectDirectory: stri
       tokenFile,
     },
     endpoints,
+    ...(semantic === undefined ? {} : { semantic }),
     migrations: {
       diamond: text(migrationsValue.diamond, 'migrations.diamond'),
       taproot: text(migrationsValue.taproot, 'migrations.taproot'),
@@ -119,6 +153,129 @@ export function validateConfig(value: unknown, options: { projectDirectory: stri
     },
   };
   return Object.freeze(config);
+}
+
+function semanticConfiguration(value: unknown): NonNullable<SeedbedConfig['semantic']> {
+  const record = object(value, 'semantic');
+  exactKeys(record, ['configuration', 'expectedRevision', 'credentialSelectors'], 'semantic');
+  const input = object(record.configuration, 'semantic.configuration');
+  exactKeys(input, ['version', 'id', 'name', 'provider', 'vector'], 'semantic.configuration');
+  if (input.version !== 1) fail('semantic.configuration.version must be 1');
+  const providerInput = object(input.provider, 'semantic.configuration.provider');
+  exactKeys(providerInput, [
+    'kind', 'endpoint', 'model', 'dimensions', 'metric', 'credentialSelector',
+    'allowPrivateEndpoint', 'redirectPolicy',
+  ], 'semantic.configuration.provider');
+  if (!['openai-compatible', 'ollama-compatible'].includes(String(providerInput.kind))) fail('semantic provider kind is invalid');
+  if (!['cosine', 'dot', 'euclid'].includes(String(providerInput.metric))) fail('semantic provider metric is invalid');
+  if (typeof providerInput.allowPrivateEndpoint !== 'boolean') fail('semantic provider private endpoint approval must be boolean');
+  if (providerInput.redirectPolicy !== 'error') fail('semantic provider redirect policy must be error');
+  const providerCredential = nullableIdentifier(providerInput.credentialSelector, 'semantic provider credentialSelector');
+  const provider: SemanticConfigurationV1['provider'] = {
+    kind: providerInput.kind as SemanticConfigurationV1['provider']['kind'],
+    endpoint: semanticEndpoint(providerInput.endpoint, 'semantic provider endpoint'),
+    model: boundedToken(providerInput.model, 'semantic provider model', 256),
+    dimensions: integer(providerInput.dimensions, 'semantic provider dimensions', 1, 65_536),
+    metric: providerInput.metric as SemanticConfigurationV1['provider']['metric'],
+    credentialSelector: providerCredential,
+    allowPrivateEndpoint: providerInput.allowPrivateEndpoint,
+    redirectPolicy: 'error',
+  };
+  requirePrivateApproval(provider.endpoint, provider.allowPrivateEndpoint, 'semantic provider');
+  const vectorInput = object(input.vector, 'semantic.configuration.vector');
+  let vector: SemanticConfigurationV1['vector'];
+  if (vectorInput.kind === 'sqlite') {
+    exactKeys(vectorInput, ['kind'], 'semantic.configuration.vector');
+    vector = { kind: 'sqlite' };
+  } else {
+    exactKeys(vectorInput, [
+      'kind', 'endpoint', 'collection', 'credentialSelector',
+      'allowPrivateEndpoint', 'redirectPolicy',
+    ], 'semantic.configuration.vector');
+    if (vectorInput.kind !== 'qdrant') fail('semantic vector kind is invalid');
+    if (typeof vectorInput.allowPrivateEndpoint !== 'boolean') fail('semantic vector private endpoint approval must be boolean');
+    if (vectorInput.redirectPolicy !== 'error') fail('semantic vector redirect policy must be error');
+    vector = {
+      kind: 'qdrant',
+      endpoint: semanticEndpoint(vectorInput.endpoint, 'semantic vector endpoint'),
+      collection: boundedToken(vectorInput.collection, 'semantic vector collection', 128),
+      credentialSelector: nullableIdentifier(vectorInput.credentialSelector, 'semantic vector credentialSelector'),
+      allowPrivateEndpoint: vectorInput.allowPrivateEndpoint,
+      redirectPolicy: 'error',
+    };
+    requirePrivateApproval(vector.endpoint, vector.allowPrivateEndpoint, 'semantic vector');
+  }
+  if (!Array.isArray(record.credentialSelectors) || record.credentialSelectors.length > 2) {
+    fail('semantic credentialSelectors must be a bounded array');
+  }
+  const credentialSelectors = record.credentialSelectors.map((value, index) => {
+    const selected = object(value, `semantic.credentialSelectors[${index}]`);
+    exactKeys(selected, ['id', 'kind', 'path'], `semantic.credentialSelectors[${index}]`);
+    if (selected.kind !== 'protected-file-v1') fail('semantic credentials must use protected-file-v1 selectors');
+    return {
+      id: boundedToken(selected.id, `semantic.credentialSelectors[${index}].id`, 256),
+      kind: 'protected-file-v1' as const,
+      path: safeAbsolutePath(selected.path, `semantic.credentialSelectors[${index}].path`),
+    };
+  });
+  return {
+    configuration: {
+      version: 1,
+      id: boundedToken(input.id, 'semantic configuration id', 128),
+      name: boundedToken(input.name, 'semantic configuration name', 128),
+      provider,
+      vector,
+    },
+    expectedRevision: integer(record.expectedRevision, 'semantic.expectedRevision', 0, Number.MAX_SAFE_INTEGER),
+    credentialSelectors,
+  };
+}
+
+function semanticEndpoint(value: unknown, label: string): string {
+  const url = new URL(text(value, label));
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    fail(`${label} must be credential-free HTTP(S) without query credentials`);
+  }
+  return url.href.replace(/\/$/u, '');
+}
+
+function requirePrivateApproval(endpointValue: string, approved: boolean, label: string): void {
+  const hostname = new URL(endpointValue).hostname.toLowerCase().replace(/^\[|\]$/gu, '');
+  const parts = hostname.split('.').map(Number);
+  const privateIpv4 = parts.length === 4
+    && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
+    && (
+      parts[0] === 10
+      || parts[0] === 127
+      || (parts[0] === 169 && parts[1] === 254)
+      || (parts[0] === 172 && parts[1]! >= 16 && parts[1]! <= 31)
+      || (parts[0] === 192 && parts[1] === 168)
+    );
+  const privateHost = privateIpv4
+    || hostname === 'localhost'
+    || hostname === '::1'
+    || hostname.startsWith('fc')
+    || hostname.startsWith('fd')
+    || hostname.startsWith('fe80:')
+    || !hostname.includes('.')
+    || hostname.endsWith('.local')
+    || hostname.endsWith('.internal');
+  if (privateHost && !approved) fail(`${label} private endpoint requires explicit approval`);
+}
+
+function nullableIdentifier(value: unknown, label: string): string | null {
+  return value === null ? null : boundedToken(value, label, 256);
+}
+
+function boundedToken(value: unknown, label: string, maximum: number): string {
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value.length > maximum
+    || value.trim() !== value
+    || /[\u0000-\u001f\u007f]/u.test(value)
+  ) fail(`${label} must be bounded nonblank text`);
+  return value;
 }
 
 export function configDigest(config: SeedbedConfig): string {
@@ -159,8 +316,7 @@ function endpoint(value: unknown, label: string): string {
 function canonicalBaseIri(value: unknown): string {
   const url = new URL(text(value, 'baseIri'));
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) fail('baseIri must be absolute credential-free HTTP(S)');
-  if (!url.pathname.endsWith('/')) url.pathname += '/';
-  return url.toString();
+  return url.href.replace(/\/+$/u, '');
 }
 
 function safeAbsolutePath(value: unknown, label: string): string {

@@ -18,6 +18,50 @@ export interface SecretSelector {
   readonly value: string;
 }
 
+export interface SemanticConfigurationV1 {
+  readonly version: 1;
+  readonly id: string;
+  readonly name: string;
+  readonly provider: {
+    readonly kind: 'openai-compatible' | 'ollama-compatible';
+    readonly endpoint: string;
+    readonly model: string;
+    readonly dimensions: number;
+    readonly metric: 'cosine' | 'dot' | 'euclid';
+    readonly credentialSelector: string | null;
+    readonly allowPrivateEndpoint: boolean;
+    readonly redirectPolicy: 'error';
+  };
+  readonly vector: {
+    readonly kind: 'sqlite';
+  } | {
+    readonly kind: 'qdrant';
+    readonly endpoint: string;
+    readonly collection: string;
+    readonly credentialSelector: string | null;
+    readonly allowPrivateEndpoint: boolean;
+    readonly redirectPolicy: 'error';
+  };
+}
+
+export interface ProtectedSemanticSelectorV1 {
+  readonly id: string;
+  readonly kind: 'protected-file-v1';
+  readonly path: string;
+}
+
+export interface SeedbedSemanticConfigurationV1 {
+  readonly configuration: SemanticConfigurationV1;
+  readonly expectedRevision: number;
+  readonly credentialSelectors: readonly ProtectedSemanticSelectorV1[];
+}
+
+export interface SemanticConfigurationReceiptV1 {
+  readonly fingerprint: string;
+  readonly revision: number;
+  readonly state: string;
+}
+
 export interface SeedbedConfig {
   readonly formatVersion: 1;
   readonly installationId: string;
@@ -56,6 +100,7 @@ export interface SeedbedConfig {
     readonly providerCredential?: SecretSelector;
     readonly vectorCredential?: SecretSelector;
   };
+  readonly semantic?: SeedbedSemanticConfigurationV1;
   readonly migrations: {
     readonly diamond: string;
     readonly taproot: string;
@@ -101,6 +146,7 @@ export interface InstallationPlan {
     | 'taproot-migrate'
     | 'workshop-migrate'
     | 'workshop-bootstrap-v1'
+    | 'workshop-semantic-configure-v1'
     | 'compose-up'
     | 'verify-owner-state'
     | 'write-receipt'
@@ -123,6 +169,7 @@ export interface InstallationReceipt {
   readonly protectedTokenFile: string;
   readonly requiredEnvironmentSelector: 'GNOLITH_BEARER_TOKEN';
   readonly clientVerified: false;
+  readonly semantic?: SemanticConfigurationReceiptV1;
 }
 
 export interface OperationIssue {

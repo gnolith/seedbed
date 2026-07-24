@@ -28,7 +28,7 @@
       "name": "workshop",
       "order": 3,
       "namespace": "@gnolith/workshop",
-      "target": "0009_operation_receipts",
+      "target": "0011_administration_control_plane",
       "publicPlanApi": "planWorkshopMigrations",
       "publicApplyApi": "applyWorkshopMigrations",
       "publicInspectApi": "inspectWorkshopMigrations"

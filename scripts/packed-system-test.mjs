@@ -43,12 +43,12 @@ try {
   const componentLock = JSON.parse(await readFile(join(installedRoot, 'seedbed-component-lock.json'), 'utf8'));
   const request = {
     installationId: 'packed-cross-boundary',
-    baseIri: 'https://packed.invalid/installation/',
+    baseIri: 'https://packed.invalid/installation',
     endpoint: 'http://127.0.0.1:4317/mcp',
     image: policy.localBuild,
     expected: {
       installationId: 'packed-cross-boundary',
-      baseIri: 'https://packed.invalid/installation/',
+      baseIri: 'https://packed.invalid/installation',
       serverVersion: componentLock.packages.workshop.version,
       operationVersion: componentLock.migrations.workshop,
       catalogDigest: componentLock.migrations.expectedCatalogDigest,
@@ -57,7 +57,7 @@ try {
       authorizationReady: true,
       lexicalReady: true,
       blobReady: true,
-      producerStatus: 'absent',
+      producerStatus: 'ready',
       semanticState: 'absent',
       allowLexicalOnly: true,
     },

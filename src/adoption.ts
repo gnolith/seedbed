@@ -2,7 +2,7 @@ import { lstat, readFile, readdir } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, normalize, relative, resolve } from 'node:path';
-import { canonicalJson, digestObject, sha256 } from './canonical.js';
+import { canonicalJson, digestObject, redactFilesystemPaths, sha256 } from './canonical.js';
 import type { OwnerSection } from './owner-ports.js';
 import { OWNER_LEDGER_NAMESPACES, OWNER_ORDER, type LegacyLocalAdoptionManifestV1, type OperationIssue, type SeedbedConfig } from './types.js';
 import type { RestoreTarget } from './backup.js';
@@ -316,7 +316,7 @@ function adoptionError(error: unknown): Error {
       phase: 'staging',
       remediation: 'Correct the owner-local compatibility condition and rerun the unchanged digest-bound plan.',
     }],
-    message: message.slice(0, 256).replaceAll(/(?:[A-Za-z]:)?[\\/][^\s"']+/gu, '[redacted-path]'),
+    message: redactFilesystemPaths(message.slice(0, 2048)),
   }));
 }
 

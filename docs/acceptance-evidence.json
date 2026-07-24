@@ -40,7 +40,7 @@
     {"id":"SED-AR-018","proof":["src/secrets.ts","src/migration.ts","test/migration-security.test.ts"]},
     {"id":"SED-AR-019","proof":["src/owner-ports.ts","src/backup.ts"]},
     {"id":"SED-AR-020","proof":["compose/compose.waystone.yaml","test/config-compose.test.ts"]},
-    {"id":"SED-AR-021","proof":["src/adoption.ts","src/legacy-source.ts","test/adoption.test.ts","test/legacy-source.test.ts"]},
+    {"id":"SED-AR-021","proof":["src/adoption.ts","src/legacy-source.ts","fixtures/legacy-local-v1/fixture-evidence.json","fixtures/legacy-local-v1/provenance.json","fixtures/legacy-local-v1/sbom.cdx.json","scripts/verify-legacy-fixture.mjs","scripts/legacy-docker-qualification.mjs","test/adoption.test.ts","test/legacy-source.test.ts"]},
     {"id":"SED-AR-022","proof":["src/owner-ports.ts","src/backup.ts","src/adoption.ts"]}
   ],
   "candidateMismatches": []

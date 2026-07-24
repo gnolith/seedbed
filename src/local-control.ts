@@ -9,8 +9,14 @@ import { validateConfig } from './config.js';
 import { diagnoseInstallation } from './diagnostics.js';
 import { applyInstallationPlan, createInstallationPlan } from './migration.js';
 import { createOperatorOwnerPorts } from './owner-ports.js';
+import { semanticConfigurationFingerprint } from './semantic.js';
 import { DockerComposeDriver, DockerDiagnosticHost } from './system-drivers.js';
-import type { ImmutableCoordinate, SeedbedConfig } from './types.js';
+import type {
+  ImmutableCoordinate,
+  SeedbedConfig,
+  SeedbedSemanticConfigurationV1,
+  SemanticConfigurationReceiptV1,
+} from './types.js';
 
 export interface InstallationSelector {
   readonly installationId: string;
@@ -65,6 +71,7 @@ export interface DockerInstallationRequest {
    */
   readonly image: DockerImageSelection;
   readonly expected: ExpectedWorkshopStatus;
+  readonly semantic?: SeedbedSemanticConfigurationV1;
 }
 
 export interface SeedbedControlPlan {
@@ -95,6 +102,7 @@ export interface SeedbedControlReceipt {
     readonly sha256: string;
   };
   readonly environmentSelector: 'GNOLITH_BEARER_TOKEN';
+  readonly semantic?: SemanticConfigurationReceiptV1;
 }
 
 export type InstallationPlan = SeedbedControlPlan;
@@ -110,6 +118,11 @@ export interface InstallationDiagnosis {
   readonly installationId: string;
   readonly classification: string;
   readonly restartAllowed: boolean;
+  readonly repair?: {
+    readonly kind: 'seedbed-resume-operation-v1';
+    readonly operationId: string;
+    readonly action: 'restart-recorded-compose';
+  };
 }
 
 export interface SeedbedControl {
@@ -181,14 +194,14 @@ export class SeedbedLocalControl implements SeedbedControl {
       artifactRoot,
     }));
     this.attestedProjectRoot = options.attestedProjectRoot === undefined ? undefined : projectRoot;
-    this.config({
+    if (!this.policy.compose.profiles.includes('qdrant') && !this.policy.compose.profiles.includes('ollama')) this.config({
       installationId: 'seedbed-policy-validation',
-      baseIri: 'https://validation.invalid/installation/',
+      baseIri: 'https://validation.invalid/installation',
       endpoint: 'http://127.0.0.1:4317/mcp',
       image: this.policy.localBuild,
       expected: {
         installationId: 'seedbed-policy-validation',
-        baseIri: 'https://validation.invalid/installation/',
+        baseIri: 'https://validation.invalid/installation',
         serverVersion: this.policy.packages.workshop.version,
         operationVersion: this.policy.migrations.workshop,
         catalogDigest: this.policy.migrations.expectedCatalogDigest,
@@ -197,7 +210,7 @@ export class SeedbedLocalControl implements SeedbedControl {
         authorizationReady: true,
         lexicalReady: true,
         blobReady: true,
-        producerStatus: 'absent',
+        producerStatus: 'ready',
         semanticState: 'absent',
         allowLexicalOnly: true,
       },
@@ -247,6 +260,8 @@ export class SeedbedLocalControl implements SeedbedControl {
         ports: createOperatorOwnerPorts(config, compose),
         compose,
       });
+      if (!(await compose.health(config)).healthy) await compose.up(config);
+      await verifyExpectedWorkshopReadiness(plan.request, receipt.protectedTokenFile);
       const result: SeedbedControlReceipt = {
         operationId: plan.id,
         state: 'ready',
@@ -263,6 +278,7 @@ export class SeedbedLocalControl implements SeedbedControl {
           sha256: receipt.credentialDigest,
         },
         environmentSelector: 'GNOLITH_BEARER_TOKEN',
+        ...(receipt.semantic === undefined ? {} : { semantic: receipt.semantic }),
       };
       await this.writeControlState(plan.request.installationId, 'ready');
       return result;
@@ -294,11 +310,30 @@ export class SeedbedLocalControl implements SeedbedControl {
       host: new DockerDiagnosticHost(),
       artifactRoot: this.policy.artifactRoot,
     });
-    const ready = report.compose.healthy && report.owners.every((owner) => owner.ready) && report.issues.length === 0;
+    const authenticatedReady = report.compose.healthy
+      ? await verifyExpectedWorkshopReadiness(record.plan.request, config.authentication.tokenFile).then(() => true).catch(() => false)
+      : false;
+    const ready = report.compose.healthy && authenticatedReady && report.owners.every((owner) => owner.ready) && report.issues.length === 0;
+    const repairable = !ready
+      && controlState !== 'applying'
+      && report.owners.every((owner) => owner.ready)
+      && report.artifacts.every((artifact) => artifact.digestMatches)
+      && report.credential.protected;
     return {
       installationId: selector.installationId,
-      classification: ready ? 'ready' : `local-installation-${controlState}`,
-      restartAllowed: controlState !== 'applying',
+      classification: ready
+        ? 'ready'
+        : !report.compose.healthy || !authenticatedReady
+          ? 'local-workshop-unavailable'
+          : `local-installation-${controlState}`,
+      restartAllowed: repairable,
+      ...(repairable ? {
+        repair: {
+          kind: 'seedbed-resume-operation-v1',
+          operationId: record.plan.id,
+          action: 'restart-recorded-compose',
+        },
+      } : {}),
     };
   }
 
@@ -337,6 +372,7 @@ export class SeedbedLocalControl implements SeedbedControl {
         tokenFile: join(root, 'secrets', 'bearer'),
       },
       endpoints: {},
+      ...(request.semantic === undefined ? {} : { semantic: request.semantic }),
       migrations: {
         ...this.policy.migrations,
       },
@@ -491,6 +527,87 @@ function assertRequest(request: DockerInstallationRequest, policy: SeedbedContro
   }
   const port = Number(endpoint.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('Seedbed local endpoint must include an explicit port');
+  if (request.expected.producerStatus !== 'ready') {
+    throw new TypeError('Local installation request must expect the bootstrapped Workshop producer registry');
+  }
+  if (request.semantic === undefined) {
+    if (request.expected.semanticState !== 'absent' || !request.expected.allowLexicalOnly) {
+      throw new TypeError('An installation without semantic configuration must explicitly expect lexical-only operation');
+    }
+  } else if (
+    request.expected.semanticState === 'absent'
+    || request.expected.allowLexicalOnly !== (request.expected.semanticState !== 'ready')
+  ) {
+    throw new TypeError('A digest-bound semantic installation must truthfully declare ready or degraded semantic operation');
+  }
+  for (const selector of request.semantic?.credentialSelectors ?? []) {
+    const requestedPath = normalize(resolve(selector.path));
+    let metadata;
+    let canonicalPath: string;
+    try {
+      metadata = lstatSync(requestedPath);
+      canonicalPath = normalize(realpathSync(requestedPath));
+    } catch {
+      throw new TypeError(`Protected semantic selector ${selector.id} must name an existing local file`);
+    }
+    const comparableRequested = process.platform === 'win32' ? requestedPath.toLowerCase() : requestedPath;
+    const comparableCanonical = process.platform === 'win32' ? canonicalPath.toLowerCase() : canonicalPath;
+    if (metadata.isSymbolicLink() || !metadata.isFile() || comparableRequested !== comparableCanonical) {
+      throw new TypeError(`Protected semantic selector ${selector.id} must be a direct regular file, not a symlink, junction, or alias`);
+    }
+    if (metadata.size < 1 || metadata.size > 1024 * 1024) {
+      throw new TypeError(`Protected semantic selector ${selector.id} must contain 1..1048576 bytes`);
+    }
+  }
+}
+
+async function verifyExpectedWorkshopReadiness(request: DockerInstallationRequest, tokenFile: string): Promise<void> {
+  const token = (await readFile(tokenFile, 'utf8')).trim();
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(token)) throw new TypeError('Protected local bearer selector is invalid');
+  const endpoint = new URL('/health/ready', request.endpoint);
+  const response = await fetch(endpoint, {
+    headers: { authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(10_000),
+  });
+  let value: unknown;
+  try {
+    value = await response.json();
+  } catch {
+    throw new TypeError('Workshop authenticated readiness returned invalid JSON');
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Workshop authenticated readiness is invalid');
+  const status = value as Record<string, unknown>;
+  const versions = status.versions as Record<string, unknown> | undefined;
+  const migrationReadiness = status.migrationReadiness as Record<string, unknown> | undefined;
+  const producers = status.producers as Record<string, unknown> | undefined;
+  const semanticState = status.semanticState as Record<string, unknown> | undefined;
+  const expectedSemanticFingerprint = request.semantic === undefined
+    ? null
+    : semanticConfigurationFingerprint(request.semantic.configuration);
+  const expectedSemanticRevision = request.semantic === undefined
+    ? null
+    : request.semantic.expectedRevision + 1;
+  if (
+    !response.ok
+    || status.installationId !== request.expected.installationId
+    || status.baseIri !== request.expected.baseIri
+    || versions?.server !== request.expected.serverVersion
+    || status.operationCatalogDigest !== request.expected.catalogDigest
+    || migrationReadiness?.ready !== request.expected.migrationReady
+    || status.canonicalReady !== request.expected.canonicalReady
+    || status.authorizationReady !== request.expected.authorizationReady
+    || status.lexicalReady !== request.expected.lexicalReady
+    || status.blobReady !== request.expected.blobReady
+    || producers?.ready !== true
+    || semanticState?.state !== (request.semantic === undefined ? 'unconfigured' : request.expected.semanticState)
+    || semanticState?.configured !== (request.semantic !== undefined)
+    || semanticState?.revision !== expectedSemanticRevision
+    || semanticState?.fingerprint !== expectedSemanticFingerprint
+    || semanticState?.ready !== (request.expected.semanticState === 'ready')
+  ) throw new TypeError(`Workshop authenticated readiness does not match the immutable installation request: ${JSON.stringify({
+    expected: request.expected,
+    actual: status,
+  })}`);
 }
 
 function canonicalClone<T>(value: T): T {

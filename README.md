@@ -79,9 +79,8 @@ The default graph is one locally built Workshop service, an internal Compose net
 one application-data volume, and one read-only protected bearer secret. Workshop
 binds `0.0.0.0:4317` inside its container; Compose publishes only
 `127.0.0.1:<configured-port>` by default. The explicit IPv6 override publishes
-`[::1]`. Optional `qdrant` and `ollama` profiles remain internal. The `waystone`
-profile mounts verified immutable browser assets into Workshop and starts no second
-service.
+`[::1]`. The optional `qdrant` profile remains internal. The `waystone` profile
+mounts verified immutable browser assets into Workshop and starts no second service.
 
 The build consumes exact tarball paths and lowercase SHA-256 values from the config.
 No Seedbed-owned application image is published.
@@ -99,6 +98,19 @@ Seedbed does not write Codex project configuration and reports `clientVerified:
 false`; Alembic performs the authenticated verification and selector-to-environment
 handoff.
 
+## Semantic configuration
+
+Seedbed binds a typed OpenAI-compatible provider and SQLite or Qdrant vector profile
+into the digest-bound installation plan. Credential values are read only from
+protected Compose secret files by the Workshop assembly adapter; receipts expose
+only the configuration fingerprint, revision, and state. Configuration completes
+after owner migrations and Workshop bootstrap but before the listener starts.
+
+The Ollama-compatible type is reserved, but local Ollama is deliberately unavailable
+in this candidate. Enabling it requires a separately supplied immutable model
+artifact selector and digest plus an offline verifier. Seedbed never performs a
+floating runtime model pull and does not report Ollama ready without that proof.
+
 ## Backup and adoption
 
 Owner backup sections and namespace-sliced Diamond ledger evidence are opaque to
@@ -114,6 +126,12 @@ Snapshot-v1 envelope verification belongs to Seedbed. Owner conversion belongs t
 the checksum-pinned public Diamond, Taproot, and Workshop adapters running against a
 read-only portable source capability; Seedbed never parses owner tables or fragment
 payloads.
+
+The package includes a frozen endpoint- and credential-free public legacy fixture
+under `fixtures/legacy-local-v1`. Its evidence records exact npm tarball integrity,
+intentional domain/revision/payload coverage, semantic configuration count zero,
+and onboarding count zero with the explicit
+`unavailable-in-public-legacy-api` disposition.
 
 See [architecture reset](docs/architecture-reset.md),
 [migration guide](docs/migrations.md), and the

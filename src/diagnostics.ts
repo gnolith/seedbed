@@ -52,6 +52,7 @@ export async function diagnoseInstallation(input: {
     compose: { available: false },
   }));
   const healthy = await input.compose.health(input.config).then((value) => value.healthy).catch(() => false);
+  if (!healthy) issues.push({ code: 'compose_unhealthy', phase: 'workshop', remediation: 'Resume the recorded Seedbed operation to restart the exact Compose project and revalidate authenticated readiness.' });
   const owners = [];
   for (const owner of OWNER_ORDER) {
     try {

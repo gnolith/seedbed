@@ -2,7 +2,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { canonicalJson } from './canonical.js';
+import { canonicalJson, redactFilesystemPaths } from './canonical.js';
 import { loadConfig } from './config.js';
 import { validateConfig } from './config.js';
 import { createOperatorOwnerPorts } from './owner-ports.js';
@@ -203,7 +203,7 @@ function required(options: Record<string, string>, key: string): string {
 
 function bounded(error: unknown): string {
   const message = error instanceof Error ? error.message : 'Operation failed';
-  return message.slice(0, 512).replaceAll(/(?:[A-Za-z]:)?[\\/][^\s"']+/gu, '[redacted-path]');
+  return redactFilesystemPaths(message.slice(0, 512));
 }
 
 if (process.argv[1] && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1])) {

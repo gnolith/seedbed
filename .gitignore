@@ -9,4 +9,7 @@ coverage/
 *.sqlite*
 candidate/
 artifacts/
+.legacy-packages/
+.legacy-runtime/
+.lockgen-temp-*/
 
