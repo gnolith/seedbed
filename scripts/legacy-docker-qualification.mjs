@@ -84,6 +84,16 @@ try {
     'build', '--no-cache', 'workshop',
   ], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
   const decoder = new OperatorLegacyDecoder(config, driver);
+  const inspectStarted = Date.now();
+  await decoder.inspect(manifest);
+  const inspectElapsedMs = Date.now() - inspectStarted;
+  if (inspectElapsedMs > 10_000) throw new Error(`legacy owner inspect exceeded 10 seconds (${inspectElapsedMs}ms)`);
+  const operatorChildren = await exec('docker', [
+    'ps', '--all', '--quiet',
+    '--filter', 'name=gnolith-seedbed-op-',
+    '--filter', `label=com.docker.compose.project=${projectName}`,
+  ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  if (operatorChildren.stdout.trim()) throw new Error('legacy owner inspect left a Seedbed operator child container');
   const plan = await planLegacyAdoption({ manifest, config, decoder });
   if (
     canonicalJson(plan.counts) !== canonicalJson(evidence.expectedOwnerCounts)

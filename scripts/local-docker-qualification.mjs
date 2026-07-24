@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { createServer } from 'node:net';
 import {
+  decodeCanonicalTextSecret,
   digestObject,
   restoreInstallationBackup,
   semanticConfigurationFingerprint,
@@ -43,10 +44,7 @@ try {
     stateRoot,
     artifactRoot: packed.root,
   });
-  const control = packedControl.createSeedbedControl({
-    ...basePolicy,
-    compose: { ...basePolicy.compose, profiles: ['waystone'] },
-  });
+  const control = packedControl.createSeedbedControl(basePolicy);
   const request = {
     installationId,
     baseIri: `https://local.gnolith.invalid/${installationId}`,
@@ -69,7 +67,7 @@ try {
     },
   };
   const receipt = await control.apply(await control.plan(request));
-  const token = (await readFile(receipt.protectedTokenFile.canonicalPath, 'utf8')).trim();
+  const token = decodeCanonicalTextSecret(await readFile(receipt.protectedTokenFile.canonicalPath), 45);
   const response = await fetch(`http://127.0.0.1:${port}/health/ready`, {
     headers: { authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(10_000),
@@ -97,6 +95,32 @@ try {
       labels: { en: { language: 'en', value: 'Seedbed populated fixture' } },
     },
   });
+  const taskIdempotencyKey = `seedbed-task-create-${key}`;
+  const completionIdempotencyKey = `seedbed-task-complete-${key}`;
+  const createdTask = (await callMcp(port, token, 'create_task', {
+    idempotencyKey: taskIdempotencyKey,
+    description: 'Seedbed exact restore task',
+    prompt: 'Prove claimed, completed, and idempotently replayed task restore.',
+  })).structuredContent;
+  const claimedTask = (await callMcp(port, token, 'claim_task', {
+    taskId: createdTask.id,
+  })).structuredContent;
+  const completionInput = {
+    taskId: createdTask.id,
+    leaseToken: claimedTask.leaseToken,
+    expectedRevision: claimedTask.task.revision,
+    idempotencyKey: completionIdempotencyKey,
+    result: 'Seedbed restore qualification completed',
+    outcomeKind: 'success',
+  };
+  const completedTask = (await callMcp(port, token, 'complete_task', completionInput)).structuredContent;
+  const replayedCompletion = (await callMcp(port, token, 'complete_task', completionInput)).structuredContent;
+  if (digestObject(completedTask) !== digestObject(replayedCompletion)) {
+    throw new Error(`task completion did not replay idempotently before backup: ${JSON.stringify({
+      completedTask,
+      replayedCompletion,
+    }).slice(0, 2048)}`);
+  }
   const beforeRestartResponse = await fetch(`http://127.0.0.1:${port}/health/ready`, {
     headers: { authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(10_000),
@@ -117,21 +141,21 @@ try {
 
   const selector = { installationId, projectRoot: packed.project };
   await composeCommand(projectName, composeDirectory, ['stop', 'workshop']);
-  await assertRepairDiagnosis(control, selector, receipt.operationId, token);
-  await control.resume(receipt.operationId);
+  await assertRepairDiagnosis(control, selector, receipt.operationId, token, projectName);
+  await boundedResume(control, receipt.operationId);
   await assertAuthenticatedReady(port, token);
-  await control.resume(receipt.operationId);
+  await boundedResume(control, receipt.operationId);
   await assertSingleWorkshopContainer(projectName, composeDirectory);
 
   const workshopContainer = `${projectName}-workshop-1`;
   await exec('docker', ['kill', workshopContainer], { windowsHide: true, maxBuffer: 1024 * 1024 });
-  await assertRepairDiagnosis(control, selector, receipt.operationId, token);
-  await control.resume(receipt.operationId);
+  await assertRepairDiagnosis(control, selector, receipt.operationId, token, projectName);
+  await boundedResume(control, receipt.operationId);
   await assertAuthenticatedReady(port, token);
 
   await composeCommand(projectName, composeDirectory, ['down', '--remove-orphans']);
-  await assertRepairDiagnosis(control, selector, receipt.operationId, token);
-  await control.resume(receipt.operationId);
+  await assertRepairDiagnosis(control, selector, receipt.operationId, token, projectName);
+  await boundedResume(control, receipt.operationId);
   await assertAuthenticatedReady(port, token);
   await assertSingleWorkshopContainer(projectName, composeDirectory);
 
@@ -143,7 +167,6 @@ try {
     stateDirectory: join(stateRoot, 'installations', key),
     tokenFile: receipt.protectedTokenFile.canonicalPath,
     port,
-    profiles: ['waystone'],
   });
   await composeCommand(projectName, composeDirectory, ['stop', 'workshop']);
   const beforeVerify = await snapshotVolume(`${projectName}-data`);
@@ -179,7 +202,6 @@ try {
     stateDirectory: compatibilityState,
     tokenFile: join(compatibilityState, 'secrets', 'bearer'),
     port: await availablePort(),
-    profiles: ['waystone'],
   });
   const compatibilityConfigPath = join(packed.project, 'compatibility-config.json');
   const compatibilityPlanPath = join(packed.project, 'compatibility-plan.json');
@@ -190,7 +212,7 @@ try {
 
   const restoreTokenFile = join(restoreState, 'secrets', 'bearer');
   await mkdir(join(restoreState, 'secrets'), { recursive: true });
-  await writeFile(restoreTokenFile, `${token}\n`, { encoding: 'utf8', mode: 0o600 });
+  await writeFile(restoreTokenFile, token, { encoding: 'utf8', mode: 0o600 });
   await chmod(restoreTokenFile, 0o600);
   const restoreConfig = installationConfig({
     installationId,
@@ -200,7 +222,6 @@ try {
     stateDirectory: restoreState,
     tokenFile: restoreTokenFile,
     port: await availablePort(),
-    profiles: ['waystone'],
   });
   const restoreDriver = new DockerComposeDriver(root);
   await restoreDriver.prepare(restoreConfig);
@@ -223,11 +244,35 @@ try {
       throw new Error(`${owner} restore diagnostics did not match the exact component lock: ${JSON.stringify(diagnostic)}`);
     }
   }
+  await restoreDriver.up(restoreConfig);
+  const restoredTask = (await callMcp(restoreConfig.compose.workshopPort, token, 'get_task', {
+    taskId: createdTask.id,
+  })).structuredContent;
+  if (
+    restoredTask.id !== completedTask.id
+    || restoredTask.result !== completedTask.result
+    || restoredTask.claimed !== false
+  ) throw new Error('restored claimed/completed task did not match the exact pre-backup state');
+  const restoredReplay = (await callMcp(
+    restoreConfig.compose.workshopPort,
+    token,
+    'complete_task',
+    completionInput,
+  )).structuredContent;
+  if (digestObject(restoredReplay) !== digestObject(completedTask)) {
+    throw new Error('restored task completion idempotency replay did not match the original result');
+  }
   await verifySemanticProfile(packed, 'sqlite');
   await verifySemanticProfile(packed, 'qdrant');
   console.log('verified exact pinned local Docker graph, repair, backup/restore, protected OpenAI semantic configuration, SQLite, and Qdrant');
 } finally {
   for (const cleanup of semanticCleanups) {
+    if (cleanup.mockContainer) {
+      await exec('docker', ['rm', '--force', cleanup.mockContainer], {
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+      }).catch(() => undefined);
+    }
     await cleanupCompose(cleanup.projectName, cleanup.composeDirectory, cleanup.dataVolume);
     if (cleanup.qdrantVolume) {
       await exec('docker', ['volume', 'rm', cleanup.qdrantVolume], {
@@ -260,29 +305,32 @@ async function verifySemanticProfile(packed, vectorKind) {
     artifactRoot: packed.root,
   });
   const qdrant = vectorKind === 'qdrant';
+  const mockContainer = `${semanticProjectName}-mock-provider`;
   semanticCleanups.push({
     projectName: semanticProjectName,
     composeDirectory: semanticComposeDirectory,
     dataVolume: `${semanticProjectName}-data`,
+    mockContainer,
     ...(qdrant ? { qdrantVolume: `${semanticProjectName}-qdrant` } : {}),
   });
   const control = packedControl.createSeedbedControl({
     ...policy,
     compose: {
       ...policy.compose,
-      profiles: qdrant ? ['qdrant'] : [],
+      profiles: qdrant ? ['waystone', 'qdrant'] : ['waystone'],
     },
   });
+  await startSemanticMock(policy.compose.nodeImage, semanticProjectName, mockContainer);
   const configuration = {
     version: 1,
     id: `qualification-${vectorKind}`,
     name: `Qualification ${vectorKind}`,
     provider: {
       kind: 'openai-compatible',
-      endpoint: 'http://127.0.0.1:9',
+      endpoint: 'http://mock-provider:8787/v1',
       allowPrivateEndpoint: true,
       model: 'text-embedding-3-small',
-      dimensions: 1536,
+      dimensions: 8,
       metric: 'cosine',
       credentialSelector: 'openai-profile',
       redirectPolicy: 'error',
@@ -334,10 +382,10 @@ async function verifySemanticProfile(packed, vectorKind) {
     receipt.semantic?.fingerprint !== expectedFingerprint
     || receipt.semantic.revision !== 1
     || JSON.stringify(receipt).includes('qualification-profile-not-a-usable-api-key')
-    || JSON.stringify(receipt).includes('127.0.0.1:9')
+    || JSON.stringify(receipt).includes('mock-provider')
     || JSON.stringify(receipt).includes('text-embedding-3-small')
   ) throw new Error(`${vectorKind} semantic receipt leaked configuration or did not match its fingerprint`);
-  const token = (await readFile(receipt.protectedTokenFile.canonicalPath, 'utf8')).trim();
+  const token = decodeCanonicalTextSecret(await readFile(receipt.protectedTokenFile.canonicalPath), 45);
   const response = await fetch(`http://127.0.0.1:${semanticPort}/health/ready`, {
     headers: { authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(10_000),
@@ -356,6 +404,73 @@ async function verifySemanticProfile(packed, vectorKind) {
   if (services.includes('ollama') || (qdrant && !services.includes('qdrant'))) {
     throw new Error(`${vectorKind} semantic Compose capability reporting is invalid`);
   }
+  const semanticEntityId = vectorKind === 'qdrant' ? 'Q900011' : 'Q900010';
+  await callMcp(semanticPort, token, 'create_item', {
+    idempotencyKey: `semantic-${vectorKind}-${key}`,
+    authoredText: `Semantic ${vectorKind} qualification`,
+    data: {
+      id: semanticEntityId,
+      labels: { en: { language: 'en', value: `Semantic ${vectorKind} lighthouse` } },
+    },
+  });
+  await waitForSemanticSearch(semanticPort, token, semanticEntityId, vectorKind);
+  await composeCommand(semanticProjectName, semanticComposeDirectory, ['restart', 'workshop']);
+  await assertAuthenticatedReady(semanticPort, token);
+  await waitForSemanticSearch(semanticPort, token, semanticEntityId, vectorKind);
+}
+
+async function startSemanticMock(nodeImage, networkName, containerName) {
+  await exec('docker', [
+    'network', 'create',
+    '--label', `com.docker.compose.project=${networkName}`,
+    '--label', 'com.docker.compose.network=gnolith',
+    networkName,
+  ], { windowsHide: true, maxBuffer: 1024 * 1024 }).catch(async () => {
+    const existing = await exec('docker', ['network', 'inspect', networkName], {
+      windowsHide: true,
+      maxBuffer: 1024 * 1024,
+    });
+    if (!existing.stdout.includes(networkName)) throw new Error('semantic mock network could not be established');
+  });
+  const server = [
+    "const http=require('node:http')",
+    "http.createServer((req,res)=>{",
+    "if(req.method!=='POST'||req.url!=='/v1/embeddings'||req.headers.authorization!=='Bearer qualification-profile-not-a-usable-api-key'){res.writeHead(403);return res.end()}",
+    "let body='';req.on('data',c=>body+=c);req.on('end',()=>{",
+    "const value=JSON.parse(body);const input=Array.isArray(value.input)?value.input:[];const dimensions=value.dimensions;",
+    "if(!Number.isInteger(dimensions)||dimensions<1||input.length<1){res.writeHead(400);return res.end()}",
+    "const data=input.map((_,index)=>({index,embedding:Array.from({length:dimensions},(__,dimension)=>dimension===index%dimensions?1:0)}));",
+    "const encoded=JSON.stringify({object:'list',data,model:value.model,usage:{prompt_tokens:input.length,total_tokens:input.length}});",
+    "res.writeHead(200,{'content-type':'application/json','content-length':Buffer.byteLength(encoded)});res.end(encoded)",
+    "})}).listen(8787,'0.0.0.0')",
+  ].join(';');
+  await exec('docker', [
+    'run', '--detach', '--rm',
+    '--name', containerName,
+    '--network', networkName,
+    '--network-alias', 'mock-provider',
+    '--read-only',
+    '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges:true',
+    nodeImage,
+    'node', '-e', server,
+  ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+}
+
+async function waitForSemanticSearch(workshopPort, token, entityId, vectorKind) {
+  const deadline = Date.now() + 90_000;
+  let last;
+  while (Date.now() < deadline) {
+    await callMcp(workshopPort, token, 'search_admin', { action: 'materialize', limit: 100 }).catch(() => undefined);
+    last = await callMcp(workshopPort, token, 'search', {
+      text: `Semantic ${vectorKind} lighthouse`,
+      kinds: ['item'],
+      limit: 10,
+    }).catch(() => undefined);
+    if (last?.structuredContent?.items?.some((result) => result.id === entityId || result.sourceId === entityId)) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
+  }
+  throw new Error(`${vectorKind} semantic search did not return the isolated mock-provider fixture: ${JSON.stringify(last).slice(0, 1024)}`);
 }
 
 function installationConfig(input) {
@@ -406,7 +521,7 @@ async function verifyWaystoneAssets(workshopPort, token) {
   const manifest = JSON.parse(await readFile(join(root, 'components', 'waystone', 'waystone-assets.json'), 'utf8'));
   const expected = manifest.files.find((file) => file.path === manifest.entrypoint);
   if (!expected) throw new Error('Waystone entrypoint is absent from the exact manifest');
-  for (const pathname of ['/app', `/app/${manifest.entrypoint}`]) {
+  for (const pathname of ['/app', '/app/', `/app/${manifest.entrypoint}`]) {
     const response = await fetch(`http://127.0.0.1:${workshopPort}${pathname}`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(10_000),
@@ -432,8 +547,11 @@ async function verifyWaystoneAssets(workshopPort, token) {
   await callMcp(workshopPort, token, 'gnolith_status', {});
 }
 
-async function assertRepairDiagnosis(control, selector, operationId, token) {
+async function assertRepairDiagnosis(control, selector, operationId, token, composeProject) {
+  const started = Date.now();
   const diagnosis = await control.diagnose(selector);
+  const elapsedMs = Date.now() - started;
+  if (elapsedMs > 10_000) throw new Error(`stopped Workshop diagnosis exceeded 10 seconds (${elapsedMs}ms)`);
   if (
     diagnosis.classification !== 'local-workshop-unavailable'
     || diagnosis.restartAllowed !== true
@@ -442,18 +560,45 @@ async function assertRepairDiagnosis(control, selector, operationId, token) {
     || diagnosis.repair.action !== 'restart-recorded-compose'
   ) throw new Error(`stopped Workshop did not produce the exact bounded repair: ${JSON.stringify(diagnosis)}`);
   if (JSON.stringify(diagnosis).includes(token)) throw new Error('diagnosis exposed the protected bearer value');
+  const operators = await exec('docker', [
+    'ps', '--all', '--quiet',
+    '--filter', 'name=gnolith-seedbed-op-',
+    '--filter', `label=com.docker.compose.project=${composeProject}`,
+  ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  if (operators.stdout.trim()) throw new Error('bounded diagnosis left a Seedbed operator child container');
+}
+
+async function boundedResume(control, operationId) {
+  const started = Date.now();
+  const receipt = await control.resume(operationId);
+  const elapsedMs = Date.now() - started;
+  if (elapsedMs > 30_000) throw new Error(`Seedbed resume exceeded 30 seconds (${elapsedMs}ms)`);
+  return receipt;
 }
 
 async function assertAuthenticatedReady(workshopPort, token) {
-  const response = await fetch(`http://127.0.0.1:${workshopPort}/health/ready`, {
-    headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok) throw new Error('resumed Workshop did not regain authenticated readiness');
-  const status = await response.json();
-  if (status.operationCatalogDigest !== lock.migrations.expectedCatalogDigest) {
-    throw new Error('resumed Workshop catalog differs from the exact component lock');
+  const deadline = Date.now() + 30_000;
+  let lastStatus;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${workshopPort}/health/ready`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5_000),
+      });
+      lastStatus = response.status;
+      if (response.ok) {
+        const status = await response.json();
+        if (status.operationCatalogDigest !== lock.migrations.expectedCatalogDigest) {
+          throw new Error('resumed Workshop catalog differs from the exact component lock');
+        }
+        return;
+      }
+    } catch {
+      lastStatus = 'connection-unavailable';
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
   }
+  throw new Error(`resumed Workshop did not regain authenticated readiness: ${String(lastStatus)}`);
 }
 
 async function assertSingleWorkshopContainer(name, directory) {

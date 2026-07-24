@@ -579,15 +579,7 @@ async function version(args: string[]): Promise<{ available: boolean; version?: 
 
 function operatorCompletion(process: OperatorProcess, label: string): Promise<void> {
   const { child } = process;
-  const errors: Buffer[] = [];
-  let bytes = 0;
-  child.stderr?.on('data', (chunk: Buffer) => {
-    if (bytes < 8192) {
-      const bounded = chunk.subarray(0, 8192 - bytes);
-      errors.push(bounded);
-      bytes += bounded.byteLength;
-    }
-  });
+  child.stderr?.resume();
   return new Promise<void>((resolveCompletion, rejectCompletion) => {
     let termination: 'timeout' | 'aborted' | undefined;
     let settled = false;
@@ -619,8 +611,7 @@ function operatorCompletion(process: OperatorProcess, label: string): Promise<vo
       else if (termination === 'aborted') finish(new SeedbedOperationAbortedError(process.operation));
       else if (code === 0) finish();
       else {
-        const stderr = redactFilesystemPaths(Buffer.concat(errors).toString('utf8')).slice(0, 8192);
-        finish(new Error(`${label} exited ${String(code)}${stderr ? `: ${stderr}` : ''}`));
+        finish(new Error(`${label} exited ${String(code)}; operator stderr was withheld from the public error boundary`));
       }
     });
   });

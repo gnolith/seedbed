@@ -79,8 +79,9 @@ The default graph is one locally built Workshop service, an internal Compose net
 one application-data volume, and one read-only protected bearer secret. Workshop
 binds `0.0.0.0:4317` inside its container; Compose publishes only
 `127.0.0.1:<configured-port>` by default. The explicit IPv6 override publishes
-`[::1]`. The optional `qdrant` profile remains internal. The `waystone` profile
-mounts verified immutable browser assets into Workshop and starts no second service.
+`[::1]`. The optional `qdrant` profile remains internal. The default `waystone`
+profile mounts verified immutable browser assets at `/app` inside Workshop and
+starts no second service. `/`, `/mcp`, and health routes remain Workshop-owned.
 
 The build consumes exact tarball paths and lowercase SHA-256 values from the config.
 No Seedbed-owned application image is published.
@@ -89,8 +90,11 @@ No Seedbed-owned application image is published.
 
 For `local-bearer-v1`, apply creates a new protected user-state file outside the
 project using exactly 32 OS-CSPRNG bytes encoded as canonical base64url without
-padding plus LF. The file is exclusively created and owner-protected. Seedbed passes
-only its selector to `gnolith-workshop bootstrap-v1`.
+padding and without a terminator. Readers accept the canonical text unchanged or
+with exactly one trailing LF or CRLF for compatibility; empty values, additional
+surrounding whitespace, and control bytes are rejected. The file is exclusively
+created and owner-protected. Seedbed passes only its selector to
+`gnolith-workshop bootstrap-v1`.
 
 Receipts contain credential ID, a non-secret digest, the protected selector, and the
 required environment selector `GNOLITH_BEARER_TOKEN`. They never contain the token.
@@ -105,6 +109,10 @@ into the digest-bound installation plan. Credential values are read only from
 protected Compose secret files by the Workshop assembly adapter; receipts expose
 only the configuration fingerprint, revision, and state. Configuration completes
 after owner migrations and Workshop bootstrap but before the listener starts.
+External provider endpoints are denied by default. A loopback or single-label
+Compose-private HTTP endpoint additionally requires explicit private-endpoint
+approval and a protected credential selector; unsafe nonlocal/private targets,
+redirects, and rebinding are rejected.
 
 The Ollama-compatible type is reserved, but local Ollama is deliberately unavailable
 in this candidate. Enabling it requires a separately supplied immutable model

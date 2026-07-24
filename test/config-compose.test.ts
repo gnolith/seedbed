@@ -72,12 +72,12 @@ describe('strict installation config and Compose rendering', () => {
           name: 'Local embeddings',
           provider: {
             kind: 'openai-compatible' as const,
-            endpoint: 'https://api.openai.com/v1',
+            endpoint: 'http://mock-provider:8787',
             model: 'text-embedding-3-small',
             dimensions: 1536,
             metric: 'cosine' as const,
             credentialSelector: 'openai-profile',
-            allowPrivateEndpoint: false,
+            allowPrivateEndpoint: true,
             redirectPolicy: 'error' as const,
           },
           vector: { kind: 'sqlite' as const },
@@ -172,8 +172,22 @@ describe('strict installation config and Compose rendering', () => {
             },
           },
         },
-      }, { projectDirectory: process.cwd() })).toThrow(/approved loopback|Compose-private|safe HTTPS/u);
+      }, { projectDirectory: process.cwd() })).toThrow(/approved loopback|Compose-private/u);
     }
+    expect(() => validateConfig({
+      ...input,
+      semantic: {
+        ...input.semantic,
+        configuration: {
+          ...input.semantic.configuration,
+          provider: {
+            ...input.semantic.configuration.provider,
+            endpoint: 'https://api.openai.com/v1',
+            allowPrivateEndpoint: false,
+          },
+        },
+      },
+    }, { projectDirectory: process.cwd() })).toThrow(/approved loopback|Compose-private/u);
     expect(() => validateConfig({
       ...input,
       compose: {

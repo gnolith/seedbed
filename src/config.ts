@@ -250,18 +250,12 @@ function requirePrivateApproval(endpointValue: string, approved: boolean, label:
     || (isIpv4 && ipv4[0] === 127);
   const composePrivate = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(hostname)
     && !loopback;
-  const unsafePrivate = (isIpv4 && !loopback)
-    || hostname.includes(':')
-    || hostname.endsWith('.local')
-    || hostname.endsWith('.internal');
   if (loopback || composePrivate) {
     if (!approved) fail(`${label} private endpoint requires explicit approval`);
     if (url.protocol !== 'http:') fail(`${label} approved local endpoint must use HTTP`);
     return;
   }
-  if (unsafePrivate || approved || url.protocol !== 'https:') {
-    fail(`${label} is not an approved loopback, Compose-private, or safe HTTPS endpoint`);
-  }
+  fail(`${label} is not an explicitly approved loopback or Compose-private endpoint`);
 }
 
 function nullableIdentifier(value: unknown, label: string): string | null {

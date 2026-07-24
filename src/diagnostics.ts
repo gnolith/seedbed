@@ -46,12 +46,14 @@ export async function diagnoseInstallation(input: {
   artifactRoot?: string;
 }): Promise<DoctorReport> {
   const issues: { code: string; phase: string; remediation: string }[] = [];
-  const host = await input.host.inspect().catch(() => ({
-    dockerCli: { available: false },
-    dockerEngine: { available: false },
-    compose: { available: false },
-  }));
-  const healthy = await input.compose.health(input.config).then((value) => value.healthy).catch(() => false);
+  const [host, healthy] = await Promise.all([
+    input.host.inspect().catch(() => ({
+      dockerCli: { available: false },
+      dockerEngine: { available: false },
+      compose: { available: false },
+    })),
+    input.compose.health(input.config).then((value) => value.healthy).catch(() => false),
+  ]);
   if (!healthy) issues.push({ code: 'compose_unhealthy', phase: 'workshop', remediation: 'Resume the recorded Seedbed operation to restart the exact Compose project and revalidate authenticated readiness.' });
   const owners = await Promise.all(OWNER_ORDER.map(async (owner) => {
     try {

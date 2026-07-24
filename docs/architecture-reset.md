@@ -15,8 +15,8 @@ Docker-local doctor output, offline backup envelopes, and legacy-local adoption.
 - Workshop owns its migration/backup section, `bootstrap-v1`, sole HTTP service,
   installation diagnostics, catalog digest, readiness, and exact 0.4.2 legacy-owner
   adapter.
-- Waystone is optional immutable static/browser content mounted into Workshop and
-  has no service or migration authority. Seedbed byte-verifies its immutable JSON
+- Waystone is default immutable static/browser content mounted at `/app` in
+  Workshop and has no service or migration authority. Seedbed byte-verifies its immutable JSON
   asset manifest, stages it outside the worktree, and mounts that manifest beside
   the read-only `waystone-assets` volume.
 - Alembic owns remote Workshop setup, protected selector verification, Codex

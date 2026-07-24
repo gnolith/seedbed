@@ -699,10 +699,7 @@ async function verifyExpectedWorkshopReadiness(request: DockerInstallationReques
     || semanticState?.revision !== expectedSemanticRevision
     || semanticState?.fingerprint !== expectedSemanticFingerprint
     || semanticState?.ready !== (request.expected.semanticState === 'ready')
-  ) throw new TypeError(`Workshop authenticated readiness does not match the immutable installation request: ${JSON.stringify({
-    expected: request.expected,
-    actual: status,
-  })}`);
+  ) throw new TypeError('Workshop authenticated readiness does not match the immutable installation request');
 }
 
 async function verifyExpectedWaystone(
@@ -724,7 +721,13 @@ async function verifyExpectedWaystone(
       || response.headers.get('content-type') !== expectation.entrypoint.mediaType
       || bytes.byteLength !== expectation.entrypoint.bytes
       || sha256(bytes) !== expectation.entrypoint.sha256
-    ) throw new TypeError('Waystone default asset verification failed');
+    ) throw new TypeError(`Waystone default asset verification failed: ${JSON.stringify({
+      pathname,
+      status: response.status,
+      mediaType: response.headers.get('content-type'),
+      bytes: bytes.byteLength,
+      sha256: sha256(bytes),
+    })}`);
   }
   for (const pathname of expectation.reservedPaths) {
     const response = await fetch(new URL(pathname, origin), {
