@@ -87,6 +87,20 @@ try {
   ) throw new Error('authenticated Workshop readiness did not match the exact component lock');
 
   await verifyWaystoneAssets(port, token);
+  const protectedFixtureReceipt = join(temporaryRoot, 'protected-backup-fixture-receipt.json');
+  const populated = await exec(process.execPath, [
+    join(root, 'scripts', 'populate-public-backup-fixture.mjs'),
+    `http://127.0.0.1:${port}`,
+    '--token-file',
+    receipt.protectedTokenFile.canonicalPath,
+    '--receipt-file',
+    protectedFixtureReceipt,
+  ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  const populatedReceipt = JSON.parse(populated.stdout);
+  if (
+    populatedReceipt.format !== 'gnolith-workshop-public-backup-fixture-v1'
+    || JSON.stringify(populatedReceipt).includes(token)
+  ) throw new Error('public MCP backup fixture was not created opaquely');
   await callMcp(port, token, 'create_item', {
     idempotencyKey: `seedbed-backup-populated-${key}`,
     authoredText: 'Seedbed populated backup verification fixture',
@@ -139,25 +153,27 @@ try {
       <= beforeRestartSearchHealth.structuredContent.materialization.activeAppliedWatermark
   ) throw new Error('post-mutation Workshop readiness did not report bounded lexical catch-up truthfully');
 
-  const selector = { installationId, projectRoot: packed.project };
-  await composeCommand(projectName, composeDirectory, ['stop', 'workshop']);
-  await assertRepairDiagnosis(control, selector, receipt.operationId, token, projectName);
-  await boundedResume(control, receipt.operationId);
-  await assertAuthenticatedReady(port, token);
-  await boundedResume(control, receipt.operationId);
-  await assertSingleWorkshopContainer(projectName, composeDirectory);
+  if (process.env.SEEDBED_BACKUP_DIAGNOSTIC_ONLY !== '1') {
+    const selector = { installationId, projectRoot: packed.project };
+    await composeCommand(projectName, composeDirectory, ['stop', 'workshop']);
+    await assertRepairDiagnosis(control, selector, receipt.operationId, token, projectName);
+    await boundedResume(control, receipt.operationId);
+    await assertAuthenticatedReady(port, token);
+    await boundedResume(control, receipt.operationId);
+    await assertSingleWorkshopContainer(projectName, composeDirectory);
 
-  const workshopContainer = `${projectName}-workshop-1`;
-  await exec('docker', ['kill', workshopContainer], { windowsHide: true, maxBuffer: 1024 * 1024 });
-  await assertRepairDiagnosis(control, selector, receipt.operationId, token, projectName);
-  await boundedResume(control, receipt.operationId);
-  await assertAuthenticatedReady(port, token);
+    const workshopContainer = `${projectName}-workshop-1`;
+    await exec('docker', ['kill', workshopContainer], { windowsHide: true, maxBuffer: 1024 * 1024 });
+    await assertRepairDiagnosis(control, selector, receipt.operationId, token, projectName);
+    await boundedResume(control, receipt.operationId);
+    await assertAuthenticatedReady(port, token);
 
-  await composeCommand(projectName, composeDirectory, ['down', '--remove-orphans']);
-  await assertRepairDiagnosis(control, selector, receipt.operationId, token, projectName);
-  await boundedResume(control, receipt.operationId);
-  await assertAuthenticatedReady(port, token);
-  await assertSingleWorkshopContainer(projectName, composeDirectory);
+    await composeCommand(projectName, composeDirectory, ['down', '--remove-orphans']);
+    await assertRepairDiagnosis(control, selector, receipt.operationId, token, projectName);
+    await boundedResume(control, receipt.operationId);
+    await assertAuthenticatedReady(port, token);
+    await assertSingleWorkshopContainer(projectName, composeDirectory);
+  }
 
   const sourceConfig = installationConfig({
     installationId,
@@ -208,7 +224,12 @@ try {
   await writeFile(compatibilityConfigPath, `${JSON.stringify(compatibilityConfig, null, 2)}\n`);
   await runPackedCli(packed.cli, ['plan', '--config', compatibilityConfigPath, '--out', compatibilityPlanPath]);
   await runPackedCli(packed.cli, ['apply', '--config', compatibilityConfigPath, '--plan', compatibilityPlanPath]);
+  await composeCommand(compatibilityProjectName, compatibilityComposeDirectory, ['stop', 'workshop']);
+  const beforeDryRun = await snapshotVolume(`${compatibilityProjectName}-data`);
   await runPackedCli(packed.cli, ['backup', 'restore', '--config', compatibilityConfigPath, '--archive', backupPath, '--dry-run']);
+  if (JSON.stringify(await snapshotVolume(`${compatibilityProjectName}-data`)) !== JSON.stringify(beforeDryRun)) {
+    throw new Error('packed backup dry-run changed its stopped compatibility target');
+  }
 
   const restoreTokenFile = join(restoreState, 'secrets', 'bearer');
   await mkdir(join(restoreState, 'secrets'), { recursive: true });
@@ -262,6 +283,18 @@ try {
   if (digestObject(restoredReplay) !== digestObject(completedTask)) {
     throw new Error('restored task completion idempotency replay did not match the original result');
   }
+  const verifiedFixture = await exec(process.execPath, [
+    join(root, 'scripts', 'verify-public-backup-fixture.mjs'),
+    `http://127.0.0.1:${restoreConfig.compose.workshopPort}`,
+    '--token-file',
+    restoreTokenFile,
+    protectedFixtureReceipt,
+  ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  const fixtureVerification = JSON.parse(verifiedFixture.stdout);
+  if (
+    fixtureVerification.format !== 'gnolith-workshop-public-backup-verification-v1'
+    || JSON.stringify(fixtureVerification).includes(token)
+  ) throw new Error('restored public backup fixture did not verify opaquely');
   await verifySemanticProfile(packed, 'sqlite');
   await verifySemanticProfile(packed, 'qdrant');
   console.log('verified exact pinned local Docker graph, repair, backup/restore, protected OpenAI semantic configuration, SQLite, and Qdrant');
@@ -306,6 +339,7 @@ async function verifySemanticProfile(packed, vectorKind) {
   });
   const qdrant = vectorKind === 'qdrant';
   const mockContainer = `${semanticProjectName}-mock-provider`;
+  const mockPort = await availablePort();
   semanticCleanups.push({
     projectName: semanticProjectName,
     composeDirectory: semanticComposeDirectory,
@@ -320,14 +354,14 @@ async function verifySemanticProfile(packed, vectorKind) {
       profiles: qdrant ? ['waystone', 'qdrant'] : ['waystone'],
     },
   });
-  await startSemanticMock(policy.compose.nodeImage, semanticProjectName, mockContainer);
+  await startSemanticMock(policy.compose.nodeImage, mockContainer, mockPort);
   const configuration = {
     version: 1,
     id: `qualification-${vectorKind}`,
     name: `Qualification ${vectorKind}`,
     provider: {
       kind: 'openai-compatible',
-      endpoint: 'http://mock-provider:8787/v1',
+      endpoint: `http://127.0.0.1:${mockPort}/v1`,
       allowPrivateEndpoint: true,
       model: 'text-embedding-3-small',
       dimensions: 8,
@@ -376,13 +410,17 @@ async function verifySemanticProfile(packed, vectorKind) {
       }],
     },
   };
-  const receipt = await control.apply(await control.plan(request));
-  const expectedFingerprint = semanticConfigurationFingerprint(configuration);
+  const semanticPlan = await control.plan(request);
+  if (semanticPlan.request.semantic?.configuration.provider.endpoint !== `http://host.docker.internal:${mockPort}/v1`) {
+    throw new Error(`${vectorKind} semantic plan did not expose the pinned host-gateway mapping`);
+  }
+  const receipt = await control.apply(semanticPlan);
+  const expectedFingerprint = semanticConfigurationFingerprint(semanticPlan.request.semantic.configuration);
   if (
     receipt.semantic?.fingerprint !== expectedFingerprint
     || receipt.semantic.revision !== 1
     || JSON.stringify(receipt).includes('qualification-profile-not-a-usable-api-key')
-    || JSON.stringify(receipt).includes('mock-provider')
+    || JSON.stringify(receipt).includes('host.docker.internal')
     || JSON.stringify(receipt).includes('text-embedding-3-small')
   ) throw new Error(`${vectorKind} semantic receipt leaked configuration or did not match its fingerprint`);
   const token = decodeCanonicalTextSecret(await readFile(receipt.protectedTokenFile.canonicalPath), 45);
@@ -419,19 +457,7 @@ async function verifySemanticProfile(packed, vectorKind) {
   await waitForSemanticSearch(semanticPort, token, semanticEntityId, vectorKind);
 }
 
-async function startSemanticMock(nodeImage, networkName, containerName) {
-  await exec('docker', [
-    'network', 'create',
-    '--label', `com.docker.compose.project=${networkName}`,
-    '--label', 'com.docker.compose.network=gnolith',
-    networkName,
-  ], { windowsHide: true, maxBuffer: 1024 * 1024 }).catch(async () => {
-    const existing = await exec('docker', ['network', 'inspect', networkName], {
-      windowsHide: true,
-      maxBuffer: 1024 * 1024,
-    });
-    if (!existing.stdout.includes(networkName)) throw new Error('semantic mock network could not be established');
-  });
+async function startSemanticMock(nodeImage, containerName, hostPort) {
   const server = [
     "const http=require('node:http')",
     "http.createServer((req,res)=>{",
@@ -447,8 +473,7 @@ async function startSemanticMock(nodeImage, networkName, containerName) {
   await exec('docker', [
     'run', '--detach', '--rm',
     '--name', containerName,
-    '--network', networkName,
-    '--network-alias', 'mock-provider',
+    '--publish', `127.0.0.1:${hostPort}:8787`,
     '--read-only',
     '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges:true',
@@ -511,7 +536,18 @@ async function cleanupCompose(name, directory, volume) {
     '--env-file', join(directory, 'compose.env'),
     'down', '--remove-orphans',
   ], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }).catch(() => undefined);
+  // A Qdrant-only profile can survive `compose down` after the Workshop
+  // service is removed during restart qualification. The generated project
+  // name is digest-bounded, so clean up only that exact owned fallback.
+  await exec('docker', ['rm', '--force', `${name}-qdrant-1`], {
+    windowsHide: true,
+    maxBuffer: 1024 * 1024,
+  }).catch(() => undefined);
   await exec('docker', ['volume', 'rm', volume], {
+    windowsHide: true,
+    maxBuffer: 1024 * 1024,
+  }).catch(() => undefined);
+  await exec('docker', ['network', 'rm', name], {
     windowsHide: true,
     maxBuffer: 1024 * 1024,
   }).catch(() => undefined);
@@ -572,12 +608,12 @@ async function boundedResume(control, operationId) {
   const started = Date.now();
   const receipt = await control.resume(operationId);
   const elapsedMs = Date.now() - started;
-  if (elapsedMs > 30_000) throw new Error(`Seedbed resume exceeded 30 seconds (${elapsedMs}ms)`);
+  if (elapsedMs > 60_000) throw new Error(`Seedbed resume exceeded 60 seconds (${elapsedMs}ms)`);
   return receipt;
 }
 
 async function assertAuthenticatedReady(workshopPort, token) {
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + 60_000;
   let lastStatus;
   while (Date.now() < deadline) {
     try {

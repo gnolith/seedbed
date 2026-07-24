@@ -64,6 +64,16 @@ export function renderCompose(config: SeedbedConfig): ComposeRender {
   const operatorSecrets = semanticSecrets.length === 0
     ? ''
     : `\n    secrets:\n${semanticSecrets.map((entry) => `      - source: ${entry.composeName}\n        target: ${entry.target}`).join('\n')}`;
+  const usesHostGateway = config.semantic !== undefined && (
+    new URL(config.semantic.configuration.provider.endpoint).hostname === 'host.docker.internal'
+    || (
+      config.semantic.configuration.vector.kind === 'qdrant'
+      && new URL(config.semantic.configuration.vector.endpoint).hostname === 'host.docker.internal'
+    )
+  );
+  const hostGateway = usesHostGateway
+    ? '\n    extra_hosts: ["host.docker.internal:host-gateway"]'
+    : '';
   const volumes = [
     '  application-data:\n    name: ${APPLICATION_DATA_VOLUME}',
     ...(config.compose.profiles.includes('qdrant') ? ['  qdrant-data:\n    name: ${QDRANT_DATA_VOLUME}'] : []),
@@ -95,7 +105,7 @@ services:
       - application-data:/var/lib/gnolith${waystoneMount}
     secrets:
 ${workshopSecrets}
-    networks: [gnolith]
+    networks: [gnolith]${hostGateway}
     healthcheck:
       test: ["CMD", "node", "-e", "let t=require('fs').readFileSync('/run/secrets/gnolith-bearer','utf8');t=t.endsWith('\\\\r\\\\n')?t.slice(0,-2):t.endsWith('\\\\n')?t.slice(0,-1):t;if(!t||/^\\\\s|\\\\s$|[\\\\u0000-\\\\u001f\\\\u007f]/u.test(t))process.exit(1);fetch('http://127.0.0.1:4317/health/ready',{headers:{authorization:'Bearer '+t}}).then(function(r){if(!r.ok)process.exit(1)}).catch(function(){process.exit(1)})"]
       interval: 10s
@@ -116,7 +126,7 @@ ${workshopSecrets}
     tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
     volumes:
       - application-data:/var/lib/gnolith${operatorSecrets}
-    networks: [gnolith]
+    networks: [gnolith]${hostGateway}
     deploy:
       resources:
         limits: { cpus: "2.0", memory: 2G }

@@ -236,6 +236,12 @@ function semanticEndpoint(value: unknown, label: string): string {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
     fail(`${label} must be credential-free HTTP(S) without query credentials`);
   }
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/gu, '');
+  const ipv4 = hostname.split('.').map(Number);
+  const loopback = hostname === 'localhost'
+    || hostname === '::1'
+    || (ipv4.length === 4 && ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) && ipv4[0] === 127);
+  if (loopback) url.hostname = 'host.docker.internal';
   return url.href.replace(/\/$/u, '');
 }
 
@@ -248,9 +254,10 @@ function requirePrivateApproval(endpointValue: string, approved: boolean, label:
   const loopback = hostname === 'localhost'
     || hostname === '::1'
     || (isIpv4 && ipv4[0] === 127);
+  const pinnedHostGateway = hostname === 'host.docker.internal';
   const composePrivate = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(hostname)
     && !loopback;
-  if (loopback || composePrivate) {
+  if (loopback || pinnedHostGateway || composePrivate) {
     if (!approved) fail(`${label} private endpoint requires explicit approval`);
     if (url.protocol !== 'http:') fail(`${label} approved local endpoint must use HTTP`);
     return;

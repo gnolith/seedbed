@@ -124,7 +124,7 @@ describe('strict installation config and Compose rendering', () => {
         },
       },
     }, { projectDirectory: process.cwd() })).toThrow(/private endpoint/u);
-    expect(validateConfig({
+    const loopbackConfig = validateConfig({
       ...input,
       semantic: {
         ...input.semantic,
@@ -137,7 +137,10 @@ describe('strict installation config and Compose rendering', () => {
           },
         },
       },
-    }, { projectDirectory: process.cwd() }).semantic?.configuration.provider.endpoint).toBe('http://127.0.0.1:8787');
+    }, { projectDirectory: process.cwd() });
+    expect(loopbackConfig.semantic?.configuration.provider.endpoint).toBe('http://host.docker.internal:8787');
+    const loopbackCompose = renderCompose(loopbackConfig);
+    expect(loopbackCompose.yaml.match(/extra_hosts: \["host\.docker\.internal:host-gateway"\]/gu)).toHaveLength(2);
     expect(validateConfig({
       ...input,
       semantic: {

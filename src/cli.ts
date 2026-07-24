@@ -10,7 +10,13 @@ import { applyInstallationPlan, applyMigrationPlan, createInstallationPlan, crea
 import { createInstallationBackup, dryRunRestore, inspectInstallationBackup, restoreInstallationBackup, verifyInstallationBackup } from './backup.js';
 import { applyLegacyAdoption, loadLegacyManifest, planLegacyAdoption, type LegacyAdoptionPlan } from './adoption.js';
 import { diagnoseInstallation } from './diagnostics.js';
-import { OperatorAdoptionTarget, ComposeRestoreTarget, DockerComposeDriver, DockerDiagnosticHost } from './system-drivers.js';
+import {
+  OperatorAdoptionTarget,
+  ComposeRestoreTarget,
+  DockerComposeDriver,
+  DockerDiagnosticHost,
+  SeedbedOperatorExecutionError,
+} from './system-drivers.js';
 import { OperatorLegacyDecoder } from './legacy-source.js';
 
 const HELP = `seedbed 0.4.0
@@ -91,6 +97,11 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       }
       case 'adopt legacy-local plan': {
         const manifest = await loadLegacyManifest(required(parsed.options, 'manifest'));
+        // Planning is a public-package operation against a fresh target. Stage
+        // the checksum-pinned operator bundle and build only its one-shot image;
+        // this creates no application container and touches no source bytes.
+        await compose.prepare(config);
+        await compose.buildOperator(config);
         const plan = await planLegacyAdoption({ manifest, config, decoder: new OperatorLegacyDecoder(config, compose) });
         await outputOrWrite(plan, parsed.options.out);
         return 0;
@@ -107,7 +118,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     }
     throw new TypeError('Unknown command');
   } catch (error) {
-    process.stderr.write(`${JSON.stringify({ error: 'seedbed_operation_failed', message: bounded(error) })}\n`);
+    process.stderr.write(`${JSON.stringify(publicFailure(error))}\n`);
     return 2;
   }
 }
@@ -204,6 +215,20 @@ function required(options: Record<string, string>, key: string): string {
 function bounded(error: unknown): string {
   const message = error instanceof Error ? error.message : 'Operation failed';
   return redactFilesystemPaths(message.slice(0, 512));
+}
+
+function publicFailure(error: unknown): Record<string, unknown> {
+  const operator = error instanceof SeedbedOperatorExecutionError;
+  return {
+    error: operator ? error.code : 'seedbed_operation_failed',
+    message: bounded(error),
+    ...(operator ? {
+      stage: error.stage,
+      classification: error.classification,
+      retryable: error.retryable,
+      ...(error.diagnostic === undefined ? {} : { diagnostic: error.diagnostic }),
+    } : {}),
+  };
 }
 
 if (process.argv[1] && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1])) {

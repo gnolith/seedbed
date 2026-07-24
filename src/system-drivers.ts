@@ -27,6 +27,7 @@ interface OperatorProcess {
   readonly child: ReturnType<typeof spawn>;
   readonly containerName: string;
   readonly operation: string;
+  readonly subject?: 'diamond' | 'taproot' | 'workshop';
   readonly timeoutMs: number;
   readonly signal?: AbortSignal;
 }
@@ -48,6 +49,20 @@ export class SeedbedOperationAbortedError extends Error {
   constructor(readonly operation: string) {
     super(`Seedbed operation ${operation} was aborted and its child process was terminated`);
     this.name = 'SeedbedOperationAbortedError';
+  }
+}
+
+export class SeedbedOperatorExecutionError extends Error {
+  readonly code = 'seedbed-operator-execution-failed';
+  readonly retryable = false;
+  constructor(
+    readonly operation: string,
+    readonly stage: string,
+    readonly classification: string,
+    readonly diagnostic?: Readonly<Record<string, string | number | boolean>>,
+  ) {
+    super(`Seedbed operator ${operation} failed at ${stage}: ${classification}`);
+    this.name = 'SeedbedOperatorExecutionError';
   }
 }
 
@@ -197,7 +212,7 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
   }
 
   async invoke<T>(config: SeedbedConfig, operation: string, input: unknown): Promise<T> {
-    const process = this.operatorProcess(config, operation);
+    const process = this.operatorProcess(config, operation, [], [], operatorSubject(input));
     const { child } = process;
     const stdin = child.stdin!;
     const stdout = child.stdout!;
@@ -333,6 +348,7 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
     operation: string,
     mode: readonly string[] = [],
     mounts: readonly string[] = [],
+    subject?: 'diamond' | 'taproot' | 'workshop',
   ): OperatorProcess {
     if (!OPERATOR_OPERATIONS.has(operation)) throw new TypeError('Unsupported Seedbed operator operation');
     if (this.execution.signal?.aborted) throw new SeedbedOperationAbortedError(operation);
@@ -348,6 +364,7 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
       child,
       containerName,
       operation,
+      ...(subject === undefined ? {} : { subject }),
       timeoutMs: this.operationTimeout(operation),
       ...(this.execution.signal === undefined ? {} : { signal: this.execution.signal }),
     };
@@ -579,7 +596,14 @@ async function version(args: string[]): Promise<{ available: boolean; version?: 
 
 function operatorCompletion(process: OperatorProcess, label: string): Promise<void> {
   const { child } = process;
-  child.stderr?.resume();
+  const stderr: Buffer[] = [];
+  let stderrBytes = 0;
+  child.stderr?.on('data', (chunk: Buffer) => {
+    if (stderrBytes >= 8192) return;
+    const bounded = chunk.subarray(0, 8192 - stderrBytes);
+    stderr.push(bounded);
+    stderrBytes += bounded.byteLength;
+  });
   return new Promise<void>((resolveCompletion, rejectCompletion) => {
     let termination: 'timeout' | 'aborted' | undefined;
     let settled = false;
@@ -611,10 +635,90 @@ function operatorCompletion(process: OperatorProcess, label: string): Promise<vo
       else if (termination === 'aborted') finish(new SeedbedOperationAbortedError(process.operation));
       else if (code === 0) finish();
       else {
-        finish(new Error(`${label} exited ${String(code)}; operator stderr was withheld from the public error boundary`));
+        const diagnostic = classifyOperatorFailure(
+          process.operation,
+          process.subject,
+          redactFilesystemPaths(Buffer.concat(stderr).toString('utf8')),
+        );
+        finish(new SeedbedOperatorExecutionError(
+          process.operation,
+          diagnostic.stage,
+          diagnostic.classification,
+          safeOperatorDiagnostic(Buffer.concat(stderr).toString('utf8')),
+        ));
       }
     });
   });
+}
+
+function safeOperatorDiagnostic(stderr: string): Readonly<Record<string, string | number | boolean>> | undefined {
+  const line = stderr.trim().split(/\r?\n/u).at(-1);
+  if (!line || line.length > 8192) return undefined;
+  try {
+    const parsed = JSON.parse(line) as { diagnostic?: unknown };
+    if (!parsed.diagnostic || typeof parsed.diagnostic !== 'object' || Array.isArray(parsed.diagnostic)) return undefined;
+    const allowed = new Set([
+      'format', 'owner', 'documentFormat', 'documentVersion', 'schemaVersion',
+      'installationMatches', 'ownedStateFormat', 'ownedStateInstallationMatches',
+      'tableCount', 'rowCount', 'credentialCount', 'distinctCredentialDigestCount',
+      'documentSha256', 'causeName', 'causeCode', 'causeReason',
+      'causeBackupReason', 'causeTable', 'causeLogicalKeyCount',
+    ]);
+    const output: Record<string, string | number | boolean> = {};
+    for (const [key, value] of Object.entries(parsed.diagnostic)) {
+      if (!allowed.has(key)) return undefined;
+      if (typeof value === 'string') {
+        if (value.length > 128 || /[\u0000-\u001f\u007f]/u.test(value)) return undefined;
+        output[key] = value;
+      } else if (typeof value === 'number' && Number.isSafeInteger(value) && value >= -1 && value <= 1_000_000) {
+        output[key] = value;
+      } else if (typeof value === 'boolean') {
+        output[key] = value;
+      } else {
+        return undefined;
+      }
+    }
+    return output.format === 'gnolith-seedbed-owner-validation-diagnostic-v1' ? Object.freeze(output) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function classifyOperatorFailure(operation: string, subject: OperatorProcess['subject'], stderr: string): { stage: string; classification: string } {
+  const stage = operation.startsWith('owner-backup-')
+    ? `owner-backup-${subject === undefined ? '' : `${subject}-`}${operation.slice('owner-backup-'.length).replace(/-v1$/u, '')}`
+    : operation.startsWith('legacy-')
+      ? `legacy-${operation.slice('legacy-'.length).replace(/-v1$/u, '')}`
+      : operation.replace(/-v1$/u, '');
+  const classification = /ERR_MODULE_NOT_FOUND|Cannot find (?:module|package)/iu.test(stderr)
+    ? 'operator-dependency-unavailable'
+    : /ENOENT|no such file|not found/iu.test(stderr)
+      ? 'required-input-unavailable'
+      : /EACCES|EPERM|permission denied/iu.test(stderr)
+        ? 'required-input-access-denied'
+        : /integrity|checksum|digest mismatch/iu.test(stderr)
+          ? 'integrity-verification-failed'
+          : /UNIQUE constraint|constraint failed|conflict/iu.test(stderr)
+            ? 'owner-state-conflict'
+            : /backup validation failed|backup.*invalid/iu.test(stderr)
+              ? 'owner-backup-invalid'
+              : operation.startsWith('legacy-')
+                ? 'legacy-adapter-rejected'
+                : operation.startsWith('owner-backup-')
+                  ? 'owner-backup-rejected'
+                  : 'operator-operation-rejected';
+  return { stage, classification };
+}
+
+function operatorSubject(input: unknown): OperatorProcess['subject'] {
+  if (!input || typeof input !== 'object') return undefined;
+  const record = input as Record<string, unknown>;
+  const direct = record.owner;
+  const section = record.section && typeof record.section === 'object'
+    ? (record.section as Record<string, unknown>).owner
+    : undefined;
+  const subject = direct ?? section;
+  return subject === 'diamond' || subject === 'taproot' || subject === 'workshop' ? subject : undefined;
 }
 
 async function terminateOperator(process: OperatorProcess): Promise<void> {

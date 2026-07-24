@@ -112,7 +112,13 @@ after owner migrations and Workshop bootstrap but before the listener starts.
 External provider endpoints are denied by default. A loopback or single-label
 Compose-private HTTP endpoint additionally requires explicit private-endpoint
 approval and a protected credential selector; unsafe nonlocal/private targets,
-redirects, and rebinding are rejected.
+redirects, and rebinding are rejected. Host loopback spellings (`127.0.0.1`,
+`localhost`, and `::1`) are canonicalized in the plan to
+`host.docker.internal`, and the generated Workshop/operator services bind that
+exact name to Docker's host gateway. The same mapping applies to an explicitly
+configured loopback Qdrant endpoint. This keeps configuration fingerprints stable
+while making the endpoint reachable from the container; secrets remain Compose
+secret files and are never moved into the URL, plan receipt, or image.
 
 The Ollama-compatible type is reserved, but local Ollama is deliberately unavailable
 in this candidate. Enabling it requires a separately supplied immutable model
@@ -140,6 +146,9 @@ under `fixtures/legacy-local-v1`. Its evidence records exact npm tarball integri
 intentional domain/revision/payload coverage, semantic configuration count zero,
 and onboarding count zero with the explicit
 `unavailable-in-public-legacy-api` disposition.
+The public `adopt legacy-local plan` command stages and builds the checksum-pinned
+one-shot owner adapter from the installed package when the target is fresh. It
+does not start Workshop, create an application container, or modify the source.
 
 See [architecture reset](docs/architecture-reset.md),
 [migration guide](docs/migrations.md), and the

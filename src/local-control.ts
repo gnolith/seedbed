@@ -250,11 +250,15 @@ export class SeedbedLocalControl implements SeedbedControl {
   async plan(request: DockerInstallationRequest, options: SeedbedControlOperationOptions = {}): Promise<SeedbedControlPlan> {
     assertOperationOptions(options);
     throwIfAborted(options.signal);
-    const internal = createInstallationPlan(this.config(request));
+    const config = this.config(request);
+    const canonicalRequest: DockerInstallationRequest = request.semantic === undefined
+      ? request
+      : { ...request, semantic: config.semantic! };
+    const internal = createInstallationPlan(config);
     const waystone = await waystoneExpectation(this.policy);
     const body = {
       version: 'gnolith-seedbed-control-plan-v2',
-      request: canonicalClone(request),
+      request: canonicalClone(canonicalRequest),
       steps: internal.steps,
       internalPlanDigest: digestObject(internal),
       policyDigest: digestObject(this.policy),
@@ -322,7 +326,7 @@ export class SeedbedLocalControl implements SeedbedControl {
   }
 
   async resume(operationId: string, options: SeedbedControlOperationOptions = {}): Promise<SeedbedControlReceipt> {
-    const execution = boundedExecution(options, 30_000);
+    const execution = boundedExecution(options, 60_000);
     if (!/^[0-9a-f]{64}$/u.test(operationId)) throw new TypeError('Seedbed operation ID is invalid');
     const record = await readJson(this.operationPath(operationId)) as OperationRecord;
     if (record.format !== 'gnolith-seedbed-control-operation-v1' || record.plan.id !== operationId) throw new TypeError('Seedbed operation record is invalid');

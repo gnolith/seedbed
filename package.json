@@ -87,12 +87,14 @@
     "check:inventory": "node scripts/verify-inventory.mjs",
     "check:secrets": "node scripts/secret-canary.mjs",
     "check:legacy-fixture": "node scripts/verify-legacy-fixture.mjs",
-    "check": "npm run typecheck && npm test && npm run build && npm run check:inventory && npm run check:secrets && npm run check:legacy-fixture && npm run security:runtime-check && npm run pack:check",
+    "check:examples": "node scripts/sync-example-from-lock.mjs --check",
+    "sync:example": "node scripts/sync-example-from-lock.mjs --write",
+    "check": "npm run typecheck && npm test && npm run build && npm run check:inventory && npm run check:examples && npm run check:secrets && npm run check:legacy-fixture && npm run security:runtime-check && npm run pack:check",
     "security:runtime-check": "node scripts/audit-zero.mjs --full && node scripts/audit-zero.mjs",
     "pack:check": "npm pack --dry-run",
     "candidate": "node scripts/candidate-handoff.mjs",
     "candidate:refresh-attestation": "node scripts/candidate-handoff.mjs --refresh-attestation",
-    "prepack": "npm run build && npm run check:inventory"
+    "prepack": "npm run build && npm run check:inventory && npm run check:examples"
   },
   "devDependencies": {
     "@types/node": "24.0.0",

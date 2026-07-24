@@ -84,7 +84,10 @@ try {
   if (result !== STREAMED) process.stdout.write(`${JSON.stringify(result)}\n`);
 } catch (error) {
   const message = error instanceof Error ? error.message : 'Seedbed operator failed';
-  process.stderr.write(`${message.slice(0, 2048).replaceAll(/(?:[A-Za-z]:[\\/][^\s"']+|(?<![A-Za-z0-9@._-])\/[^\s"']+)/gu, '[redacted-path]')}\n`);
+  process.stderr.write(`${JSON.stringify({
+    message: message.slice(0, 2048).replaceAll(/(?:[A-Za-z]:[\\/][^\s"']+|(?<![A-Za-z0-9@._-])\/[^\s"']+)/gu, '[redacted-path]'),
+    ...(error?.operatorDiagnostic === undefined ? {} : { diagnostic: error.operatorDiagnostic }),
+  })}\n`);
   process.exitCode = 1;
 }
 
@@ -221,18 +224,77 @@ async function validateOwnerBackup(context, encoded) {
       await importTaprootBackupSectionV1(db, value, binding.taprootLedgerHandle, { dryRun: true, importDerived: false });
     }
     if (section.owner === 'workshop') {
-      await binding.workshopHandles.ledger.importOwnedSlice({
-        state: value.sections.migrationLedgerSlice,
-        signal: new AbortController().signal,
-      });
-      await binding.workshopBackup.inspectBackup(value);
+      try {
+        await binding.workshopHandles.ledger.importOwnedSlice({
+          state: value.sections.migrationLedgerSlice,
+          signal: new AbortController().signal,
+        });
+        await binding.workshopBackup.inspectBackup(value);
+      } catch (error) {
+        const wrapped = new Error(`workshop backup validation failed: ${error instanceof Error ? error.message : 'unknown owner error'}`);
+        wrapped.operatorDiagnostic = workshopBackupDiagnostic(value, context, error);
+        throw wrapped;
+      }
     }
     return retentionFor(section.owner);
   } catch (error) {
-    throw new Error(`${section.owner} backup validation failed: ${error instanceof Error ? error.message : 'unknown owner error'}`);
+    const wrapped = new Error(`${section.owner} backup validation failed: ${error instanceof Error ? error.message : 'unknown owner error'}`);
+    if (error?.operatorDiagnostic !== undefined) wrapped.operatorDiagnostic = error.operatorDiagnostic;
+    throw wrapped;
   } finally {
     await db.close();
   }
+}
+
+function workshopBackupDiagnostic(value, context, error) {
+  const tables = value?.sections?.workshop?.tables;
+  const rows = tables && typeof tables === 'object' && !Array.isArray(tables)
+    ? Object.values(tables).filter(Array.isArray).flat()
+    : [];
+  const credentials = Array.isArray(tables?.workshop_credentials)
+    ? tables.workshop_credentials
+    : [];
+  const tokenDigests = credentials
+    .map((row) => row?.token_digest)
+    .filter((digest) => typeof digest === 'string' && /^[0-9a-f]{64}$/u.test(digest));
+  const causeMessage = error instanceof Error ? error.message : '';
+  return {
+    format: 'gnolith-seedbed-owner-validation-diagnostic-v1',
+    owner: 'workshop',
+    documentFormat: value?.format === 'gnolith-workshop-backup-v1' ? value.format : 'unexpected',
+    documentVersion: Number.isSafeInteger(value?.version) ? value.version : -1,
+    schemaVersion: Number.isSafeInteger(value?.schemaVersion) ? value.schemaVersion : -1,
+    installationMatches: value?.installationId === context.installationId,
+    ownedStateFormat: value?.sections?.workshop?.format === 'gnolith-workshop-owned-state-v1'
+      ? value.sections.workshop.format
+      : 'unexpected',
+    ownedStateInstallationMatches: value?.sections?.workshop?.installationId === context.installationId,
+    tableCount: tables && typeof tables === 'object' && !Array.isArray(tables) ? Object.keys(tables).length : -1,
+    rowCount: rows.length,
+    credentialCount: credentials.length,
+    distinctCredentialDigestCount: new Set(tokenDigests).size,
+    documentSha256: sha256(encodeOpaqueOwnerValue(value)),
+    causeName: error instanceof Error ? error.name.slice(0, 64) : 'unknown',
+    causeCode: typeof error?.code === 'string' ? error.code.slice(0, 64) : 'unknown',
+    causeBackupReason: typeof error?.details?.backupReason === 'string'
+      ? error.details.backupReason.slice(0, 64)
+      : 'unknown',
+    causeTable: typeof error?.details?.table === 'string' ? error.details.table.slice(0, 64) : 'unknown',
+    causeLogicalKeyCount: Number.isSafeInteger(error?.details?.logicalKeyCount)
+      ? error.details.logicalKeyCount
+      : -1,
+    causeReason: /inconsistent duplicate/iu.test(causeMessage)
+      ? 'inconsistent-duplicate-owner-record'
+      : /unknown table/iu.test(causeMessage)
+        ? 'unknown-owner-table'
+        : /invalid rows or columns/iu.test(causeMessage)
+          ? 'invalid-owner-row-shape'
+          : /installation/iu.test(causeMessage)
+            ? 'installation-identity-mismatch'
+            : /migration|ledger|namespace/iu.test(causeMessage)
+              ? 'migration-ledger-validation-failed'
+              : 'owner-document-validation-failed',
+  };
 }
 
 async function importOwnerBackup(context, input) {
