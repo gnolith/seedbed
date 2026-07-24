@@ -12,19 +12,19 @@
       "version": "0.5.0",
       "artifact": "components/gnolith-taproot-0.5.0.tgz",
       "sha256": "322c54ce4c604c73b86935a33d1980a96b75ca3dd5fde0671fba70b9681ecc41",
-      "sourceCommit": "f9586c3ac056a08f71371ed967f6ce067f0da0af"
+      "sourceCommit": "0ece9a07263ed9e3981e9db48c3f6e04e957d848"
     },
     "workshop": {
       "version": "0.5.0",
       "artifact": "components/gnolith-workshop-0.5.0.tgz",
-      "sha256": "6d297b644b38aaacabb606521a916013ba61c0c7ebb5a0c7980f304caadefa77",
-      "sourceCommit": "423f3a75fe4ee197727866be7c9c6667720cd862"
+      "sha256": "1a59399eb253b7085d581726f3e9314ecbe5c52f4780fb14e43df1af8df484b3",
+      "sourceCommit": "13db3690053bea331d341f6f848d2641441ecc0c"
     },
     "waystone": {
       "version": "0.3.0",
       "artifact": "components/waystone/waystone-assets.json",
       "sha256": "f341c3fe00d3a93d9af6ca379453c02eb02287fa486847a5cf0764f1fef87a65",
-      "sourceCommit": "258a0e99a735cfe11452e822420796a1935caef3"
+      "sourceCommit": "975c34f2f1470efc59c78b5df5a835eb48f26171"
     }
   },
   "compose": {
