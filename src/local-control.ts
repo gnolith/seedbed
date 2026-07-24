@@ -673,7 +673,7 @@ async function verifyExpectedWorkshopReadiness(
   const token = decodeCanonicalTextSecret(await readFile(tokenFile), 45);
   if (!/^[A-Za-z0-9_-]{43}$/u.test(token)) throw new TypeError('Protected local bearer selector is invalid');
   const endpoint = new URL('/health/ready', request.endpoint);
-  const deadline = Date.now() + (request.expected.semanticState === 'ready' ? 90_000 : 0);
+  const deadline = Date.now() + 90_000;
   while (true) {
     const response = await fetch(endpoint, {
       headers: { authorization: `Bearer ${token}` },
@@ -725,15 +725,36 @@ async function verifyExpectedWorkshopReadiness(
       return { semanticState: semanticState.state };
     }
     const diagnostic = semanticState?.diagnostic as Record<string, unknown> | null | undefined;
-    const transitionPending = (
-      request.expected.semanticState === 'ready'
-      && response.status === 503
-      && status.installationId === request.expected.installationId
-      && semanticState?.configured === true
+    const immutableStateMatches = (
+      status.installationId === request.expected.installationId
+      && status.baseIri === request.expected.baseIri
+      && versions?.server === request.expected.serverVersion
+      && status.operationCatalogDigest === request.expected.catalogDigest
+      && migrationReadiness?.ready === request.expected.migrationReady
+      && status.canonicalReady === request.expected.canonicalReady
+      && status.authorizationReady === request.expected.authorizationReady
+      && status.blobReady === request.expected.blobReady
+      && semanticState?.configured === (request.semantic !== undefined)
       && semanticState?.revision === expectedSemanticRevision
       && semanticState?.fingerprint === expectedSemanticFingerprint
+    );
+    const semanticTransition = (
+      request.expected.semanticState === 'ready'
+      && semanticState?.state === 'degraded'
+      && semanticState?.ready === false
       && diagnostic !== null
       && ['materialization-pending', 'provider-unavailable'].includes(String(diagnostic?.code))
+    );
+    const lexicalTransition = request.expected.lexicalReady === true && status.lexicalReady === false;
+    const producerTransition = request.expected.producerStatus === 'ready' && producers?.ready === false;
+    const transitionPending = (
+      response.status === 503
+      && immutableStateMatches
+      && (
+        semanticTransition
+        || lexicalTransition
+        || producerTransition
+      )
     );
     if (!transitionPending || Date.now() >= deadline) {
       throw new TypeError('Workshop authenticated readiness does not match the immutable installation request');
