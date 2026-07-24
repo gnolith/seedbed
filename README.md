@@ -129,8 +129,12 @@ secret files and are never moved into the URL, plan receipt, or image.
 Workshop uses `restart: "no"` in the generated Compose graph. Explicit
 Seedbed repair and operator-requested restarts remain supported, but malformed
 or unreachable semantic configuration cannot create an automatic container
-restart loop. Workshop reports semantic degradation while lexical search and
-the authenticated service remain available.
+restart loop. Compose container health uses authenticated `/health/live`;
+Seedbed separately verifies authenticated `/health/ready`, which must return
+200 for ready or unconfigured semantics and 503 with a bounded diagnostic only
+when the immutable installation request explicitly permits degraded semantics.
+Workshop reports semantic degradation while lexical search and the
+authenticated service remain available.
 
 The Ollama-compatible type is reserved, but local Ollama is deliberately unavailable
 in this candidate. Enabling it requires a separately supplied immutable model

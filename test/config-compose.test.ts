@@ -41,7 +41,8 @@ describe('strict installation config and Compose rendering', () => {
     expect(render.oneShotServices).toEqual(['seedbed-operator']);
     expect(render.yaml).toContain('127.0.0.1:${WORKSHOP_PORT}:4317');
     expect(render.yaml).toContain('serve", "--config", "/app/seedbed/workshop.config.json"');
-    expect(render.yaml).toContain('/health/ready');
+    expect(render.yaml).toContain('/health/live');
+    expect(render.yaml).not.toContain("fetch('http://127.0.0.1:4317/health/ready'");
     expect(render.yaml).toContain('    restart: "no"');
     expect(render.yaml).not.toMatch(/0\.0\.0\.0:\$\{WORKSHOP_PORT\}/u);
     expect(render.yaml).not.toContain('waystone:\n');

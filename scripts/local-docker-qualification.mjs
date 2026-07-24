@@ -73,7 +73,7 @@ try {
   });
   const status = await response.json();
   if (
-    !response.ok
+    response.status !== 503
     || status.installationId !== installationId
     || status.baseIri !== request.baseIri
     || status.versions?.server !== lock.packages.workshop.version
@@ -458,6 +458,7 @@ async function verifySemanticProfile(packed, vectorKind) {
     || status.semanticState?.revision !== 1
     || status.semanticState?.fingerprint !== expectedFingerprint
     || status.semanticState?.ready !== true
+    || status.semanticState?.diagnostic !== null
   ) throw new Error(`${vectorKind} semantic authenticated readiness was not truthful`);
   const services = (await composeCommand(semanticProjectName, semanticComposeDirectory, ['ps', '--all', '--format', 'json']))
     .stdout.split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line).Service);
@@ -642,16 +643,16 @@ async function assertDegradedSemanticStatus(workshopPort, token, unavailableProv
   });
   const status = await response.json();
   const serialized = JSON.stringify(status);
-  const diagnostic = status.semanticState?.diagnostic
-    ?? status.semanticState?.reason
-    ?? status.semanticState?.failure;
+  const diagnostic = status.semanticState?.diagnostic;
   if (
     !response.ok
     || status.lexicalReady !== true
     || status.semanticState?.state !== 'degraded'
     || status.semanticState?.configured !== true
     || status.semanticState?.ready !== false
-    || diagnostic === undefined
+    || diagnostic?.code !== 'provider-unavailable'
+    || diagnostic?.retryable !== true
+    || Object.keys(diagnostic).sort().join(',') !== 'code,retryable'
     || serialized.length > 65_536
     || serialized.includes('qualification-profile-not-a-usable-api-key')
     || serialized.includes(`:${unavailableProviderPort}`)

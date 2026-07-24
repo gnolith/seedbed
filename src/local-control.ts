@@ -673,53 +673,73 @@ async function verifyExpectedWorkshopReadiness(
   const token = decodeCanonicalTextSecret(await readFile(tokenFile), 45);
   if (!/^[A-Za-z0-9_-]{43}$/u.test(token)) throw new TypeError('Protected local bearer selector is invalid');
   const endpoint = new URL('/health/ready', request.endpoint);
-  const response = await fetch(endpoint, {
-    headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(10_000),
-  });
-  let value: unknown;
-  try {
-    value = await response.json();
-  } catch {
-    throw new TypeError('Workshop authenticated readiness returned invalid JSON');
+  const deadline = Date.now() + (request.expected.semanticState === 'ready' ? 90_000 : 0);
+  while (true) {
+    const response = await fetch(endpoint, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    let value: unknown;
+    try {
+      value = await response.json();
+    } catch {
+      throw new TypeError('Workshop authenticated readiness returned invalid JSON');
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Workshop authenticated readiness is invalid');
+    const status = value as Record<string, unknown>;
+    const versions = status.versions as Record<string, unknown> | undefined;
+    const migrationReadiness = status.migrationReadiness as Record<string, unknown> | undefined;
+    const producers = status.producers as Record<string, unknown> | undefined;
+    const semanticState = status.semanticState as Record<string, unknown> | undefined;
+    const expectedSemanticFingerprint = request.semantic === undefined
+      ? null
+      : semanticConfigurationFingerprint(request.semantic.configuration);
+    const expectedSemanticRevision = request.semantic === undefined
+      ? null
+      : request.semantic.expectedRevision + 1;
+    const matches = (
+      response.status === (request.expected.semanticState === 'degraded' ? 503 : 200)
+      && status.installationId === request.expected.installationId
+      && status.baseIri === request.expected.baseIri
+      && versions?.server === request.expected.serverVersion
+      && status.operationCatalogDigest === request.expected.catalogDigest
+      && migrationReadiness?.ready === request.expected.migrationReady
+      && status.canonicalReady === request.expected.canonicalReady
+      && status.authorizationReady === request.expected.authorizationReady
+      && status.lexicalReady === request.expected.lexicalReady
+      && status.blobReady === request.expected.blobReady
+      && producers?.ready === true
+      && semanticState?.state === (request.semantic === undefined ? 'unconfigured' : request.expected.semanticState)
+      && semanticState?.configured === (request.semantic !== undefined)
+      && semanticState?.revision === expectedSemanticRevision
+      && semanticState?.fingerprint === expectedSemanticFingerprint
+      && semanticState?.ready === (request.expected.semanticState === 'ready')
+    );
+    if (matches) {
+      if (
+        typeof semanticState?.state !== 'string'
+        || semanticState.state.length < 1
+        || semanticState.state.length > 128
+        || /[\u0000-\u001f\u007f]/u.test(semanticState.state)
+      ) throw new TypeError('Workshop authenticated readiness semantic state is invalid');
+      return { semanticState: semanticState.state };
+    }
+    const diagnostic = semanticState?.diagnostic as Record<string, unknown> | null | undefined;
+    const transitionPending = (
+      request.expected.semanticState === 'ready'
+      && response.status === 503
+      && status.installationId === request.expected.installationId
+      && semanticState?.configured === true
+      && semanticState?.revision === expectedSemanticRevision
+      && semanticState?.fingerprint === expectedSemanticFingerprint
+      && diagnostic !== null
+      && ['materialization-pending', 'provider-unavailable'].includes(String(diagnostic?.code))
+    );
+    if (!transitionPending || Date.now() >= deadline) {
+      throw new TypeError('Workshop authenticated readiness does not match the immutable installation request');
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Workshop authenticated readiness is invalid');
-  const status = value as Record<string, unknown>;
-  const versions = status.versions as Record<string, unknown> | undefined;
-  const migrationReadiness = status.migrationReadiness as Record<string, unknown> | undefined;
-  const producers = status.producers as Record<string, unknown> | undefined;
-  const semanticState = status.semanticState as Record<string, unknown> | undefined;
-  const expectedSemanticFingerprint = request.semantic === undefined
-    ? null
-    : semanticConfigurationFingerprint(request.semantic.configuration);
-  const expectedSemanticRevision = request.semantic === undefined
-    ? null
-    : request.semantic.expectedRevision + 1;
-  if (
-    !response.ok
-    || status.installationId !== request.expected.installationId
-    || status.baseIri !== request.expected.baseIri
-    || versions?.server !== request.expected.serverVersion
-    || status.operationCatalogDigest !== request.expected.catalogDigest
-    || migrationReadiness?.ready !== request.expected.migrationReady
-    || status.canonicalReady !== request.expected.canonicalReady
-    || status.authorizationReady !== request.expected.authorizationReady
-    || status.lexicalReady !== request.expected.lexicalReady
-    || status.blobReady !== request.expected.blobReady
-    || producers?.ready !== true
-    || semanticState?.state !== (request.semantic === undefined ? 'unconfigured' : request.expected.semanticState)
-    || semanticState?.configured !== (request.semantic !== undefined)
-    || semanticState?.revision !== expectedSemanticRevision
-    || semanticState?.fingerprint !== expectedSemanticFingerprint
-    || semanticState?.ready !== (request.expected.semanticState === 'ready')
-  ) throw new TypeError('Workshop authenticated readiness does not match the immutable installation request');
-  if (
-    typeof semanticState?.state !== 'string'
-    || semanticState.state.length < 1
-    || semanticState.state.length > 128
-    || /[\u0000-\u001f\u007f]/u.test(semanticState.state)
-  ) throw new TypeError('Workshop authenticated readiness semantic state is invalid');
-  return { semanticState: semanticState.state };
 }
 
 async function finalizeInstallationSemanticReceipt(
