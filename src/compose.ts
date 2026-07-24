@@ -30,7 +30,9 @@ export function renderCompose(config: SeedbedConfig): ComposeRender {
       QDRANT__TELEMETRY_DISABLED: "true"
     volumes:
       - qdrant-data:/qdrant/storage
-    networks: [gnolith]
+    networks:
+      gnolith:
+        aliases: [qdrant]
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333"]
       interval: 10s
@@ -57,6 +59,44 @@ export function renderCompose(config: SeedbedConfig): ComposeRender {
       };
     })
     .sort((left, right) => left.id.localeCompare(right.id));
+  if (
+    config.compose.profiles.includes('qdrant')
+    && config.semantic?.configuration.vector.kind === 'qdrant'
+  ) {
+    const vector = config.semantic?.configuration.vector;
+    services.push('qdrant-init');
+    const credential = vector.credentialSelector === null
+      ? undefined
+      : semanticSecrets.find((entry) => entry.id === vector.credentialSelector);
+    if (vector.credentialSelector !== null && credential === undefined) {
+      throw new TypeError('The Qdrant Compose profile credential selector is unavailable');
+    }
+    extra.push(`  qdrant-init:
+    image: \${NODE_IMAGE}
+    profiles: ["qdrant"]
+    command:
+      - node
+      - -e
+      - |
+        const fs=require('node:fs');const h={'content-type':'application/json'};if(process.env.QDRANT_API_KEY_FILE){const v=fs.readFileSync(process.env.QDRANT_API_KEY_FILE,'utf8').replace(/\\r?\\n$/u,'');if(!v||/^\\s|\\s$|[\\u0000-\\u001f\\u007f]/u.test(v))throw new Error('invalid Qdrant credential');h['api-key']=v}const u='http://qdrant:6333/collections/'+encodeURIComponent(process.env.QDRANT_COLLECTION);const size=Number(process.env.QDRANT_DIMENSIONS);const distance=process.env.QDRANT_DISTANCE;const check=async()=>{const r=await fetch(u,{headers:h,redirect:'error'});if(!r.ok)throw new Error('Qdrant collection verification failed');const b=await r.json();const v=b?.result?.config?.params?.vectors;if(Number(v?.size)!==size||String(v?.distance??'').toLowerCase()!==distance.toLowerCase())throw new Error('Qdrant collection contract mismatch')};(async()=>{const r=await fetch(u,{headers:h,redirect:'error'});if(r.status===404){const created=await fetch(u,{method:'PUT',headers:h,redirect:'error',body:JSON.stringify({vectors:{size,distance}})});if(!created.ok)throw new Error('Qdrant collection creation failed')}else if(!r.ok)throw new Error('Qdrant collection lookup failed');await check()})().then(()=>process.exit(0),()=>process.exit(1))
+    restart: "no"
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+    environment:
+      QDRANT_COLLECTION: \${QDRANT_COLLECTION}
+      QDRANT_DIMENSIONS: \${QDRANT_DIMENSIONS}
+      QDRANT_DISTANCE: \${QDRANT_DISTANCE}${credential === undefined ? '' : `\n      QDRANT_API_KEY_FILE: /run/secrets/${credential.target}`}
+    networks: [gnolith]
+    depends_on:
+      qdrant:
+        condition: service_healthy${credential === undefined ? '' : `\n    secrets:\n      - source: ${credential.composeName}\n        target: ${credential.target}`}
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 128M }`);
+  }
   const workshopSecrets = [
     '      - gnolith-bearer',
     ...semanticSecrets.map((entry) => `      - source: ${entry.composeName}\n        target: ${entry.target}`),
@@ -73,6 +113,10 @@ export function renderCompose(config: SeedbedConfig): ComposeRender {
   );
   const hostGateway = usesHostGateway
     ? '\n    extra_hosts: ["host.docker.internal:host-gateway"]'
+    : '';
+  const qdrantDependency = config.compose.profiles.includes('qdrant')
+    && config.semantic?.configuration.vector.kind === 'qdrant'
+    ? '\n    depends_on:\n      qdrant-init:\n        condition: service_completed_successfully'
     : '';
   const volumes = [
     '  application-data:\n    name: ${APPLICATION_DATA_VOLUME}',
@@ -105,7 +149,7 @@ services:
       - application-data:/var/lib/gnolith${waystoneMount}
     secrets:
 ${workshopSecrets}
-    networks: [gnolith]${hostGateway}
+    networks: [gnolith]${hostGateway}${qdrantDependency}
     healthcheck:
       test: ["CMD", "node", "-e", "let t=require('fs').readFileSync('/run/secrets/gnolith-bearer','utf8');t=t.endsWith('\\\\r\\\\n')?t.slice(0,-2):t.endsWith('\\\\n')?t.slice(0,-1):t;if(!t||/^\\\\s|\\\\s$|[\\\\u0000-\\\\u001f\\\\u007f]/u.test(t))process.exit(1);fetch('http://127.0.0.1:4317/health/live',{headers:{authorization:'Bearer '+t}}).then(function(r){if(!r.ok)process.exit(1)}).catch(function(){process.exit(1)})"]
       interval: 10s
@@ -159,10 +203,33 @@ ${semanticSecrets.map((entry) => `  ${entry.composeName}:\n    file: \${${entry.
       WAYSTONE_ASSET_DIRECTORY: join(config.paths.stateDirectory, 'compose', 'waystone'),
     } : {}),
     ...(config.compose.profiles.includes('qdrant') ? { QDRANT_DATA_VOLUME: config.compose.qdrantVolume! } : {}),
+    ...(config.semantic?.configuration.vector.kind === 'qdrant' ? {
+      QDRANT_COLLECTION: config.semantic.configuration.vector.collection,
+      QDRANT_DIMENSIONS: String(config.semantic.configuration.provider.dimensions),
+      QDRANT_DISTANCE: config.semantic.configuration.provider.metric === 'cosine'
+        ? 'Cosine'
+        : config.semantic.configuration.provider.metric === 'dot'
+          ? 'Dot'
+          : 'Euclid',
+    } : {}),
     ...(config.compose.qdrantImage === undefined ? {} : { QDRANT_IMAGE: config.compose.qdrantImage }),
     ...Object.fromEntries(semanticSecrets.map((entry) => [entry.environment, entry.path])),
   };
-  return { yaml, environment, services, profiles: [...config.compose.profiles], oneShotServices: ['seedbed-operator'] };
+  return {
+    yaml,
+    environment,
+    services,
+    profiles: [...config.compose.profiles],
+    oneShotServices: [
+      'seedbed-operator',
+      ...(
+        config.compose.profiles.includes('qdrant')
+        && config.semantic?.configuration.vector.kind === 'qdrant'
+          ? ['qdrant-init']
+          : []
+      ),
+    ],
+  };
 }
 
 export function assertSafeComposeEnvironment(environment: Readonly<Record<string, string>>): void {

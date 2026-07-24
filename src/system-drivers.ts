@@ -207,8 +207,46 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
     await this.docker(args, 5 * 60_000);
   }
 
+  async ensureSemanticDependencies(config: SeedbedConfig): Promise<void> {
+    const semantic = config.semantic?.configuration;
+    if (semantic?.vector.kind !== 'qdrant') return;
+    const credentialPath = semantic.vector.credentialSelector === null
+      ? ''
+      : `/run/secrets/gnolith-semantic-${sha256(semantic.vector.credentialSelector).slice(0, 16)}`;
+    const script = [
+      "const fs=require('node:fs');",
+      "const [endpoint,collection,sizeText,distance,credentialPath]=process.argv.slice(1);",
+      "const size=Number(sizeText);const headers={'content-type':'application/json'};",
+      "if(credentialPath){const value=fs.readFileSync(credentialPath,'utf8').replace(/\\r?\\n$/u,'');if(!value||/^\\s|\\s$|[\\u0000-\\u001f\\u007f]/u.test(value))process.exit(1);headers['api-key']=value}",
+      "const url=endpoint.replace(/\\/$/u,'')+'/collections/'+encodeURIComponent(collection);",
+      "const check=async()=>{const response=await fetch(url,{headers,redirect:'error'});if(!response.ok)process.exit(1);const body=await response.json();const vectors=body?.result?.config?.params?.vectors;if(Number(vectors?.size)!==size||String(vectors?.distance??'').toLowerCase()!==distance.toLowerCase())process.exit(1)};",
+      "(async()=>{const response=await fetch(url,{headers,redirect:'error'});if(response.status===404){const created=await fetch(url,{method:'PUT',headers,redirect:'error',body:JSON.stringify({vectors:{size,distance}})});if(!created.ok)throw new Error('create failed')}else if(!response.ok)throw new Error('lookup failed');await check()})().then(()=>process.exit(0),()=>process.exit(1));",
+    ].join('');
+    await this.docker([
+      ...this.args(config),
+      'exec',
+      '-T',
+      'workshop',
+      'node',
+      '-e',
+      script,
+      semantic.vector.endpoint,
+      semantic.vector.collection,
+      String(semantic.provider.dimensions),
+      semantic.provider.metric === 'cosine'
+        ? 'Cosine'
+        : semantic.provider.metric === 'dot'
+          ? 'Dot'
+          : 'Euclid',
+      credentialPath,
+    ], 60_000);
+  }
+
   async buildOperator(config: SeedbedConfig): Promise<void> {
-    await this.docker([...this.args(config), 'build', 'workshop'], 5 * 60_000);
+    const args = this.args(config);
+    for (const profile of config.compose.profiles) args.push('--profile', profile);
+    args.push('build', 'workshop');
+    await this.docker(args, 5 * 60_000);
   }
 
   async invoke<T>(config: SeedbedConfig, operation: string, input: unknown): Promise<T> {
@@ -354,8 +392,10 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
     if (this.execution.signal?.aborted) throw new SeedbedOperationAbortedError(operation);
     const secretMount = protectedOperatorMountArgs(operation, config.authentication.tokenFile);
     const containerName = `gnolith-seedbed-op-${randomUUID().replaceAll('-', '')}`;
+    const installationProfiles = config.compose.profiles.flatMap((profile) => ['--profile', profile]);
     const child = spawn('docker', [
       ...this.args(config),
+      ...installationProfiles,
       '--profile', 'seedbed-operator',
       'run', '--rm', '--name', containerName, '--no-deps', '-T', ...secretMount, ...mounts, 'seedbed-operator',
       operation, ...mode,

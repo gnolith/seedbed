@@ -115,6 +115,11 @@ and canonicalizes that URL once at the installation boundary, including the
 Docker host-gateway hostname substitution described below, then passes the exact
 result unchanged to the owner runtime. Neither Seedbed nor the owner appends a
 path segment.
+For a Qdrant profile, the generated graph waits for Qdrant health and
+idempotently creates or validates the configured collection with the exact
+dimensions and metric. After the full graph is stable, Seedbed repeats that
+bounded check from the Workshop container's network view and asks Workshop's
+public administration surface to reconnect before semantic planning.
 When an installation requests semantic `ready`, Seedbed first asks Workshop's
 public search administration surface to finish lexical catch-up, estimate one
 bounded `asap` semantic plan, and explicitly approve that owner-created plan.

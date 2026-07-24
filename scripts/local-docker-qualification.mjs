@@ -305,8 +305,11 @@ try {
     fixtureVerification.format !== 'gnolith-workshop-public-backup-verification-v1'
     || JSON.stringify(fixtureVerification).includes(token)
   ) throw new Error('restored public backup fixture did not verify opaquely');
+  console.log('qualifying semantic SQLite profile');
   await verifySemanticProfile(packed, 'sqlite');
+  console.log('qualifying semantic Qdrant profile');
   await verifySemanticProfile(packed, 'qdrant');
+  console.log('qualifying unreachable semantic profile');
   await verifyUnavailableSemanticProfile(packed);
   console.log('verified exact pinned local Docker graph, repair, backup/restore, protected OpenAI semantic configuration, SQLite, and Qdrant');
 } finally {
@@ -480,7 +483,7 @@ async function verifySemanticProfile(packed, vectorKind) {
       labels: { en: { language: 'en', value: `Semantic ${vectorKind} lighthouse` } },
     },
   });
-  await callMcp(semanticPort, token, 'create_item', {
+  const deniedEntity = await callMcp(semanticPort, token, 'create_item', {
     idempotencyKey: `semantic-denied-${vectorKind}-${key}`,
     authoredText: `Semantic ${vectorKind} authorization fixture`,
     data: {
@@ -492,9 +495,66 @@ async function verifySemanticProfile(packed, vectorKind) {
     version: 1,
     action: 'status',
   });
-  const policyRevision = authorization.structuredContent?.policyRevision;
+  let policyRevision = authorization.structuredContent?.policyRevision;
   if (!Number.isSafeInteger(policyRevision)) {
     throw new Error(`${vectorKind} authorization status did not expose a bounded policy revision`);
+  }
+  const ownerStatus = (await callMcp(semanticPort, token, 'gnolith_status', {})).structuredContent;
+  const ownerPrincipalId = ownerStatus?.principalId;
+  const workspaceId = ownerStatus?.activeWorkspaceId;
+  if (typeof ownerPrincipalId !== 'string' || typeof workspaceId !== 'string') {
+    throw new Error(`${vectorKind} owner authorization context was unavailable`);
+  }
+  const deniedTargetRevision = deniedEntity.structuredContent?.newRevision;
+  if (!Number.isSafeInteger(deniedTargetRevision)) {
+    throw new Error(`${vectorKind} denied fixture did not expose its target revision`);
+  }
+  const readerPrincipalId = `semantic-reader-${vectorKind}-${key}`;
+  const readerCredentialId = `semantic-reader-credential-${vectorKind}-${key}`;
+  const readerTokenBytes = createHash('sha256')
+    .update(`seedbed-semantic-reader-v1\0${vectorKind}\0${key}`, 'utf8')
+    .digest();
+  const readerToken = readerTokenBytes.toString('base64url');
+  const readerTokenDigest = createHash('sha256')
+    .update(Buffer.from('gnolith-local-bearer-v1\0', 'utf8'))
+    .update(readerTokenBytes)
+    .digest('hex');
+  for (const [suffix, input] of [
+    ['principal', {
+      action: 'principal-create',
+      principal: { principalId: readerPrincipalId, enabled: true },
+    }],
+    ['membership', {
+      action: 'workspace-membership-add',
+      principalId: readerPrincipalId,
+      workspaceId,
+    }],
+    ['read-grant', {
+      action: 'workspace-grant-add',
+      principalId: readerPrincipalId,
+      workspaceId,
+      capability: 'read',
+    }],
+    ['credential', {
+      action: 'credential-register',
+      credential: {
+        credentialId: readerCredentialId,
+        tokenDigest: readerTokenDigest,
+        principalId: readerPrincipalId,
+        workspaceId,
+      },
+    }],
+  ]) {
+    const administration = await callMcp(semanticPort, token, 'authorization_admin', {
+      version: 1,
+      expectedPolicyRevision: policyRevision,
+      idempotencyKey: `semantic-reader-${suffix}-${vectorKind}-${key}`,
+      ...input,
+    });
+    policyRevision = administration.structuredContent?.policyRevision;
+    if (!Number.isSafeInteger(policyRevision)) {
+      throw new Error(`${vectorKind} reader ${suffix} did not advance policy revision`);
+    }
   }
   await callMcp(semanticPort, token, 'authorization_admin', {
     version: 1,
@@ -502,16 +562,26 @@ async function verifySemanticProfile(packed, vectorKind) {
     expectedPolicyRevision: policyRevision,
     idempotencyKey: `semantic-visibility-${vectorKind}-${key}`,
     target: { kind: 'entity', id: deniedEntityId },
-    expectedTargetRevision: 1,
+    expectedTargetRevision: deniedTargetRevision,
     visibility: {
       version: 1,
-      clauses: [[{ kind: 'principal', principalId: 'semantic-denied-principal' }]],
+      clauses: [[{ kind: 'principal', principalId: ownerPrincipalId }]],
     },
   });
-  await waitForSemanticOnlySearch(semanticPort, token, semanticEntityId, deniedEntityId, vectorKind);
+  await approveSemanticFixturePlan(
+    semanticPort,
+    token,
+    receipt.semanticApproval.configurationId,
+    vectorKind,
+  );
+  await waitForSemanticOnlySearch(
+    semanticPort, readerToken, semanticEntityId, deniedEntityId, vectorKind,
+  );
   await composeCommand(semanticProjectName, semanticComposeDirectory, ['restart', 'workshop']);
   await assertAuthenticatedReady(semanticPort, token);
-  await waitForSemanticOnlySearch(semanticPort, token, semanticEntityId, deniedEntityId, vectorKind);
+  await waitForSemanticOnlySearch(
+    semanticPort, readerToken, semanticEntityId, deniedEntityId, vectorKind,
+  );
   const plansBeforeReplay = await semanticPlanIdentities(semanticPort, token);
   const replay = await control.resume(receipt.operationId);
   if (
@@ -659,6 +729,46 @@ async function semanticPlanIdentities(workshopPort, token) {
     .sort((left, right) => String(left.planId).localeCompare(String(right.planId)));
 }
 
+async function approveSemanticFixturePlan(workshopPort, token, configurationId, vectorKind) {
+  const deadline = Date.now() + 90_000;
+  while (true) {
+    await callMcp(workshopPort, token, 'search_admin', {
+      action: 'materialize',
+      limit: 100,
+      options: { maxRebuildRoots: 100 },
+    });
+    const health = (await callMcp(
+      workshopPort, token, 'search_admin', { action: 'health' },
+    )).structuredContent;
+    const source = health?.materialization?.sourceHighWatermark;
+    const applied = health?.materialization?.activeAppliedWatermark;
+    if (
+      Number.isSafeInteger(source)
+      && Number.isSafeInteger(applied)
+      && source === applied
+    ) break;
+    if (Date.now() >= deadline) {
+      throw new Error(`${vectorKind} fixture materialization did not reach its estimate boundary`);
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  }
+  const estimate = (await callMcp(workshopPort, token, 'search_admin', {
+    action: 'semantic-estimate',
+    options: {
+      configurationId,
+      policy: { mode: 'asap', maxBatchesPerRun: 1 },
+    },
+  })).structuredContent;
+  const planId = estimate?.planId;
+  if (typeof planId !== 'string' || planId.length === 0 || planId.length > 256) {
+    throw new Error(`${vectorKind} fixture semantic estimate did not expose a bounded plan ID`);
+  }
+  await callMcp(workshopPort, token, 'search_admin', {
+    action: 'semantic-approve',
+    options: { planId },
+  });
+}
+
 async function assertDegradedSemanticStatus(workshopPort, token, unavailableProviderPort) {
   const deadline = Date.now() + 60_000;
   let last = '';
@@ -666,7 +776,11 @@ async function assertDegradedSemanticStatus(workshopPort, token, unavailableProv
     const response = await fetch(`http://127.0.0.1:${workshopPort}/health/ready`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(10_000),
+    }).catch(async () => {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+      return undefined;
     });
+    if (response === undefined) continue;
     const status = await response.json();
     const serialized = JSON.stringify(status);
     last = serialized;

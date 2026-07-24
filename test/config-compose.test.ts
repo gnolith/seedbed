@@ -53,6 +53,8 @@ describe('strict installation config and Compose rendering', () => {
     expect(render.yaml).toContain('read_only: true');
     expect(render.yaml).toContain('QDRANT__STORAGE__SNAPSHOTS_PATH: /qdrant/storage/snapshots');
     expect(render.yaml).toContain('QDRANT__TELEMETRY_DISABLED: "true"');
+    expect(render.yaml).toContain('aliases: [qdrant]');
+    expect(render.yaml).not.toContain('\n  qdrant-init:\n');
     expect(render.yaml).not.toMatch(/GNOLITH_BEARER_TOKEN=/u);
   });
 
@@ -270,7 +272,16 @@ describe('strict installation config and Compose rendering', () => {
         },
       },
     }, { projectDirectory: process.cwd() });
-    expect(renderCompose(qdrant).yaml).toContain('\n  qdrant:\n');
+    const qdrantRender = renderCompose(qdrant);
+    expect(qdrantRender.yaml).toContain('\n  qdrant:\n');
+    expect(qdrantRender.yaml).toContain('\n  qdrant-init:\n');
+    expect(qdrantRender.yaml).toContain('qdrant-init:\n        condition: service_completed_successfully');
+    expect(qdrantRender.environment).toMatchObject({
+      QDRANT_COLLECTION: 'gnolith-test',
+      QDRANT_DIMENSIONS: '1536',
+      QDRANT_DISTANCE: 'Cosine',
+    });
+    expect(qdrantRender.oneShotServices).toContain('qdrant-init');
   });
 
   it('mounts the protected bearer only for offline bootstrap and semantic configuration operators', () => {

@@ -302,6 +302,7 @@ export class SeedbedLocalControl implements SeedbedControl {
         compose,
       });
       if (!(await compose.health(config)).healthy) await compose.up(config);
+      await compose.ensureSemanticDependencies(config);
       const semanticApproval = (
         plan.request.semantic !== undefined
         && plan.request.expected.semanticState === 'ready'
@@ -705,6 +706,20 @@ async function ensureSemanticApproval(
   const fingerprint = semanticConfigurationFingerprint(request.semantic.configuration);
   const path = join(config.paths.stateDirectory, 'semantic-approval-receipt.json');
   const token = decodeCanonicalTextSecret(await readFile(tokenFile), 45);
+  const reconnected = await callWorkshopTool(
+    request.endpoint,
+    token,
+    operationId,
+    'search_admin',
+    {
+      action: 'semantic-reconnect',
+      options: { configurationId },
+    },
+    signal,
+  );
+  if (reconnected.connected !== true) {
+    throw new TypeError('Workshop semantic dependency reconnect did not succeed');
+  }
   await waitForLexicalMaterialization(request.endpoint, token, operationId, signal);
   let state: SemanticApprovalStateV1 | undefined;
   try {
