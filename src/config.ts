@@ -240,27 +240,28 @@ function semanticEndpoint(value: unknown, label: string): string {
 }
 
 function requirePrivateApproval(endpointValue: string, approved: boolean, label: string): void {
-  const hostname = new URL(endpointValue).hostname.toLowerCase().replace(/^\[|\]$/gu, '');
-  const parts = hostname.split('.').map(Number);
-  const privateIpv4 = parts.length === 4
-    && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
-    && (
-      parts[0] === 10
-      || parts[0] === 127
-      || (parts[0] === 169 && parts[1] === 254)
-      || (parts[0] === 172 && parts[1]! >= 16 && parts[1]! <= 31)
-      || (parts[0] === 192 && parts[1] === 168)
-    );
-  const privateHost = privateIpv4
-    || hostname === 'localhost'
+  const url = new URL(endpointValue);
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/gu, '');
+  const ipv4 = hostname.split('.').map(Number);
+  const isIpv4 = ipv4.length === 4
+    && ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255);
+  const loopback = hostname === 'localhost'
     || hostname === '::1'
-    || hostname.startsWith('fc')
-    || hostname.startsWith('fd')
-    || hostname.startsWith('fe80:')
-    || !hostname.includes('.')
+    || (isIpv4 && ipv4[0] === 127);
+  const composePrivate = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(hostname)
+    && !loopback;
+  const unsafePrivate = (isIpv4 && !loopback)
+    || hostname.includes(':')
     || hostname.endsWith('.local')
     || hostname.endsWith('.internal');
-  if (privateHost && !approved) fail(`${label} private endpoint requires explicit approval`);
+  if (loopback || composePrivate) {
+    if (!approved) fail(`${label} private endpoint requires explicit approval`);
+    if (url.protocol !== 'http:') fail(`${label} approved local endpoint must use HTTP`);
+    return;
+  }
+  if (unsafePrivate || approved || url.protocol !== 'https:') {
+    fail(`${label} is not an approved loopback, Compose-private, or safe HTTPS endpoint`);
+  }
 }
 
 function nullableIdentifier(value: unknown, label: string): string | null {

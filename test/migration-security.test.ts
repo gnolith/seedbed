@@ -3,10 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { applyInstallationPlan, createInstallationPlan } from '../src/migration.js';
-import { createLocalBearerCredential } from '../src/secrets.js';
+import { createLocalBearerCredential, decodeCanonicalTextSecret, inspectProtectedCredential } from '../src/secrets.js';
 import { fixtureConfig, mockPorts } from './helpers.js';
 import { acquireOperationLock } from '../src/operation-lock.js';
 import { semanticConfigurationFingerprint } from '../src/semantic.js';
+import { sha256 } from '../src/canonical.js';
 
 describe('digest-bound migration/bootstrap apply', () => {
   it('orders owner migrations and Workshop-only bootstrap before listener, resumes after interruption, and emits selector-only receipt', async () => {
@@ -34,7 +35,7 @@ describe('digest-bound migration/bootstrap apply', () => {
     expect(receipt.requiredEnvironmentSelector).toBe('GNOLITH_BEARER_TOKEN');
     expect(receipt.clientVerified).toBe(false);
     expect(JSON.stringify(receipt)).not.toContain((await readFile(config.authentication.tokenFile, 'utf8')).trim());
-    expect(await stat(config.authentication.tokenFile)).toMatchObject({ size: 44 });
+    expect(await stat(config.authentication.tokenFile)).toMatchObject({ size: 43 });
   });
 
   it('creates exactly 32 CSPRNG bytes as canonical base64url and refuses existing files and link parents', async () => {
@@ -46,7 +47,7 @@ describe('digest-bound migration/bootstrap apply', () => {
       windowsAcl: () => undefined,
     });
     const content = await readFile(path, 'utf8');
-    expect(content).toMatch(/^[A-Za-z0-9_-]{43}\n$/u);
+    expect(content).toMatch(/^[A-Za-z0-9_-]{43}$/u);
     expect(metadata).not.toHaveProperty('token');
     await expect(createLocalBearerCredential('credential', path, { platform: process.platform, windowsAcl: () => undefined })).rejects.toMatchObject({ code: 'EEXIST' });
     expect(await readFile(path, 'utf8')).toBe(content);
@@ -54,6 +55,31 @@ describe('digest-bound migration/bootstrap apply', () => {
     if (process.platform !== 'win32') {
       await symlink(join(root, 'real'), join(root, 'linked'));
       await expect(createLocalBearerCredential('credential', join(root, 'linked', 'bearer'))).rejects.toThrow(/link|junction/u);
+    }
+  });
+
+  it('normalizes at most one terminal LF or CRLF and rejects every other surrounding or control byte', async () => {
+    expect(decodeCanonicalTextSecret('packed_exact_local_token')).toBe('packed_exact_local_token');
+    expect(decodeCanonicalTextSecret('packed_exact_local_token\n')).toBe('packed_exact_local_token');
+    expect(decodeCanonicalTextSecret('packed_exact_local_token\r\n')).toBe('packed_exact_local_token');
+    for (const invalid of [
+      '',
+      ' packed_exact_local_token',
+      'packed_exact_local_token ',
+      'packed_exact_local_token\t',
+      'packed_exact_local_token\r',
+      'packed_exact_local_token\n\n',
+      'packed_exact\u0000local_token',
+    ]) expect(() => decodeCanonicalTextSecret(invalid)).toThrow(/protected text secret/i);
+
+    const root = await mkdtemp(join(tmpdir(), 'seedbed-secret-newline-'));
+    const token = 'a'.repeat(43);
+    for (const [name, suffix] of [['none', ''], ['lf', '\n'], ['crlf', '\r\n']] as const) {
+      const path = join(root, name);
+      await writeFile(path, `${token}${suffix}`, { mode: 0o600 });
+      await expect(inspectProtectedCredential(path, process.platform)).resolves.toEqual({
+        credentialDigest: sha256(token),
+      });
     }
   });
 

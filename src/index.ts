@@ -1,7 +1,7 @@
 export { canonicalJson, digestObject, sha256 } from './canonical.js';
 export { loadConfig, validateConfig, configDigest, redactConfig } from './config.js';
 export { renderCompose, assertSafeComposeEnvironment } from './compose.js';
-export { createLocalBearerCredential, inspectProtectedCredential } from './secrets.js';
+export { createLocalBearerCredential, decodeCanonicalTextSecret, inspectProtectedCredential } from './secrets.js';
 export { createInstallationPlan, createMigrationPlan, applyInstallationPlan, applyMigrationPlan } from './migration.js';
 export { createInstallationBackup, inspectInstallationBackup, verifyInstallationBackup, dryRunRestore, restoreInstallationBackup } from './backup.js';
 export { validateLegacyManifest, loadLegacyManifest, planLegacyAdoption, applyLegacyAdoption } from './adoption.js';
@@ -28,5 +28,7 @@ export type {
   SeedbedControlPlan,
   SeedbedControlPolicy,
   SeedbedControlReceipt,
+  SeedbedControlOperationOptions,
   SeedbedLocalBuildSelection,
+  WaystoneLocalExpectation,
 } from './local-control.js';

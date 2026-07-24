@@ -53,17 +53,16 @@ export async function diagnoseInstallation(input: {
   }));
   const healthy = await input.compose.health(input.config).then((value) => value.healthy).catch(() => false);
   if (!healthy) issues.push({ code: 'compose_unhealthy', phase: 'workshop', remediation: 'Resume the recorded Seedbed operation to restart the exact Compose project and revalidate authenticated readiness.' });
-  const owners = [];
-  for (const owner of OWNER_ORDER) {
+  const owners = await Promise.all(OWNER_ORDER.map(async (owner) => {
     try {
       const diagnostic = await input.ports[owner].diagnose();
-      owners.push({
+      const result = {
         owner,
         ready: diagnostic.ready,
         packageVersion: diagnostic.packageVersion,
         schemaVersion: diagnostic.schemaVersion,
         migrationDigest: diagnostic.migrationDigest,
-      });
+      };
       if (!diagnostic.ready) issues.push({ code: 'owner_not_ready', phase: owner, remediation: 'Run an explicit digest-bound migration plan/apply.' });
       if (
         diagnostic.packageVersion !== input.config.packages[owner].version
@@ -71,11 +70,20 @@ export async function diagnoseInstallation(input: {
         || diagnostic.ledger.namespace !== OWNER_LEDGER_NAMESPACES[owner]
         || !/^[0-9a-f]{64}$/u.test(diagnostic.ledger.digest)
       ) issues.push({ code: 'owner_version_mismatch', phase: owner, remediation: 'Resume the exact component-lock-bound migration plan before starting Workshop.' });
-    } catch {
-      owners.push({ owner, ready: false });
-      issues.push({ code: 'owner_diagnostic_unavailable', phase: owner, remediation: 'Inspect the owner-local diagnostic command and container logs.' });
+      return result;
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      const bounded = code === 'seedbed-operator-timeout' || code === 'seedbed-operation-aborted';
+      issues.push({
+        code: bounded ? 'owner_diagnostic_timeout' : 'owner_diagnostic_unavailable',
+        phase: owner,
+        remediation: bounded
+          ? 'Resume the exact recorded Seedbed operation after the local Compose runtime is responsive.'
+          : 'Inspect the owner-local diagnostic command and container logs.',
+      });
+      return { owner, ready: false };
     }
-  }
+  }));
   const artifacts = await Promise.all(OWNER_ORDER.map(async (owner) => {
     const path = resolve(input.artifactRoot ?? process.cwd(), input.config.packages[owner].artifact);
     try {
@@ -97,6 +105,7 @@ export async function diagnoseInstallation(input: {
     }));
   if (!credentialInspection.protected) issues.push({ code: 'credential_selector_unprotected', phase: 'credential', remediation: 'Repair the protected local bearer selector before starting Workshop.' });
   const backupExists = await stat(input.config.paths.backupDirectory).then((value) => value.isDirectory()).catch(() => false);
+  issues.sort((left, right) => left.phase.localeCompare(right.phase) || left.code.localeCompare(right.code));
   if (issues.length > 100) issues.length = 100;
   return {
     format: 'gnolith-seedbed-doctor-v1',

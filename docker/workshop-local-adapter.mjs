@@ -142,12 +142,31 @@ async function readSemanticCredential(assembly, selector) {
   ) throw new TypeError('Semantic credential selector must resolve to a bounded direct regular file');
   const bytes = await readFile(target);
   try {
-    const value = new TextDecoder('utf-8', { fatal: true }).decode(bytes).trim();
-    if (!value) throw new TypeError('Semantic credential selector is empty');
-    return value;
+    return decodeCanonicalTextSecret(bytes);
   } finally {
     bytes.fill(0);
   }
+}
+
+function decodeCanonicalTextSecret(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > 1024 * 1024) {
+    throw new TypeError('Protected text secret must contain bounded nonempty UTF-8');
+  }
+  let value;
+  try {
+    value = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new TypeError('Protected text secret must contain bounded nonempty UTF-8');
+  }
+  if (value.endsWith('\r\n')) value = value.slice(0, -2);
+  else if (value.endsWith('\n')) value = value.slice(0, -1);
+  if (
+    value.length === 0
+    || /^[\s]/u.test(value)
+    || /[\s]$/u.test(value)
+    || /[\u0000-\u001f\u007f]/u.test(value)
+  ) throw new TypeError('Protected text secret has noncanonical surrounding or control bytes');
+  return value;
 }
 
 async function verifyConfiguredAssets(config, protectedReader) {

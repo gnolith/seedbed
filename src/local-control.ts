@@ -10,7 +10,8 @@ import { diagnoseInstallation } from './diagnostics.js';
 import { applyInstallationPlan, createInstallationPlan } from './migration.js';
 import { createOperatorOwnerPorts } from './owner-ports.js';
 import { semanticConfigurationFingerprint } from './semantic.js';
-import { DockerComposeDriver, DockerDiagnosticHost } from './system-drivers.js';
+import { decodeCanonicalTextSecret } from './secrets.js';
+import { DockerComposeDriver, DockerDiagnosticHost, SeedbedOperationAbortedError } from './system-drivers.js';
 import type {
   ImmutableCoordinate,
   SeedbedConfig,
@@ -84,6 +85,20 @@ export interface SeedbedControlPlan {
     readonly kind: 'external-directory';
     readonly canonicalPath: string;
   };
+  readonly waystone?: WaystoneLocalExpectation;
+}
+
+export interface WaystoneLocalExpectation {
+  readonly enabled: true;
+  readonly prefix: '/app';
+  readonly manifestSha256: string;
+  readonly entrypoint: {
+    readonly path: string;
+    readonly sha256: string;
+    readonly bytes: number;
+    readonly mediaType: string;
+  };
+  readonly reservedPaths: readonly ['/', '/mcp', '/health/live', '/health/ready'];
 }
 
 export interface SeedbedControlReceipt {
@@ -103,6 +118,7 @@ export interface SeedbedControlReceipt {
   };
   readonly environmentSelector: 'GNOLITH_BEARER_TOKEN';
   readonly semantic?: SemanticConfigurationReceiptV1;
+  readonly waystone?: WaystoneLocalExpectation;
 }
 
 export type InstallationPlan = SeedbedControlPlan;
@@ -125,12 +141,17 @@ export interface InstallationDiagnosis {
   };
 }
 
+export interface SeedbedControlOperationOptions {
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+}
+
 export interface SeedbedControl {
-  inspect(request: InstallationSelector): Promise<InstallationInspection>;
-  plan(request: DockerInstallationRequest): Promise<SeedbedControlPlan>;
-  apply(plan: SeedbedControlPlan): Promise<SeedbedControlReceipt>;
-  resume(operationId: string): Promise<SeedbedControlReceipt>;
-  diagnose(request: InstallationSelector): Promise<InstallationDiagnosis>;
+  inspect(request: InstallationSelector, options?: SeedbedControlOperationOptions): Promise<InstallationInspection>;
+  plan(request: DockerInstallationRequest, options?: SeedbedControlOperationOptions): Promise<SeedbedControlPlan>;
+  apply(plan: SeedbedControlPlan, options?: SeedbedControlOperationOptions): Promise<SeedbedControlReceipt>;
+  resume(operationId: string, options?: SeedbedControlOperationOptions): Promise<SeedbedControlReceipt>;
+  diagnose(request: InstallationSelector, options?: SeedbedControlOperationOptions): Promise<InstallationDiagnosis>;
 }
 
 export interface SeedbedControlPolicy {
@@ -217,21 +238,27 @@ export class SeedbedLocalControl implements SeedbedControl {
     }, this.attestedProjectRoot ?? process.cwd());
   }
 
-  async inspect(selector: InstallationSelector): Promise<InstallationInspection> {
+  async inspect(selector: InstallationSelector, options: SeedbedControlOperationOptions = {}): Promise<InstallationInspection> {
+    assertOperationOptions(options);
+    throwIfAborted(options.signal);
     this.assertSelector(selector);
     const state = await this.readControlState(selector.installationId);
     if (state === undefined) return { found: false, installationId: null, state: 'absent' };
     return { found: true, installationId: selector.installationId, state };
   }
 
-  async plan(request: DockerInstallationRequest): Promise<SeedbedControlPlan> {
+  async plan(request: DockerInstallationRequest, options: SeedbedControlOperationOptions = {}): Promise<SeedbedControlPlan> {
+    assertOperationOptions(options);
+    throwIfAborted(options.signal);
     const internal = createInstallationPlan(this.config(request));
+    const waystone = await waystoneExpectation(this.policy);
     const body = {
       version: 'gnolith-seedbed-control-plan-v2',
       request: canonicalClone(request),
       steps: internal.steps,
       internalPlanDigest: digestObject(internal),
       policyDigest: digestObject(this.policy),
+      ...(waystone === undefined ? {} : { waystone }),
     };
     const digest = digestObject(body);
     return {
@@ -241,11 +268,13 @@ export class SeedbedLocalControl implements SeedbedControl {
       request: body.request,
       steps: body.steps,
       stateRoot: { kind: 'external-directory', canonicalPath: this.policy.stateRoot },
+      ...(waystone === undefined ? {} : { waystone }),
     };
   }
 
-  async apply(plan: SeedbedControlPlan): Promise<SeedbedControlReceipt> {
-    const expected = await this.plan(plan.request);
+  async apply(plan: SeedbedControlPlan, options: SeedbedControlOperationOptions = {}): Promise<SeedbedControlReceipt> {
+    const execution = boundedExecution(options, 10 * 60_000);
+    const expected = await this.plan(plan.request, execution);
     if (canonicalJson(plan) !== canonicalJson(expected)) throw new TypeError('Seedbed control plan is stale or does not match the immutable policy');
     const config = this.config(plan.request);
     const internal = createInstallationPlan(config);
@@ -253,7 +282,7 @@ export class SeedbedLocalControl implements SeedbedControl {
     await atomicCreateOrVerify(operationPath, { format: 'gnolith-seedbed-control-operation-v1', plan } satisfies OperationRecord);
     await this.writeControlState(plan.request.installationId, 'applying');
     try {
-      const compose = new DockerComposeDriver(this.policy.artifactRoot);
+      const compose = new DockerComposeDriver(this.policy.artifactRoot, execution);
       const receipt = await applyInstallationPlan({
         config,
         plan: internal,
@@ -262,6 +291,9 @@ export class SeedbedLocalControl implements SeedbedControl {
       });
       if (!(await compose.health(config)).healthy) await compose.up(config);
       await verifyExpectedWorkshopReadiness(plan.request, receipt.protectedTokenFile);
+      if (plan.waystone !== undefined) {
+        await verifyExpectedWaystone(plan.request, receipt.protectedTokenFile, plan.waystone);
+      }
       const result: SeedbedControlReceipt = {
         operationId: plan.id,
         state: 'ready',
@@ -279,6 +311,7 @@ export class SeedbedLocalControl implements SeedbedControl {
         },
         environmentSelector: 'GNOLITH_BEARER_TOKEN',
         ...(receipt.semantic === undefined ? {} : { semantic: receipt.semantic }),
+        ...(plan.waystone === undefined ? {} : { waystone: plan.waystone }),
       };
       await this.writeControlState(plan.request.installationId, 'ready');
       return result;
@@ -288,21 +321,23 @@ export class SeedbedLocalControl implements SeedbedControl {
     }
   }
 
-  async resume(operationId: string): Promise<SeedbedControlReceipt> {
+  async resume(operationId: string, options: SeedbedControlOperationOptions = {}): Promise<SeedbedControlReceipt> {
+    const execution = boundedExecution(options, 30_000);
     if (!/^[0-9a-f]{64}$/u.test(operationId)) throw new TypeError('Seedbed operation ID is invalid');
     const record = await readJson(this.operationPath(operationId)) as OperationRecord;
     if (record.format !== 'gnolith-seedbed-control-operation-v1' || record.plan.id !== operationId) throw new TypeError('Seedbed operation record is invalid');
-    return this.apply(record.plan);
+    return this.apply(record.plan, execution);
   }
 
-  async diagnose(selector: InstallationSelector): Promise<InstallationDiagnosis> {
+  async diagnose(selector: InstallationSelector, options: SeedbedControlOperationOptions = {}): Promise<InstallationDiagnosis> {
+    const execution = boundedExecution(options, 9_000);
     this.assertSelector(selector);
     const controlState = await this.readControlState(selector.installationId);
     if (controlState === undefined) return { installationId: selector.installationId, classification: 'not-installed', restartAllowed: false };
     const record = await this.findOperation(selector.installationId);
     if (record === undefined) return { installationId: selector.installationId, classification: 'operation-record-missing', restartAllowed: false };
     const config = this.config(record.plan.request, selector.projectRoot);
-    const compose = new DockerComposeDriver(this.policy.artifactRoot);
+    const compose = new DockerComposeDriver(this.policy.artifactRoot, execution);
     const report = await diagnoseInstallation({
       config,
       ports: createOperatorOwnerPorts(config, compose),
@@ -314,9 +349,10 @@ export class SeedbedLocalControl implements SeedbedControl {
       ? await verifyExpectedWorkshopReadiness(record.plan.request, config.authentication.tokenFile).then(() => true).catch(() => false)
       : false;
     const ready = report.compose.healthy && authenticatedReady && report.owners.every((owner) => owner.ready) && report.issues.length === 0;
+    const ownerRuntimeTimedOut = report.issues.some((issue) => issue.code === 'owner_diagnostic_timeout');
     const repairable = !ready
       && controlState !== 'applying'
-      && report.owners.every((owner) => owner.ready)
+      && (report.owners.every((owner) => owner.ready) || (!report.compose.healthy && ownerRuntimeTimedOut))
       && report.artifacts.every((artifact) => artifact.digestMatches)
       && report.credential.protected;
     return {
@@ -558,11 +594,70 @@ function assertRequest(request: DockerInstallationRequest, policy: SeedbedContro
     if (metadata.size < 1 || metadata.size > 1024 * 1024) {
       throw new TypeError(`Protected semantic selector ${selector.id} must contain 1..1048576 bytes`);
     }
+    try {
+      decodeCanonicalTextSecret(readFileSync(requestedPath), 1024 * 1024);
+    } catch {
+      throw new TypeError(`Protected semantic selector ${selector.id} must contain canonical text secret bytes`);
+    }
   }
 }
 
+async function waystoneExpectation(policy: SeedbedControlPolicy): Promise<WaystoneLocalExpectation | undefined> {
+  if (!policy.compose.profiles.includes('waystone')) return undefined;
+  const coordinate = policy.packages.waystone;
+  if (coordinate === undefined) throw new TypeError('Default Waystone profile lacks an immutable coordinate');
+  const path = resolve(policy.artifactRoot, coordinate.artifact);
+  const metadata = lstatSync(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size < 1 || metadata.size > 8 * 1024 * 1024) {
+    throw new TypeError('Waystone manifest must be a bounded regular non-link file');
+  }
+  const bytes = readFileSync(path);
+  if (sha256(bytes) !== coordinate.sha256) throw new TypeError('Waystone manifest digest differs from immutable policy');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch {
+    throw new TypeError('Waystone manifest must be bounded UTF-8 JSON');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new TypeError('Waystone manifest is invalid');
+  const manifest = parsed as Record<string, unknown>;
+  const keys = ['entrypoint', 'files', 'format', 'manifestSha256'];
+  if (canonicalJson(Object.keys(manifest).sort()) !== canonicalJson(keys) || manifest.format !== 'waystone-assets-v1') {
+    throw new TypeError('Waystone manifest format is invalid');
+  }
+  if (typeof manifest.entrypoint !== 'string' || !Array.isArray(manifest.files)) throw new TypeError('Waystone manifest entrypoint is invalid');
+  const entry = manifest.files.find((candidate) => (
+    candidate !== null
+    && typeof candidate === 'object'
+    && !Array.isArray(candidate)
+    && (candidate as Record<string, unknown>).path === manifest.entrypoint
+  )) as Record<string, unknown> | undefined;
+  if (
+    entry === undefined
+    || typeof entry.sha256 !== 'string'
+    || !/^[0-9a-f]{64}$/u.test(entry.sha256)
+    || !Number.isSafeInteger(entry.bytes)
+    || Number(entry.bytes) < 1
+    || typeof entry.mediaType !== 'string'
+    || entry.mediaType.length < 1
+    || entry.mediaType.length > 256
+  ) throw new TypeError('Waystone manifest entrypoint declaration is invalid');
+  return {
+    enabled: true,
+    prefix: '/app',
+    manifestSha256: coordinate.sha256,
+    entrypoint: {
+      path: manifest.entrypoint,
+      sha256: entry.sha256,
+      bytes: Number(entry.bytes),
+      mediaType: entry.mediaType,
+    },
+    reservedPaths: ['/', '/mcp', '/health/live', '/health/ready'],
+  };
+}
+
 async function verifyExpectedWorkshopReadiness(request: DockerInstallationRequest, tokenFile: string): Promise<void> {
-  const token = (await readFile(tokenFile, 'utf8')).trim();
+  const token = decodeCanonicalTextSecret(await readFile(tokenFile), 45);
   if (!/^[A-Za-z0-9_-]{43}$/u.test(token)) throw new TypeError('Protected local bearer selector is invalid');
   const endpoint = new URL('/health/ready', request.endpoint);
   const response = await fetch(endpoint, {
@@ -608,6 +703,49 @@ async function verifyExpectedWorkshopReadiness(request: DockerInstallationReques
     expected: request.expected,
     actual: status,
   })}`);
+}
+
+async function verifyExpectedWaystone(
+  request: DockerInstallationRequest,
+  tokenFile: string,
+  expectation: WaystoneLocalExpectation,
+): Promise<void> {
+  const token = decodeCanonicalTextSecret(await readFile(tokenFile), 45);
+  const origin = new URL(request.endpoint).origin;
+  for (const pathname of ['/app', '/app/', `/app/${expectation.entrypoint.path}`]) {
+    const response = await fetch(new URL(pathname, origin), {
+      headers: { authorization: `Bearer ${token}` },
+      redirect: 'error',
+      signal: AbortSignal.timeout(10_000),
+    });
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (
+      !response.ok
+      || response.headers.get('content-type') !== expectation.entrypoint.mediaType
+      || bytes.byteLength !== expectation.entrypoint.bytes
+      || sha256(bytes) !== expectation.entrypoint.sha256
+    ) throw new TypeError('Waystone default asset verification failed');
+  }
+  for (const pathname of expectation.reservedPaths) {
+    const response = await fetch(new URL(pathname, origin), {
+      headers: { authorization: `Bearer ${token}` },
+      redirect: 'error',
+      signal: AbortSignal.timeout(10_000),
+    });
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (
+      response.headers.get('content-type') === expectation.entrypoint.mediaType
+      || sha256(bytes) === expectation.entrypoint.sha256
+    ) throw new TypeError('Waystone asset mount shadowed a reserved Workshop route');
+  }
+  for (const pathname of ['/app/%2e%2e%2fmcp', '/app/%2e%2e%2fhealth%2fready']) {
+    const response = await fetch(`${origin}${pathname}`, {
+      headers: { authorization: `Bearer ${token}` },
+      redirect: 'error',
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (response.ok) throw new TypeError('Waystone asset mount accepted encoded dot-segment traversal');
+  }
 }
 
 function canonicalClone<T>(value: T): T {
@@ -708,4 +846,24 @@ async function atomicReplace(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(temporary, `${canonicalJson(value)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   await rename(temporary, path);
+}
+
+function assertOperationOptions(options: SeedbedControlOperationOptions): void {
+  if (
+    options.timeoutMs !== undefined
+    && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 10 * 60_000)
+  ) throw new TypeError('Seedbed control timeout must be 1..600000 milliseconds');
+}
+
+function boundedExecution(options: SeedbedControlOperationOptions, defaultTimeoutMs: number): Required<SeedbedControlOperationOptions> {
+  assertOperationOptions(options);
+  const timeoutMs = Math.min(options.timeoutMs ?? defaultTimeoutMs, defaultTimeoutMs);
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const signal = options.signal === undefined ? deadline : AbortSignal.any([options.signal, deadline]);
+  throwIfAborted(signal);
+  return { signal, timeoutMs };
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new SeedbedOperationAbortedError('control');
 }

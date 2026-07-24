@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { access, chmod, copyFile, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -11,11 +12,44 @@ import type { AdoptionTarget, AdoptionVerification } from './adoption.js';
 import type { OwnerSection } from './owner-ports.js';
 import type { SeedbedOperatorExecutor } from './owner-ports.js';
 import type { RestoreTarget } from './backup.js';
-import { canonicalJson, sha256 } from './canonical.js';
+import { canonicalJson, redactFilesystemPaths, sha256 } from './canonical.js';
 import type { LegacyAdapterExecutor, PortableLegacySource } from './legacy-source.js';
 
 const exec = promisify(execFile);
 const SEEDBED_PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+export interface SeedbedExecutionOptions {
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+}
+
+interface OperatorProcess {
+  readonly child: ReturnType<typeof spawn>;
+  readonly containerName: string;
+  readonly operation: string;
+  readonly timeoutMs: number;
+  readonly signal?: AbortSignal;
+}
+
+export class SeedbedOperatorTimeoutError extends Error {
+  readonly code = 'seedbed-operator-timeout';
+  readonly classification = 'seedbed-operation-timeout';
+  readonly retryable = true;
+  constructor(readonly operation: string) {
+    super(`Seedbed operator ${operation} exceeded its bounded deadline and was terminated`);
+    this.name = 'SeedbedOperatorTimeoutError';
+  }
+}
+
+export class SeedbedOperationAbortedError extends Error {
+  readonly code = 'seedbed-operation-aborted';
+  readonly classification = 'seedbed-operation-aborted';
+  readonly retryable = true;
+  constructor(readonly operation: string) {
+    super(`Seedbed operation ${operation} was aborted and its child process was terminated`);
+    this.name = 'SeedbedOperationAbortedError';
+  }
+}
 
 const OPERATOR_OPERATIONS = new Set([
   'owner-migration-plan-v1', 'owner-migration-apply-v1', 'owner-diagnostics-v1',
@@ -32,7 +66,15 @@ const OPERATOR_OPERATIONS = new Set([
 ]);
 
 export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecutor, LegacyAdapterExecutor {
-  constructor(private readonly artifactRoot = SEEDBED_PACKAGE_ROOT) {}
+  constructor(
+    private readonly artifactRoot = SEEDBED_PACKAGE_ROOT,
+    private readonly execution: SeedbedExecutionOptions = {},
+  ) {
+    if (
+      execution.timeoutMs !== undefined
+      && (!Number.isSafeInteger(execution.timeoutMs) || execution.timeoutMs < 1 || execution.timeoutMs > 10 * 60_000)
+    ) throw new TypeError('Seedbed execution timeout must be 1..600000 milliseconds');
+  }
 
   async prepare(config: SeedbedConfig): Promise<void> {
     const render = renderCompose(config);
@@ -147,27 +189,30 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
     const args = this.args(config);
     for (const profile of config.compose.profiles) args.push('--profile', profile);
     args.push('up', '--build', '--detach', '--wait', '--force-recreate');
-    await exec('docker', args, { windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+    await this.docker(args, 5 * 60_000);
   }
 
   async buildOperator(config: SeedbedConfig): Promise<void> {
-    await exec('docker', [...this.args(config), 'build', 'workshop'], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+    await this.docker([...this.args(config), 'build', 'workshop'], 5 * 60_000);
   }
 
   async invoke<T>(config: SeedbedConfig, operation: string, input: unknown): Promise<T> {
-    const child = this.operatorProcess(config, operation);
+    const process = this.operatorProcess(config, operation);
+    const { child } = process;
+    const stdin = child.stdin!;
+    const stdout = child.stdout!;
     const output: Buffer[] = [];
     let bytes = 0;
     const limit = operation === 'owner-backup-export-v1'
       ? encodedResponseLimit(config.backup.maxArchiveBytes)
       : 8 * 1024 * 1024;
-    child.stdout.on('data', (chunk: Buffer) => {
+    stdout.on('data', (chunk: Buffer) => {
       bytes += chunk.byteLength;
-      if (bytes > limit) child.kill();
+      if (bytes > limit) void terminateOperator(process);
       else output.push(chunk);
     });
-    const completion = childCompletion(child, 'Seedbed Compose operator');
-    child.stdin.end(`${canonicalJson({ context: operatorContext(config), input })}\n`);
+    const completion = operatorCompletion(process, 'Seedbed Compose operator');
+    stdin.end(`${canonicalJson({ context: operatorContext(config), input })}\n`);
     await completion;
     if (bytes > limit) throw new TypeError('Seedbed operator response exceeded configured bounds');
     return JSON.parse(Buffer.concat(output).toString('utf8')) as T;
@@ -176,14 +221,17 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
   async read(config: SeedbedConfig, operation: string, input: unknown): Promise<AsyncIterable<Uint8Array>> {
     const self = this;
     async function* stream(): AsyncIterable<Uint8Array> {
-      const child = self.operatorProcess(config, operation, ['--stream-out']);
-      const completion = childCompletion(child, 'Seedbed Compose streaming operator');
-      child.stdin.end(`${canonicalJson({ context: operatorContext(config), input })}\n`);
+      const process = self.operatorProcess(config, operation, ['--stream-out']);
+      const { child } = process;
+      const stdin = child.stdin!;
+      const stdout = child.stdout!;
+      const completion = operatorCompletion(process, 'Seedbed Compose streaming operator');
+      stdin.end(`${canonicalJson({ context: operatorContext(config), input })}\n`);
       try {
-        for await (const chunk of child.stdout) yield chunk as Buffer;
+        for await (const chunk of stdout) yield chunk as Buffer;
         await completion;
       } catch (error) {
-        child.kill();
+        await terminateOperator(process);
         await completion.catch(() => undefined);
         throw error;
       }
@@ -194,17 +242,19 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
   async write(config: SeedbedConfig, operation: string, input: unknown, source: AsyncIterable<Uint8Array>): Promise<void> {
     const metadata = Buffer.from(canonicalJson({ context: operatorContext(config), input })).toString('base64url');
     if (metadata.length > 8192) throw new TypeError('Seedbed streaming operator metadata is too large');
-    const child = this.operatorProcess(config, operation, ['--stream-in', metadata]);
-    const completion = childCompletion(child, 'Seedbed Compose streaming operator');
+    const process = this.operatorProcess(config, operation, ['--stream-in', metadata]);
+    const { child } = process;
+    const stdin = child.stdin!;
+    const completion = operatorCompletion(process, 'Seedbed Compose streaming operator');
     try {
       for await (const chunk of source) {
-        if (!child.stdin.write(chunk)) await new Promise<void>((resolveDrain) => child.stdin.once('drain', resolveDrain));
+        if (!stdin.write(chunk)) await new Promise<void>((resolveDrain) => stdin.once('drain', resolveDrain));
       }
-      child.stdin.end();
+      stdin.end();
       await completion;
     } catch (error) {
-      child.stdin.destroy();
-      child.kill();
+      stdin.destroy();
+      await terminateOperator(process);
       await completion.catch(() => undefined);
       throw error;
     }
@@ -216,17 +266,20 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
     source: PortableLegacySource,
     input: unknown,
   ): Promise<T> {
-    const child = this.operatorProcess(config, operation, [], this.legacyMounts(source));
+    const process = this.operatorProcess(config, operation, [], this.legacyMounts(source));
+    const { child } = process;
+    const stdin = child.stdin!;
+    const stdout = child.stdout!;
     const output: Buffer[] = [];
     let bytes = 0;
     const limit = encodedResponseLimit(config.backup.maxArchiveBytes);
-    child.stdout.on('data', (chunk: Buffer) => {
+    stdout.on('data', (chunk: Buffer) => {
       bytes += chunk.byteLength;
-      if (bytes > limit) child.kill();
+      if (bytes > limit) void terminateOperator(process);
       else output.push(chunk);
     });
-    const completion = childCompletion(child, 'Seedbed legacy owner adapters');
-    child.stdin.end(`${canonicalJson({ context: operatorContext(config), input, source: portableContainerSource() })}\n`);
+    const completion = operatorCompletion(process, 'Seedbed legacy owner adapters');
+    stdin.end(`${canonicalJson({ context: operatorContext(config), input, source: portableContainerSource() })}\n`);
     await completion;
     if (bytes > limit) throw new TypeError('Legacy owner adapter response exceeded configured bounds');
     return JSON.parse(Buffer.concat(output).toString('utf8')) as T;
@@ -240,14 +293,17 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
   ): Promise<AsyncIterable<Uint8Array>> {
     const self = this;
     async function* stream(): AsyncIterable<Uint8Array> {
-      const child = self.operatorProcess(config, operation, ['--stream-out'], self.legacyMounts(source));
-      const completion = childCompletion(child, 'Seedbed legacy Taproot payload adapter');
-      child.stdin.end(`${canonicalJson({ context: operatorContext(config), input, source: portableContainerSource() })}\n`);
+      const process = self.operatorProcess(config, operation, ['--stream-out'], self.legacyMounts(source));
+      const { child } = process;
+      const stdin = child.stdin!;
+      const stdout = child.stdout!;
+      const completion = operatorCompletion(process, 'Seedbed legacy Taproot payload adapter');
+      stdin.end(`${canonicalJson({ context: operatorContext(config), input, source: portableContainerSource() })}\n`);
       try {
-        for await (const chunk of child.stdout) yield chunk as Buffer;
+        for await (const chunk of stdout) yield chunk as Buffer;
         await completion;
       } catch (error) {
-        child.kill();
+        await terminateOperator(process);
         await completion.catch(() => undefined);
         throw error;
       }
@@ -256,7 +312,7 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
   }
 
   async health(config: SeedbedConfig): Promise<{ healthy: boolean }> {
-    const result = await exec('docker', [...this.args(config), 'ps', '--format', 'json'], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+    const result = await this.docker([...this.args(config), 'ps', '--format', 'json'], 5_000);
     const lines = result.stdout.split(/\r?\n/u).filter(Boolean);
     const services = lines.map((line) => JSON.parse(line) as { Service?: string; Health?: string; State?: string });
     const workshop = services.find((entry) => entry.Service === 'workshop');
@@ -264,7 +320,7 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
   }
 
   async downRetainData(config: SeedbedConfig): Promise<void> {
-    await exec('docker', [...this.args(config), 'down', '--remove-orphans'], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+    await this.docker([...this.args(config), 'down', '--remove-orphans'], 30_000);
   }
 
   private args(config: SeedbedConfig): string[] {
@@ -272,15 +328,53 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
     return ['compose', '--project-name', config.compose.projectName, '--file', join(directory, 'compose.yaml'), '--env-file', join(directory, 'compose.env')];
   }
 
-  private operatorProcess(config: SeedbedConfig, operation: string, mode: readonly string[] = [], mounts: readonly string[] = []) {
+  private operatorProcess(
+    config: SeedbedConfig,
+    operation: string,
+    mode: readonly string[] = [],
+    mounts: readonly string[] = [],
+  ): OperatorProcess {
     if (!OPERATOR_OPERATIONS.has(operation)) throw new TypeError('Unsupported Seedbed operator operation');
+    if (this.execution.signal?.aborted) throw new SeedbedOperationAbortedError(operation);
     const secretMount = protectedOperatorMountArgs(operation, config.authentication.tokenFile);
-    return spawn('docker', [
+    const containerName = `gnolith-seedbed-op-${randomUUID().replaceAll('-', '')}`;
+    const child = spawn('docker', [
       ...this.args(config),
       '--profile', 'seedbed-operator',
-      'run', '--rm', '--no-deps', '-T', ...secretMount, ...mounts, 'seedbed-operator',
+      'run', '--rm', '--name', containerName, '--no-deps', '-T', ...secretMount, ...mounts, 'seedbed-operator',
       operation, ...mode,
     ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    return {
+      child,
+      containerName,
+      operation,
+      timeoutMs: this.operationTimeout(operation),
+      ...(this.execution.signal === undefined ? {} : { signal: this.execution.signal }),
+    };
+  }
+
+  private operationTimeout(operation: string): number {
+    const standard = operation === 'owner-diagnostics-v1'
+      ? 3_000
+      : operation === 'legacy-owner-inspect-v1'
+        ? 8_000
+        : operation.includes('inspect') || operation.includes('validate') || operation.includes('collision-check')
+          ? 15_000
+          : operation.includes('export') || operation.includes('import') || operation.includes('payload') || operation.includes('blob')
+            ? 60_000
+            : 30_000;
+    return Math.min(standard, this.execution.timeoutMs ?? standard);
+  }
+
+  private docker(args: readonly string[], standardTimeoutMs: number) {
+    const timeout = Math.min(standardTimeoutMs, this.execution.timeoutMs ?? standardTimeoutMs);
+    return exec('docker', [...args], {
+      windowsHide: true,
+      maxBuffer: 8 * 1024 * 1024,
+      timeout,
+      killSignal: 'SIGKILL',
+      ...(this.execution.signal === undefined ? {} : { signal: this.execution.signal }),
+    });
   }
 
   private legacyMounts(source: PortableLegacySource): string[] {
@@ -470,14 +564,21 @@ export class OperatorAdoptionTarget extends ComposeRestoreTarget implements Adop
 
 async function version(args: string[]): Promise<{ available: boolean; version?: string }> {
   try {
-    const result = await exec('docker', args, { encoding: 'utf8', windowsHide: true });
+    const result = await exec('docker', args, {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 3_000,
+      killSignal: 'SIGKILL',
+      maxBuffer: 1024 * 1024,
+    });
     return { available: true, version: result.stdout.trim().slice(0, 128) };
   } catch {
     return { available: false };
   }
 }
 
-function childCompletion(child: ReturnType<typeof spawn>, label: string): Promise<void> {
+function operatorCompletion(process: OperatorProcess, label: string): Promise<void> {
+  const { child } = process;
   const errors: Buffer[] = [];
   let bytes = 0;
   child.stderr?.on('data', (chunk: Buffer) => {
@@ -488,12 +589,64 @@ function childCompletion(child: ReturnType<typeof spawn>, label: string): Promis
     }
   });
   return new Promise<void>((resolveCompletion, rejectCompletion) => {
-    child.once('error', rejectCompletion);
+    let termination: 'timeout' | 'aborted' | undefined;
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      process.signal?.removeEventListener('abort', abort);
+      if (error === undefined) resolveCompletion();
+      else rejectCompletion(error);
+    };
+    const timeout = () => {
+      termination = 'timeout';
+      void terminateOperator(process);
+    };
+    const abort = () => {
+      termination = process.signal?.reason instanceof DOMException && process.signal.reason.name === 'TimeoutError'
+        ? 'timeout'
+        : 'aborted';
+      void terminateOperator(process);
+    };
+    const timer = setTimeout(timeout, process.timeoutMs);
+    timer.unref();
+    process.signal?.addEventListener('abort', abort, { once: true });
+    if (process.signal?.aborted) abort();
+    child.once('error', (error) => finish(new Error(`${label} could not start: ${redactFilesystemPaths(error.message).slice(0, 1024)}`)));
     child.once('close', (code) => {
-      if (code === 0) resolveCompletion();
-      else rejectCompletion(new Error(`${label} exited ${String(code)}: ${Buffer.concat(errors).toString('utf8').slice(0, 8192)}`));
+      if (termination === 'timeout') finish(new SeedbedOperatorTimeoutError(process.operation));
+      else if (termination === 'aborted') finish(new SeedbedOperationAbortedError(process.operation));
+      else if (code === 0) finish();
+      else {
+        const stderr = redactFilesystemPaths(Buffer.concat(errors).toString('utf8')).slice(0, 8192);
+        finish(new Error(`${label} exited ${String(code)}${stderr ? `: ${stderr}` : ''}`));
+      }
     });
   });
+}
+
+async function terminateOperator(process: OperatorProcess): Promise<void> {
+  const work: Promise<unknown>[] = [
+    exec('docker', ['rm', '--force', process.containerName], {
+      windowsHide: true,
+      timeout: 5_000,
+      killSignal: 'SIGKILL',
+      maxBuffer: 1024 * 1024,
+    }).catch(() => undefined),
+  ];
+  if (process.child.pid !== undefined && process.child.exitCode === null) {
+    process.child.kill('SIGKILL');
+    if (globalThis.process.platform === 'win32') {
+      work.push(exec('taskkill', ['/pid', String(process.child.pid), '/T', '/F'], {
+        windowsHide: true,
+        timeout: 5_000,
+        killSignal: 'SIGKILL',
+        maxBuffer: 1024 * 1024,
+      }).catch(() => undefined));
+    }
+  }
+  await Promise.allSettled(work);
 }
 
 function operatorContext(config: SeedbedConfig): unknown {

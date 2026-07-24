@@ -29,7 +29,7 @@
   },
   "compose": {
     "nodeImage": "node@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8",
-    "profiles": [],
+    "profiles": ["waystone"],
     "publishIpv6Loopback": false,
     "qdrantImage": "qdrant/qdrant@sha256:0bd98fa7977f1e75694779359ca4e212822e5a71334e28421182f72f209d5286"
   },

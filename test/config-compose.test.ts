@@ -51,7 +51,7 @@ describe('strict installation config and Compose rendering', () => {
     expect(render.yaml).toContain('read_only: true');
     expect(render.yaml).toContain('QDRANT__STORAGE__SNAPSHOTS_PATH: /qdrant/storage/snapshots');
     expect(render.yaml).toContain('QDRANT__TELEMETRY_DISABLED: "true"');
-    expect(render.yaml).not.toMatch(/bearer.*=/iu);
+    expect(render.yaml).not.toMatch(/GNOLITH_BEARER_TOKEN=/u);
   });
 
   it('binds the exact declarative semantic profile and mounts only referenced protected selectors', async () => {
@@ -77,7 +77,7 @@ describe('strict installation config and Compose rendering', () => {
             dimensions: 1536,
             metric: 'cosine' as const,
             credentialSelector: 'openai-profile',
-            allowPrivateEndpoint: true,
+            allowPrivateEndpoint: false,
             redirectPolicy: 'error' as const,
           },
           vector: { kind: 'sqlite' as const },
@@ -124,6 +124,56 @@ describe('strict installation config and Compose rendering', () => {
         },
       },
     }, { projectDirectory: process.cwd() })).toThrow(/private endpoint/u);
+    expect(validateConfig({
+      ...input,
+      semantic: {
+        ...input.semantic,
+        configuration: {
+          ...input.semantic.configuration,
+          provider: {
+            ...input.semantic.configuration.provider,
+            endpoint: 'http://127.0.0.1:8787',
+            allowPrivateEndpoint: true,
+          },
+        },
+      },
+    }, { projectDirectory: process.cwd() }).semantic?.configuration.provider.endpoint).toBe('http://127.0.0.1:8787');
+    expect(validateConfig({
+      ...input,
+      semantic: {
+        ...input.semantic,
+        configuration: {
+          ...input.semantic.configuration,
+          provider: {
+            ...input.semantic.configuration.provider,
+            endpoint: 'http://mock-provider:8787',
+            allowPrivateEndpoint: true,
+          },
+        },
+      },
+    }, { projectDirectory: process.cwd() }).semantic?.configuration.provider.endpoint).toBe('http://mock-provider:8787');
+    for (const endpoint of [
+      'http://10.0.0.10:8787',
+      'http://192.168.1.2:8787',
+      'http://provider.internal:8787',
+      'http://example.com/v1',
+      'https://example.com/v1',
+    ]) {
+      expect(() => validateConfig({
+        ...input,
+        semantic: {
+          ...input.semantic,
+          configuration: {
+            ...input.semantic.configuration,
+            provider: {
+              ...input.semantic.configuration.provider,
+              endpoint,
+              allowPrivateEndpoint: true,
+            },
+          },
+        },
+      }, { projectDirectory: process.cwd() })).toThrow(/approved loopback|Compose-private|safe HTTPS/u);
+    }
     expect(() => validateConfig({
       ...input,
       compose: {

@@ -16,7 +16,7 @@ try {
   });
   const serialized = JSON.stringify(metadata);
   if (serialized.includes(encoded)) throw new Error('credential metadata contains secret bytes');
-  if ((await readFile(path, 'utf8')).trim() !== encoded) throw new Error('protected credential contents changed');
+  if ((await readFile(path, 'utf8')) !== encoded) throw new Error('generated protected credential must be canonical newline-free text');
   for (const path of ['package.json', 'compose/compose.yaml', 'docker/local-build.Dockerfile']) {
     if ((await readFile(path, 'utf8')).includes(encoded)) throw new Error(`secret canary leaked to ${path}`);
   }

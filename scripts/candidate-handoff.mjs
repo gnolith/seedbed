@@ -34,7 +34,8 @@ const componentLock = JSON.parse(componentLockBytes);
 const legacyFixture = JSON.parse(await readFile('fixtures/legacy-local-v1/fixture-evidence.json', 'utf8'));
 const localBuild = JSON.parse(await readFile('seedbed-assembly-attestation.json', 'utf8'));
 await writeFile(join(output, 'compose-graph.json'), `${JSON.stringify({
-  profiles: { default: ['workshop'], qdrant: ['workshop', 'qdrant'], waystone: ['workshop'] },
+  profiles: { default: ['workshop'], qdrant: ['workshop', 'qdrant'] },
+  waystoneAssets: { enabledByDefault: true, prefix: '/app' },
   unavailableProfiles: {
     ollama: {
       disposition: 'unavailable',
