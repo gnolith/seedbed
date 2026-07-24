@@ -118,7 +118,15 @@ export interface SeedbedControlReceipt {
   };
   readonly environmentSelector: 'GNOLITH_BEARER_TOKEN';
   readonly semantic?: SemanticConfigurationReceiptV1;
+  readonly semanticApproval?: SemanticApprovalReceiptV1;
   readonly waystone?: WaystoneLocalExpectation;
+}
+
+export interface SemanticApprovalReceiptV1 {
+  readonly kind: 'workshop-semantic-plan-approval-v1';
+  readonly configurationId: string;
+  readonly planId: string;
+  readonly estimateDigest: string;
 }
 
 export type InstallationPlan = SeedbedControlPlan;
@@ -294,6 +302,17 @@ export class SeedbedLocalControl implements SeedbedControl {
         compose,
       });
       if (!(await compose.health(config)).healthy) await compose.up(config);
+      const semanticApproval = (
+        plan.request.semantic !== undefined
+        && plan.request.expected.semanticState === 'ready'
+      ) ? await ensureSemanticApproval(
+          plan.request,
+          config,
+          plan.id,
+          receipt.protectedTokenFile,
+          execution.signal,
+        )
+        : undefined;
       const liveReadiness = await verifyExpectedWorkshopReadiness(plan.request, receipt.protectedTokenFile);
       if (plan.waystone !== undefined) {
         await verifyExpectedWaystone(plan.request, receipt.protectedTokenFile, plan.waystone);
@@ -302,7 +321,7 @@ export class SeedbedLocalControl implements SeedbedControl {
         ? undefined
         : { ...receipt.semantic, state: liveReadiness.semanticState };
       if (finalizedSemantic !== undefined) {
-        await finalizeInstallationSemanticReceipt(config, finalizedSemantic);
+        await finalizeInstallationSemanticReceipt(config, finalizedSemantic, semanticApproval);
       }
       const result: SeedbedControlReceipt = {
         operationId: plan.id,
@@ -321,6 +340,7 @@ export class SeedbedLocalControl implements SeedbedControl {
         },
         environmentSelector: 'GNOLITH_BEARER_TOKEN',
         ...(finalizedSemantic === undefined ? {} : { semantic: finalizedSemantic }),
+        ...(semanticApproval === undefined ? {} : { semanticApproval }),
         ...(plan.waystone === undefined ? {} : { waystone: plan.waystone }),
       };
       await this.writeControlState(plan.request.installationId, 'ready');
@@ -666,6 +686,264 @@ async function waystoneExpectation(policy: SeedbedControlPolicy): Promise<Waysto
   };
 }
 
+interface SemanticApprovalStateV1 extends SemanticApprovalReceiptV1 {
+  readonly format: 'gnolith-seedbed-semantic-approval-state-v1';
+  readonly operationId: string;
+  readonly fingerprint: string;
+  readonly state: 'estimated' | 'approved';
+}
+
+async function ensureSemanticApproval(
+  request: DockerInstallationRequest,
+  config: SeedbedConfig,
+  operationId: string,
+  tokenFile: string,
+  signal: AbortSignal,
+): Promise<SemanticApprovalReceiptV1> {
+  if (request.semantic === undefined) throw new TypeError('Semantic approval requires a configured provider');
+  const configurationId = request.semantic.configuration.id;
+  const fingerprint = semanticConfigurationFingerprint(request.semantic.configuration);
+  const path = join(config.paths.stateDirectory, 'semantic-approval-receipt.json');
+  const token = decodeCanonicalTextSecret(await readFile(tokenFile), 45);
+  await waitForLexicalMaterialization(request.endpoint, token, operationId, signal);
+  let state: SemanticApprovalStateV1 | undefined;
+  try {
+    state = semanticApprovalState(
+      await readJson(path),
+      operationId,
+      configurationId,
+      fingerprint,
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  if (state === undefined) {
+    const estimated = await callWorkshopTool(
+      request.endpoint,
+      token,
+      operationId,
+      'search_admin',
+      {
+        action: 'semantic-estimate',
+        options: {
+          configurationId,
+          policy: { mode: 'asap', maxBatchesPerRun: 1 },
+        },
+      },
+      signal,
+    );
+    const planId = boundedIdentifier(estimated.planId, 'Workshop semantic estimate plan ID');
+    const estimate = estimated.estimate;
+    if (!estimate || typeof estimate !== 'object' || Array.isArray(estimate)) {
+      throw new TypeError('Workshop semantic estimate receipt is invalid');
+    }
+    const estimateText = canonicalJson(estimate);
+    if (estimateText.length > 16_384) throw new TypeError('Workshop semantic estimate receipt exceeds bounds');
+    for (const field of ['records', 'chunks', 'tokens', 'dimensions', 'batches'] as const) {
+      const value = (estimate as Record<string, unknown>)[field];
+      if (!Number.isSafeInteger(value) || Number(value) < 0) {
+        throw new TypeError('Workshop semantic estimate receipt is invalid');
+      }
+    }
+    state = {
+      format: 'gnolith-seedbed-semantic-approval-state-v1',
+      kind: 'workshop-semantic-plan-approval-v1',
+      operationId,
+      configurationId,
+      fingerprint,
+      planId,
+      estimateDigest: digestObject(estimate),
+      state: 'estimated',
+    };
+    await atomicCreateOrVerify(path, state);
+  }
+  if (state.state === 'estimated') {
+    try {
+      const approved = await callWorkshopTool(
+        request.endpoint,
+        token,
+        operationId,
+        'search_admin',
+        {
+          action: 'semantic-approve',
+          options: { planId: state.planId },
+        },
+        signal,
+      );
+      assertSemanticPlanState(approved, state.planId, ['approved', 'running', 'complete']);
+    } catch (error) {
+      const health = await callWorkshopTool(
+        request.endpoint,
+        token,
+        operationId,
+        'search_admin',
+        { action: 'health' },
+        signal,
+      ).catch(() => undefined);
+      if (health === undefined || !hasSemanticPlanState(health, state.planId, ['approved', 'running', 'complete'])) {
+        throw error;
+      }
+    }
+    state = { ...state, state: 'approved' };
+    await atomicReplace(path, state);
+  }
+  return {
+    kind: state.kind,
+    configurationId: state.configurationId,
+    planId: state.planId,
+    estimateDigest: state.estimateDigest,
+  };
+}
+
+async function waitForLexicalMaterialization(
+  endpoint: string,
+  token: string,
+  operationId: string,
+  signal: AbortSignal,
+): Promise<void> {
+  const deadline = Date.now() + 90_000;
+  while (true) {
+    await callWorkshopTool(endpoint, token, operationId, 'search_admin', {
+      action: 'materialize',
+      limit: 100,
+      options: { maxRebuildRoots: 100 },
+    }, signal);
+    const health = await callWorkshopTool(
+      endpoint,
+      token,
+      operationId,
+      'search_admin',
+      { action: 'health' },
+      signal,
+    );
+    const materialization = health.materialization as Record<string, unknown> | undefined;
+    const source = materialization?.sourceHighWatermark;
+    const applied = materialization?.activeAppliedWatermark;
+    if (
+      Number.isSafeInteger(source)
+      && Number.isSafeInteger(applied)
+      && source === applied
+    ) return;
+    if (Date.now() >= deadline) throw new TypeError('Workshop lexical materialization did not reach the estimate boundary');
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  }
+}
+
+async function callWorkshopTool(
+  endpoint: string,
+  token: string,
+  operationId: string,
+  name: string,
+  args: Readonly<Record<string, unknown>>,
+  signal: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json, text/event-stream',
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      'mcp-protocol-version': '2025-03-26',
+    },
+    body: canonicalJson({
+      jsonrpc: '2.0',
+      id: `seedbed-${digestObject({ operationId, name, args }).slice(0, 32)}`,
+      method: 'tools/call',
+      params: { name, arguments: args },
+    }),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+  });
+  let value: unknown;
+  try {
+    value = await response.json();
+  } catch {
+    throw new TypeError('Workshop installation orchestration returned invalid JSON');
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Workshop installation orchestration response is invalid');
+  }
+  const body = value as Record<string, unknown>;
+  const result = body.result as Record<string, unknown> | undefined;
+  if (!response.ok || body.error !== undefined || result?.isError === true) {
+    throw new TypeError(`Workshop installation orchestration ${name} failed`);
+  }
+  const structured = result?.structuredContent;
+  if (!structured || typeof structured !== 'object' || Array.isArray(structured)) {
+    throw new TypeError('Workshop installation orchestration lacks structured content');
+  }
+  const encoded = canonicalJson(structured);
+  if (encoded.length > 1_048_576) {
+    throw new TypeError('Workshop installation orchestration response exceeds bounds');
+  }
+  return structured as Record<string, unknown>;
+}
+
+function semanticApprovalState(
+  value: unknown,
+  operationId: string,
+  configurationId: string,
+  fingerprint: string,
+): SemanticApprovalStateV1 {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Seedbed semantic approval state is invalid');
+  }
+  const state = value as Partial<SemanticApprovalStateV1>;
+  if (
+    state.format !== 'gnolith-seedbed-semantic-approval-state-v1'
+    || state.kind !== 'workshop-semantic-plan-approval-v1'
+    || state.operationId !== operationId
+    || state.configurationId !== configurationId
+    || state.fingerprint !== fingerprint
+    || !/^[0-9a-f]{64}$/u.test(String(state.estimateDigest))
+    || !['estimated', 'approved'].includes(String(state.state))
+  ) throw new TypeError('Seedbed semantic approval state identity mismatch');
+  return {
+    format: state.format,
+    kind: state.kind,
+    operationId: state.operationId,
+    configurationId: state.configurationId,
+    fingerprint: state.fingerprint,
+    planId: boundedIdentifier(state.planId, 'Seedbed semantic approval plan ID'),
+    estimateDigest: state.estimateDigest!,
+    state: state.state!,
+  };
+}
+
+function assertSemanticPlanState(
+  value: Record<string, unknown>,
+  planId: string,
+  allowed: readonly string[],
+): void {
+  if (!hasSemanticPlanState(value, planId, allowed)) {
+    throw new TypeError('Workshop semantic approval did not expose the approved plan');
+  }
+}
+
+function hasSemanticPlanState(
+  value: Record<string, unknown>,
+  planId: string,
+  allowed: readonly string[],
+): boolean {
+  return Array.isArray(value.plans) && value.plans.some((plan) => (
+    plan
+    && typeof plan === 'object'
+    && !Array.isArray(plan)
+    && (plan as Record<string, unknown>).planId === planId
+    && allowed.includes(String((plan as Record<string, unknown>).state))
+  ));
+}
+
+function boundedIdentifier(value: unknown, label: string): string {
+  if (
+    typeof value !== 'string'
+    || value.length < 1
+    || value.length > 256
+    || value.trim() !== value
+    || /[\u0000-\u001f\u007f]/u.test(value)
+  ) throw new TypeError(`${label} is invalid`);
+  return value;
+}
+
 async function verifyExpectedWorkshopReadiness(
   request: DockerInstallationRequest,
   tokenFile: string,
@@ -796,6 +1074,7 @@ async function verifyExpectedWorkshopReadiness(
 async function finalizeInstallationSemanticReceipt(
   config: SeedbedConfig,
   semantic: SemanticConfigurationReceiptV1,
+  approval: SemanticApprovalReceiptV1 | undefined,
 ): Promise<void> {
   const path = join(config.paths.stateDirectory, 'installation-receipt.json');
   const value = await readJson(path);
@@ -808,7 +1087,11 @@ async function finalizeInstallationSemanticReceipt(
     || receipt.expectedInstallationId !== config.installationId
     || receipt.configDigest !== digestObject(config)
   ) throw new TypeError('Seedbed installation receipt identity mismatch');
-  await atomicReplace(path, { ...receipt, semantic });
+  await atomicReplace(path, {
+    ...receipt,
+    semantic,
+    ...(approval === undefined ? {} : { semanticApproval: approval }),
+  });
 }
 
 async function verifyExpectedWaystone(

@@ -432,6 +432,10 @@ async function verifySemanticProfile(packed, vectorKind) {
     receipt.semantic?.fingerprint !== expectedFingerprint
     || receipt.semantic.revision !== 1
     || receipt.semantic.state !== 'ready'
+    || receipt.semanticApproval?.kind !== 'workshop-semantic-plan-approval-v1'
+    || receipt.semanticApproval.configurationId !== configuration.id
+    || typeof receipt.semanticApproval.planId !== 'string'
+    || !/^[0-9a-f]{64}$/u.test(receipt.semanticApproval.estimateDigest)
     || JSON.stringify(receipt).includes('qualification-profile-not-a-usable-api-key')
     || JSON.stringify(receipt).includes('host.docker.internal')
     || JSON.stringify(receipt).includes('text-embedding-3-small')
@@ -443,6 +447,7 @@ async function verifySemanticProfile(packed, vectorKind) {
   if (
     persistedReceipt.semantic?.state !== 'ready'
     || persistedReceipt.semantic?.fingerprint !== expectedFingerprint
+    || digestObject(persistedReceipt.semanticApproval) !== digestObject(receipt.semanticApproval)
     || JSON.stringify(persistedReceipt).includes('/v1/embeddings')
   ) throw new Error(`${vectorKind} persisted semantic receipt was not finalized safely`);
   const token = decodeCanonicalTextSecret(await readFile(receipt.protectedTokenFile.canonicalPath), 45);
@@ -507,6 +512,16 @@ async function verifySemanticProfile(packed, vectorKind) {
   await composeCommand(semanticProjectName, semanticComposeDirectory, ['restart', 'workshop']);
   await assertAuthenticatedReady(semanticPort, token);
   await waitForSemanticOnlySearch(semanticPort, token, semanticEntityId, deniedEntityId, vectorKind);
+  const plansBeforeReplay = await semanticPlanIdentities(semanticPort, token);
+  const replay = await control.resume(receipt.operationId);
+  if (
+    digestObject(replay.semanticApproval) !== digestObject(receipt.semanticApproval)
+    || replay.semantic?.state !== 'ready'
+  ) throw new Error(`${vectorKind} semantic approval did not replay idempotently`);
+  const plansAfterReplay = await semanticPlanIdentities(semanticPort, token);
+  if (digestObject(plansAfterReplay) !== digestObject(plansBeforeReplay)) {
+    throw new Error(`${vectorKind} semantic approval replay created a duplicate owner plan`);
+  }
 }
 
 async function verifyUnavailableSemanticProfile(packed) {
@@ -593,6 +608,7 @@ async function verifyUnavailableSemanticProfile(packed) {
   if (
     receipt.semantic?.state !== 'degraded'
     || receipt.semantic?.revision !== 1
+    || receipt.semanticApproval !== undefined
     || receiptText.includes('qualification-profile-not-a-usable-api-key')
     || receiptText.includes('/v1/embeddings')
     || receiptText.includes('host.docker.internal')
@@ -634,6 +650,13 @@ async function verifyUnavailableSemanticProfile(packed) {
   if (Number(inspect.stdout.trim()) !== 0) {
     throw new Error('explicit restart was followed by an automatic Workshop restart loop');
   }
+}
+
+async function semanticPlanIdentities(workshopPort, token) {
+  const health = await callMcp(workshopPort, token, 'search_admin', { action: 'health' });
+  return (health.structuredContent?.semantic?.plans ?? health.structuredContent?.plans ?? [])
+    .map((plan) => ({ planId: plan.planId, state: plan.state }))
+    .sort((left, right) => String(left.planId).localeCompare(String(right.planId)));
 }
 
 async function assertDegradedSemanticStatus(workshopPort, token, unavailableProviderPort) {

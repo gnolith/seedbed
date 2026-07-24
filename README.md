@@ -115,6 +115,13 @@ and canonicalizes that URL once at the installation boundary, including the
 Docker host-gateway hostname substitution described below, then passes the exact
 result unchanged to the owner runtime. Neither Seedbed nor the owner appends a
 path segment.
+When an installation requests semantic `ready`, Seedbed first asks Workshop's
+public search administration surface to finish lexical catch-up, estimate one
+bounded `asap` semantic plan, and explicitly approve that owner-created plan.
+Seedbed records only the configuration ID, owner plan ID, and estimate digest in
+a protected installation receipt so interrupted apply/resume reuses the same
+approval and never creates a duplicate plan. Workshop—not Seedbed—owns the plan,
+cost policy, execution, retries, materialization, and readiness transition.
 External provider endpoints are denied by default. A loopback or single-label
 Compose-private HTTP endpoint additionally requires explicit private-endpoint
 approval and a protected credential selector; unsafe nonlocal/private targets,
