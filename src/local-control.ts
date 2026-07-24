@@ -757,7 +757,37 @@ async function verifyExpectedWorkshopReadiness(
       )
     );
     if (!transitionPending || Date.now() >= deadline) {
-      throw new TypeError('Workshop authenticated readiness does not match the immutable installation request');
+      const safeDiagnostic = (
+        diagnostic
+        && typeof diagnostic.code === 'string'
+        && diagnostic.code.length >= 1
+        && diagnostic.code.length <= 128
+        && /^[a-z0-9-]+$/u.test(diagnostic.code)
+        && typeof diagnostic.retryable === 'boolean'
+      ) ? { code: diagnostic.code, retryable: diagnostic.retryable } : null;
+      throw new TypeError(`Workshop authenticated readiness does not match the immutable installation request: ${canonicalJson({
+        httpStatus: response.status,
+        identityMatches: status.installationId === request.expected.installationId,
+        baseIriMatches: status.baseIri === request.expected.baseIri,
+        serverVersionMatches: versions?.server === request.expected.serverVersion,
+        catalogMatches: status.operationCatalogDigest === request.expected.catalogDigest,
+        migrationReady: migrationReadiness?.ready === request.expected.migrationReady,
+        canonicalReady: status.canonicalReady === request.expected.canonicalReady,
+        authorizationReady: status.authorizationReady === request.expected.authorizationReady,
+        lexicalReady: status.lexicalReady === request.expected.lexicalReady,
+        blobReady: status.blobReady === request.expected.blobReady,
+        producersReady: producers?.ready === true,
+        semantic: {
+          state: typeof semanticState?.state === 'string' && semanticState.state.length <= 128
+            ? semanticState.state
+            : null,
+          configured: semanticState?.configured === true,
+          revisionMatches: semanticState?.revision === expectedSemanticRevision,
+          fingerprintMatches: semanticState?.fingerprint === expectedSemanticFingerprint,
+          ready: semanticState?.ready === true,
+          diagnostic: safeDiagnostic,
+        },
+      })}`);
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
   }
