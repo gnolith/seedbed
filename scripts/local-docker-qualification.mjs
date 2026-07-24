@@ -20,6 +20,7 @@ const root = resolve('.');
 const temporaryRoot = await mkdtemp(join(tmpdir(), 'gnolith-seedbed-docker-'));
 const stateRoot = join(temporaryRoot, 'state');
 const lock = JSON.parse(await readFile(join(root, 'seedbed-component-lock.json'), 'utf8'));
+const localBuild = JSON.parse(await readFile(join(root, 'seedbed-assembly-attestation.json'), 'utf8'));
 const installationId = `seedbed-docker-${digestObject({ root, at: Date.now() }).slice(0, 24)}`;
 const key = digestObject(installationId).slice(0, 24);
 const projectName = `gnolith-${key}`;
@@ -36,7 +37,7 @@ try {
     installationId,
     baseIri: `https://local.gnolith.invalid/${installationId}/`,
     endpoint: `http://127.0.0.1:${port}/mcp`,
-    image: lock.localBuildSelector,
+    image: localBuild,
     expected: {
       installationId,
       baseIri: `https://local.gnolith.invalid/${installationId}/`,

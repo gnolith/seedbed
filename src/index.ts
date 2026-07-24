@@ -6,7 +6,7 @@ export { createInstallationPlan, createMigrationPlan, applyInstallationPlan, app
 export { createInstallationBackup, inspectInstallationBackup, verifyInstallationBackup, dryRunRestore, restoreInstallationBackup } from './backup.js';
 export { validateLegacyManifest, loadLegacyManifest, planLegacyAdoption, applyLegacyAdoption } from './adoption.js';
 export { diagnoseInstallation } from './diagnostics.js';
-export { SeedbedLocalControl, createSeedbedControl, createDefaultSeedbedControl, defaultSeedbedControlPolicy, defaultSeedbedArtifactRoot, defaultSeedbedStateRoot } from './local-control.js';
+export { SEEDBED_LOCAL_BUILD_SELECTOR, SeedbedLocalControl, createSeedbedControl, createDefaultSeedbedControl, defaultSeedbedControlPolicy, defaultSeedbedArtifactRoot, defaultSeedbedStateRoot } from './local-control.js';
 export { acquireOperationLock } from './operation-lock.js';
 export type * from './types.js';
 export type * from './owner-ports.js';
@@ -14,3 +14,18 @@ export type * from './migration.js';
 export type * from './backup.js';
 export type * from './adoption.js';
 export type * from './diagnostics.js';
+export type {
+  DefaultSeedbedControlOptions,
+  DigestQualifiedPulledImageSelection,
+  DockerImageSelection,
+  DockerInstallationRequest,
+  ExpectedWorkshopStatus,
+  InstallationDiagnosis,
+  InstallationInspection,
+  InstallationSelector,
+  SeedbedControl,
+  SeedbedControlPlan,
+  SeedbedControlPolicy,
+  SeedbedControlReceipt,
+  SeedbedLocalBuildSelection,
+} from './local-control.js';

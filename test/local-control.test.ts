@@ -2,7 +2,8 @@ import { mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createDefaultSeedbedControl, createSeedbedControl, defaultSeedbedControlPolicy, type DockerInstallationRequest, type SeedbedControlPolicy } from '../src/local-control.js';
+import { createDefaultSeedbedControl, createSeedbedControl, defaultSeedbedControlPolicy, SEEDBED_LOCAL_BUILD_SELECTOR, type DockerInstallationRequest, type SeedbedControlPolicy } from '../src/local-control.js';
+import { sha256 } from '../src/canonical.js';
 import { fixtureConfig } from './helpers.js';
 
 describe('Alembic-compatible fixed local control adapter', () => {
@@ -10,10 +11,17 @@ describe('Alembic-compatible fixed local control adapter', () => {
     const root = await mkdtemp(join(tmpdir(), 'seedbed-local-control-'));
     const fixture = fixtureConfig(root);
     const policy: SeedbedControlPolicy = {
-      format: 'gnolith-seedbed-control-policy-v1',
+      format: 'gnolith-seedbed-control-policy-v2',
       stateRoot: join(root, 'control-state'),
       artifactRoot: process.cwd(),
-      localBuildSelector: 'gnolith-workshop:local-build',
+      localBuild: {
+        kind: 'seedbed-local-build-v1',
+        selector: SEEDBED_LOCAL_BUILD_SELECTOR,
+        pullPolicy: 'never',
+        componentLockSha256: '1'.repeat(64),
+        graphSha256: '2'.repeat(64),
+        composeBundleSha256: '3'.repeat(64),
+      },
       packages: fixture.packages,
       compose: {
         nodeImage: fixture.compose.nodeImage,
@@ -32,7 +40,7 @@ describe('Alembic-compatible fixed local control adapter', () => {
       installationId: fixture.installationId,
       baseIri: fixture.baseIri,
       endpoint: 'http://127.0.0.1:4317/mcp',
-      image: policy.localBuildSelector,
+      image: policy.localBuild,
       expected: {
         installationId: fixture.installationId,
         baseIri: fixture.baseIri,
@@ -62,7 +70,20 @@ describe('Alembic-compatible fixed local control adapter', () => {
     expect(plan.stateRoot).toEqual({ kind: 'external-directory', canonicalPath: policy.stateRoot });
     expect(control.resume).toHaveLength(1);
     expect(control.diagnose).toHaveLength(1);
-    await expect(control.plan({ ...request, image: 'ghcr.io/gnolith/workshop:latest' })).rejects.toThrow(/local-build/u);
+    for (const field of ['componentLockSha256', 'graphSha256', 'composeBundleSha256'] as const) {
+      await expect(control.plan({
+        ...request,
+        image: { ...policy.localBuild, [field]: 'f'.repeat(64) },
+      })).rejects.toThrow(/attestations/u);
+    }
+    await expect(control.plan({
+      ...request,
+      image: {
+        kind: 'digest-qualified-pulled-image-v1',
+        reference: `ghcr.io/gnolith/workshop@sha256:${'f'.repeat(64)}`,
+        pullPolicy: 'digest-only',
+      },
+    })).rejects.toThrow(/pulled application images are unsupported/u);
     await expect(control.plan({
       ...request,
       expected: { ...request.expected, catalogDigest: 'f'.repeat(64) },
@@ -70,17 +91,23 @@ describe('Alembic-compatible fixed local control adapter', () => {
 
     const componentLock = {
       format: 'gnolith-seedbed-component-lock-v1',
-      localBuildSelector: policy.localBuildSelector,
+      localBuildSelector: SEEDBED_LOCAL_BUILD_SELECTOR,
       packages: policy.packages,
       compose: policy.compose,
       migrations: policy.migrations,
       backup: policy.backup,
     };
-    await writeFile(join(root, 'seedbed-component-lock.json'), JSON.stringify(componentLock));
+    const lockBytes = Buffer.from(JSON.stringify(componentLock));
+    await writeFile(join(root, 'seedbed-component-lock.json'), lockBytes);
+    const localBuild = { ...policy.localBuild, componentLockSha256: sha256(lockBytes) };
+    await writeFile(join(root, 'seedbed-assembly-attestation.json'), JSON.stringify(localBuild));
     const defaults = { projectRoot: process.cwd(), stateRoot: policy.stateRoot, artifactRoot: root };
     expect(defaultSeedbedControlPolicy(defaults).packages.workshop).toEqual(policy.packages.workshop);
     const defaultControl = createDefaultSeedbedControl(defaults);
-    expect((await defaultControl.plan(request)).request).toEqual(request);
+    const defaultRequest = { ...request, image: localBuild };
+    expect((await defaultControl.plan(defaultRequest)).request).toEqual(defaultRequest);
+    await writeFile(join(root, 'seedbed-assembly-attestation.json'), JSON.stringify({ ...localBuild, componentLockSha256: 'a'.repeat(64) }));
+    expect(() => defaultSeedbedControlPolicy(defaults)).toThrow(/does not match/u);
     await expect(defaultControl.inspect({ installationId: request.installationId, projectRoot: root })).rejects.toThrow(/attested/u);
     expect(() => createSeedbedControl({ ...policy, stateRoot: join(process.cwd(), '.project-local-seedbed-state') })).toThrow(/outside/u);
     if (process.platform !== 'win32') {

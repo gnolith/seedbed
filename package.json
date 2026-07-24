@@ -64,6 +64,7 @@
     "docker",
     "docs",
     "examples",
+    "seedbed-assembly-attestation.json",
     "seedbed-component-lock.json",
     "migration-order.json",
     "CHANGELOG.md",

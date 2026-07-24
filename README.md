@@ -41,6 +41,17 @@ worktree-local, symlink, junction, and path-alias selectors fail closed. Seedbed
 alone reads and validates the fixed `seedbed-component-lock.json`; tests and
 candidate staging may explicitly override `artifactRoot`.
 
+`defaultSeedbedControlPolicy()` exposes `localBuild`, the exact
+`seedbed-local-build-v1` image selection copied into every control plan. It has
+the fixed selector `gnolith-seedbed-local-build-v1`, `pullPolicy: "never"`, and
+SHA-256 attestations for the component lock, rendered graph, and deterministic
+Compose bundle. Callers must pass that object unchanged as
+`DockerInstallationRequest.image`. This selection trusts the pinned local
+assembly and is never interpreted as an OCI image name. The separately typed
+`digest-qualified-pulled-image-v1` selection requires an
+`@sha256:<digest>` reference, but application-image pulls remain unsupported by
+the architecture-reset control plane.
+
 ## Commands
 
 ```text

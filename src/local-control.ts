@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, normalize, resolve } from 'node:pa
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { canonicalJson, digestObject } from './canonical.js';
+import { assertLowerSha256, canonicalJson, digestObject, sha256 } from './canonical.js';
 import { validateConfig } from './config.js';
 import { diagnoseInstallation } from './diagnostics.js';
 import { applyInstallationPlan, createInstallationPlan } from './migration.js';
@@ -33,12 +33,37 @@ export interface ExpectedWorkshopStatus {
   readonly allowLexicalOnly: boolean;
 }
 
+export const SEEDBED_LOCAL_BUILD_SELECTOR = 'gnolith-seedbed-local-build-v1' as const;
+
+export interface SeedbedLocalBuildSelection {
+  readonly kind: 'seedbed-local-build-v1';
+  readonly selector: typeof SEEDBED_LOCAL_BUILD_SELECTOR;
+  /** A Seedbed local build is assembled from the pinned package archives and is never pulled. */
+  readonly pullPolicy: 'never';
+  readonly componentLockSha256: string;
+  readonly graphSha256: string;
+  readonly composeBundleSha256: string;
+}
+
+export interface DigestQualifiedPulledImageSelection {
+  readonly kind: 'digest-qualified-pulled-image-v1';
+  /** Exact OCI reference in the form repository@sha256:<64 lowercase hex>. */
+  readonly reference: string;
+  readonly pullPolicy: 'digest-only';
+}
+
+export type DockerImageSelection = SeedbedLocalBuildSelection | DigestQualifiedPulledImageSelection;
+
 export interface DockerInstallationRequest {
   readonly installationId: string;
   readonly baseIri: string;
   readonly endpoint: string;
-  /** Must equal the policy's local-build selector; it is never pulled. */
-  readonly image: string;
+  /**
+   * Architecture-reset Seedbed accepts only the exact attested local build.
+   * The discriminated union prevents a local selector from being mistaken for
+   * a pulled OCI image; digest-qualified pulled images remain unsupported.
+   */
+  readonly image: DockerImageSelection;
   readonly expected: ExpectedWorkshopStatus;
 }
 
@@ -96,10 +121,10 @@ export interface SeedbedControl {
 }
 
 export interface SeedbedControlPolicy {
-  readonly format: 'gnolith-seedbed-control-policy-v1';
+  readonly format: 'gnolith-seedbed-control-policy-v2';
   readonly stateRoot: string;
   readonly artifactRoot: string;
-  readonly localBuildSelector: string;
+  readonly localBuild: SeedbedLocalBuildSelection;
   readonly packages: {
     readonly diamond: ImmutableCoordinate;
     readonly taproot: ImmutableCoordinate;
@@ -142,10 +167,10 @@ export class SeedbedLocalControl implements SeedbedControl {
   private readonly attestedProjectRoot: string | undefined;
 
   constructor(policy: SeedbedControlPolicy, options: { attestedProjectRoot?: string } = {}) {
-    if (policy.format !== 'gnolith-seedbed-control-policy-v1') throw new TypeError('Unsupported Seedbed control policy');
+    if (policy.format !== 'gnolith-seedbed-control-policy-v2') throw new TypeError('Unsupported Seedbed control policy');
     if (!isAbsolute(policy.stateRoot) || /^\\\\/u.test(policy.stateRoot)) throw new TypeError('Seedbed control state root must be an absolute local path');
     if (!isAbsolute(policy.artifactRoot) || /^\\\\/u.test(policy.artifactRoot)) throw new TypeError('Seedbed artifact root must be an absolute local path');
-    if (!policy.localBuildSelector || policy.localBuildSelector.length > 256) throw new TypeError('Seedbed local-build selector is invalid');
+    assertLocalBuildSelection(policy.localBuild);
     const projectRoot = canonicalExistingDirectory(options.attestedProjectRoot ?? process.cwd(), 'project root');
     const stateRoot = canonicalProspectiveDirectory(policy.stateRoot, 'state root');
     const artifactRoot = canonicalExistingDirectory(policy.artifactRoot, 'artifact root');
@@ -160,7 +185,7 @@ export class SeedbedLocalControl implements SeedbedControl {
       installationId: 'seedbed-policy-validation',
       baseIri: 'https://validation.invalid/installation/',
       endpoint: 'http://127.0.0.1:4317/mcp',
-      image: this.policy.localBuildSelector,
+      image: this.policy.localBuild,
       expected: {
         installationId: 'seedbed-policy-validation',
         baseIri: 'https://validation.invalid/installation/',
@@ -189,7 +214,7 @@ export class SeedbedLocalControl implements SeedbedControl {
   async plan(request: DockerInstallationRequest): Promise<SeedbedControlPlan> {
     const internal = createInstallationPlan(this.config(request));
     const body = {
-      version: 'gnolith-seedbed-control-plan-v1',
+      version: 'gnolith-seedbed-control-plan-v2',
       request: canonicalClone(request),
       steps: internal.steps,
       internalPlanDigest: digestObject(internal),
@@ -381,18 +406,30 @@ export function defaultSeedbedControlPolicy(options: DefaultSeedbedControlOption
   const lockPath = join(artifactRoot, 'seedbed-component-lock.json');
   const metadata = lstatSync(lockPath);
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 1024 * 1024) throw new TypeError('Seedbed component lock must be a bounded regular non-link file');
-  const parsed: unknown = JSON.parse(readFileSync(lockPath, 'utf8'));
+  const lockBytes = readFileSync(lockPath);
+  const parsed: unknown = JSON.parse(lockBytes.toString('utf8'));
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new TypeError('Seedbed component lock must be an object');
   const lock = parsed as Record<string, unknown>;
   const expectedKeys = ['format', 'localBuildSelector', 'packages', 'compose', 'migrations', 'backup'];
   if (canonicalJson(Object.keys(lock).sort()) !== canonicalJson(expectedKeys.sort()) || lock.format !== 'gnolith-seedbed-component-lock-v1') {
     throw new TypeError('Seedbed component lock has unsupported or unknown fields');
   }
+  const attestationPath = join(artifactRoot, 'seedbed-assembly-attestation.json');
+  const attestationMetadata = lstatSync(attestationPath);
+  if (!attestationMetadata.isFile() || attestationMetadata.isSymbolicLink() || attestationMetadata.size > 64 * 1024) {
+    throw new TypeError('Seedbed assembly attestation must be a bounded regular non-link file');
+  }
+  const attestation: unknown = JSON.parse(readFileSync(attestationPath, 'utf8'));
+  assertLocalBuildSelection(attestation);
+  if (attestation.componentLockSha256 !== sha256(lockBytes)) throw new TypeError('Seedbed assembly attestation does not match the component lock');
+  if (lock.localBuildSelector !== attestation.selector) throw new TypeError('Seedbed component lock and assembly selector differ');
+  const { localBuildSelector: _localBuildSelector, ...policyLock } = lock;
   return {
-    ...(canonicalClone(lock) as Omit<SeedbedControlPolicy, 'format' | 'stateRoot' | 'artifactRoot'>),
-    format: 'gnolith-seedbed-control-policy-v1',
+    ...(canonicalClone(policyLock) as Omit<SeedbedControlPolicy, 'format' | 'stateRoot' | 'artifactRoot' | 'localBuild'>),
+    format: 'gnolith-seedbed-control-policy-v2',
     stateRoot,
     artifactRoot,
+    localBuild: canonicalClone(attestation),
   };
 }
 
@@ -413,8 +450,34 @@ export function defaultSeedbedStateRoot(): string {
   return normalize(resolve(xdg && isAbsolute(xdg) ? xdg : join(homedir(), '.local', 'state'), 'gnolith', 'seedbed'));
 }
 
+function assertLocalBuildSelection(value: unknown): asserts value is SeedbedLocalBuildSelection {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Seedbed local-build selection must be an object');
+  const selection = value as Record<string, unknown>;
+  const expectedKeys = ['kind', 'selector', 'pullPolicy', 'componentLockSha256', 'graphSha256', 'composeBundleSha256'];
+  if (canonicalJson(Object.keys(selection).sort()) !== canonicalJson(expectedKeys.sort())) {
+    throw new TypeError('Seedbed local-build selection has unsupported or missing fields');
+  }
+  if (
+    selection.kind !== 'seedbed-local-build-v1'
+    || selection.selector !== SEEDBED_LOCAL_BUILD_SELECTOR
+    || selection.pullPolicy !== 'never'
+  ) throw new TypeError('Seedbed local-build selector or pull policy is invalid');
+  assertLowerSha256(selection.componentLockSha256, 'Seedbed component-lock attestation');
+  assertLowerSha256(selection.graphSha256, 'Seedbed graph attestation');
+  assertLowerSha256(selection.composeBundleSha256, 'Seedbed Compose-bundle attestation');
+}
+
 function assertRequest(request: DockerInstallationRequest, policy: SeedbedControlPolicy): void {
-  if (request.image !== policy.localBuildSelector) throw new TypeError('Docker installation request must select Seedbed local-build plumbing; published application images are unsupported');
+  if (request.image?.kind === 'digest-qualified-pulled-image-v1') {
+    if (!/^[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}$/u.test(request.image.reference) || request.image.pullPolicy !== 'digest-only') {
+      throw new TypeError('Digest-qualified pulled image selection is invalid');
+    }
+    throw new TypeError('Digest-qualified pulled application images are unsupported; use the exact attested Seedbed local build');
+  }
+  assertLocalBuildSelection(request.image);
+  if (canonicalJson(request.image) !== canonicalJson(policy.localBuild)) {
+    throw new TypeError('Docker installation request local-build attestations do not match immutable Seedbed policy');
+  }
   if (request.installationId !== request.expected.installationId || request.baseIri !== request.expected.baseIri) throw new TypeError('Expected Workshop identity does not match installation request');
   if (
     request.expected.serverVersion !== policy.packages.workshop.version

@@ -27,6 +27,7 @@ await writeFile(join(output, 'seedbed-sbom.cdx.json'), sbom);
 const compose = YAML.parse(await readFile('compose/compose.yaml', 'utf8'));
 const componentLockBytes = await readFile('seedbed-component-lock.json');
 const componentLock = JSON.parse(componentLockBytes);
+const localBuild = JSON.parse(await readFile('seedbed-assembly-attestation.json', 'utf8'));
 await writeFile(join(output, 'compose-graph.json'), `${JSON.stringify({
   profiles: { default: ['workshop'], qdrant: ['workshop', 'qdrant'], ollama: ['workshop', 'ollama'], waystone: ['workshop'] },
   services: Object.keys(compose.services).sort(),
@@ -36,6 +37,17 @@ await writeFile(join(output, 'compose-graph.json'), `${JSON.stringify({
   migrations: componentLock.migrations,
   applicationImagePublished: false,
 }, null, 2)}\n`);
+const actualLocalBuild = {
+  kind: 'seedbed-local-build-v1',
+  selector: componentLock.localBuildSelector,
+  pullPolicy: 'never',
+  componentLockSha256: sha256(componentLockBytes),
+  graphSha256: sha256(await readFile(join(output, 'compose-graph.json'))),
+  composeBundleSha256: sha256(await readFile(join(output, 'seedbed-compose-bundle.tar.gz'))),
+};
+if (JSON.stringify(localBuild) !== JSON.stringify(actualLocalBuild)) {
+  throw new Error('public local-build attestation does not match the exact candidate graph');
+}
 const artifacts = [packagePath, join(output, 'seedbed-compose-bundle.tar.gz'), join(output, 'seedbed-sbom.cdx.json'), join(output, 'compose-graph.json')];
 const checksums = [];
 for (const artifact of artifacts) checksums.push(`${sha256(await readFile(artifact))}  ${artifact.split(/[\\/]/u).at(-1)}`);
@@ -49,6 +61,7 @@ await writeFile(join(output, 'candidate.json'), `${JSON.stringify({
   sbomSha256: sha256(await readFile(join(output, 'seedbed-sbom.cdx.json'))),
   graphSha256: sha256(await readFile(join(output, 'compose-graph.json'))),
   componentLockSha256: sha256(componentLockBytes),
+  localBuild,
   components: componentLock.packages,
   releaseCreated: false,
   imagePublished: false,
