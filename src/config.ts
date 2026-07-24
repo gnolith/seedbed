@@ -173,7 +173,11 @@ function semanticConfiguration(value: unknown): NonNullable<SeedbedConfig['seman
   const providerCredential = nullableIdentifier(providerInput.credentialSelector, 'semantic provider credentialSelector');
   const provider: SemanticConfigurationV1['provider'] = {
     kind: providerInput.kind as SemanticConfigurationV1['provider']['kind'],
-    endpoint: semanticEndpoint(providerInput.endpoint, 'semantic provider endpoint'),
+    endpoint: semanticProviderEndpoint(
+      providerInput.endpoint,
+      providerInput.kind as SemanticConfigurationV1['provider']['kind'],
+      'semantic provider endpoint',
+    ),
     model: boundedToken(providerInput.model, 'semantic provider model', 256),
     dimensions: integer(providerInput.dimensions, 'semantic provider dimensions', 1, 65_536),
     metric: providerInput.metric as SemanticConfigurationV1['provider']['metric'],
@@ -243,6 +247,20 @@ function semanticEndpoint(value: unknown, label: string): string {
     || (ipv4.length === 4 && ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) && ipv4[0] === 127);
   if (loopback) url.hostname = 'host.docker.internal';
   return url.href.replace(/\/$/u, '');
+}
+
+function semanticProviderEndpoint(
+  value: unknown,
+  kind: SemanticConfigurationV1['provider']['kind'],
+  label: string,
+): string {
+  const endpoint = semanticEndpoint(value, label);
+  const url = new URL(endpoint);
+  const expectedSuffix = kind === 'openai-compatible' ? '/embeddings' : '/api/embed';
+  if (!url.pathname.endsWith(expectedSuffix)) {
+    fail(`${label} must be the full ${kind === 'openai-compatible' ? 'OpenAI-compatible embeddings' : 'Ollama-compatible embed'} POST endpoint ending in ${expectedSuffix}`);
+  }
+  return endpoint;
 }
 
 function requirePrivateApproval(endpointValue: string, approved: boolean, label: string): void {

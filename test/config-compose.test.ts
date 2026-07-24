@@ -42,6 +42,7 @@ describe('strict installation config and Compose rendering', () => {
     expect(render.yaml).toContain('127.0.0.1:${WORKSHOP_PORT}:4317');
     expect(render.yaml).toContain('serve", "--config", "/app/seedbed/workshop.config.json"');
     expect(render.yaml).toContain('/health/ready');
+    expect(render.yaml).toContain('    restart: "no"');
     expect(render.yaml).not.toMatch(/0\.0\.0\.0:\$\{WORKSHOP_PORT\}/u);
     expect(render.yaml).not.toContain('waystone:\n');
     expect(render.yaml).toContain('source: ${WAYSTONE_ASSET_DIRECTORY}');
@@ -72,7 +73,7 @@ describe('strict installation config and Compose rendering', () => {
           name: 'Local embeddings',
           provider: {
             kind: 'openai-compatible' as const,
-            endpoint: 'http://mock-provider:8787',
+            endpoint: 'http://mock-provider:8787/v1/embeddings',
             model: 'text-embedding-3-small',
             dimensions: 1536,
             metric: 'cosine' as const,
@@ -118,7 +119,7 @@ describe('strict installation config and Compose rendering', () => {
           ...input.semantic.configuration,
           provider: {
             ...input.semantic.configuration.provider,
-            endpoint: 'http://127.0.0.1:11434',
+            endpoint: 'http://127.0.0.1:11434/v1/embeddings',
             allowPrivateEndpoint: false,
           },
         },
@@ -132,13 +133,13 @@ describe('strict installation config and Compose rendering', () => {
           ...input.semantic.configuration,
           provider: {
             ...input.semantic.configuration.provider,
-            endpoint: 'http://127.0.0.1:8787',
+            endpoint: 'http://127.0.0.1:8787/v1/embeddings',
             allowPrivateEndpoint: true,
           },
         },
       },
     }, { projectDirectory: process.cwd() });
-    expect(loopbackConfig.semantic?.configuration.provider.endpoint).toBe('http://host.docker.internal:8787');
+    expect(loopbackConfig.semantic?.configuration.provider.endpoint).toBe('http://host.docker.internal:8787/v1/embeddings');
     const loopbackCompose = renderCompose(loopbackConfig);
     expect(loopbackCompose.yaml.match(/extra_hosts: \["host\.docker\.internal:host-gateway"\]/gu)).toHaveLength(2);
     expect(validateConfig({
@@ -149,18 +150,50 @@ describe('strict installation config and Compose rendering', () => {
           ...input.semantic.configuration,
           provider: {
             ...input.semantic.configuration.provider,
-            endpoint: 'http://mock-provider:8787',
+            endpoint: 'http://mock-provider:8787/v1/embeddings',
             allowPrivateEndpoint: true,
           },
         },
       },
-    }, { projectDirectory: process.cwd() }).semantic?.configuration.provider.endpoint).toBe('http://mock-provider:8787');
+    }, { projectDirectory: process.cwd() }).semantic?.configuration.provider.endpoint).toBe('http://mock-provider:8787/v1/embeddings');
     for (const endpoint of [
-      'http://10.0.0.10:8787',
-      'http://192.168.1.2:8787',
-      'http://provider.internal:8787',
-      'http://example.com/v1',
-      'https://example.com/v1',
+      'http://mock-provider:8787',
+      'http://mock-provider:8787/v1',
+    ]) {
+      expect(() => validateConfig({
+        ...input,
+        semantic: {
+          ...input.semantic,
+          configuration: {
+            ...input.semantic.configuration,
+            provider: {
+              ...input.semantic.configuration.provider,
+              endpoint,
+            },
+          },
+        },
+      }, { projectDirectory: process.cwd() })).toThrow(/full OpenAI-compatible embeddings POST endpoint/u);
+    }
+    expect(validateConfig({
+      ...input,
+      semantic: {
+        ...input.semantic,
+        configuration: {
+          ...input.semantic.configuration,
+          provider: {
+            ...input.semantic.configuration.provider,
+            endpoint: 'http://mock-provider:8787/v1/embeddings/',
+          },
+        },
+      },
+    }, { projectDirectory: process.cwd() }).semantic?.configuration.provider.endpoint)
+      .toBe('http://mock-provider:8787/v1/embeddings');
+    for (const endpoint of [
+      'http://10.0.0.10:8787/v1/embeddings',
+      'http://192.168.1.2:8787/v1/embeddings',
+      'http://provider.internal:8787/v1/embeddings',
+      'http://example.com/v1/embeddings',
+      'https://example.com/v1/embeddings',
     ]) {
       expect(() => validateConfig({
         ...input,
@@ -185,7 +218,7 @@ describe('strict installation config and Compose rendering', () => {
           ...input.semantic.configuration,
           provider: {
             ...input.semantic.configuration.provider,
-            endpoint: 'https://api.openai.com/v1',
+            endpoint: 'https://api.openai.com/v1/embeddings',
             allowPrivateEndpoint: false,
           },
         },
@@ -205,7 +238,7 @@ describe('strict installation config and Compose rendering', () => {
           provider: {
             ...input.semantic.configuration.provider,
             kind: 'ollama-compatible',
-            endpoint: 'http://ollama:11434',
+            endpoint: 'http://ollama:11434/api/embed',
             model: 'nomic-embed-text',
             dimensions: 768,
             allowPrivateEndpoint: true,

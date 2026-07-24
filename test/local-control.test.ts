@@ -105,7 +105,7 @@ describe('Alembic-compatible fixed local control adapter', () => {
           name: 'Semantic default',
           provider: {
             kind: 'openai-compatible',
-            endpoint: 'http://mock-provider:8787/v1',
+            endpoint: 'http://mock-provider:8787/v1/embeddings',
             model: 'text-embedding-3-small',
             dimensions: 1536,
             metric: 'cosine',

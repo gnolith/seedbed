@@ -294,9 +294,15 @@ export class SeedbedLocalControl implements SeedbedControl {
         compose,
       });
       if (!(await compose.health(config)).healthy) await compose.up(config);
-      await verifyExpectedWorkshopReadiness(plan.request, receipt.protectedTokenFile);
+      const liveReadiness = await verifyExpectedWorkshopReadiness(plan.request, receipt.protectedTokenFile);
       if (plan.waystone !== undefined) {
         await verifyExpectedWaystone(plan.request, receipt.protectedTokenFile, plan.waystone);
+      }
+      const finalizedSemantic = receipt.semantic === undefined
+        ? undefined
+        : { ...receipt.semantic, state: liveReadiness.semanticState };
+      if (finalizedSemantic !== undefined) {
+        await finalizeInstallationSemanticReceipt(config, finalizedSemantic);
       }
       const result: SeedbedControlReceipt = {
         operationId: plan.id,
@@ -314,7 +320,7 @@ export class SeedbedLocalControl implements SeedbedControl {
           sha256: receipt.credentialDigest,
         },
         environmentSelector: 'GNOLITH_BEARER_TOKEN',
-        ...(receipt.semantic === undefined ? {} : { semantic: receipt.semantic }),
+        ...(finalizedSemantic === undefined ? {} : { semantic: finalizedSemantic }),
         ...(plan.waystone === undefined ? {} : { waystone: plan.waystone }),
       };
       await this.writeControlState(plan.request.installationId, 'ready');
@@ -660,7 +666,10 @@ async function waystoneExpectation(policy: SeedbedControlPolicy): Promise<Waysto
   };
 }
 
-async function verifyExpectedWorkshopReadiness(request: DockerInstallationRequest, tokenFile: string): Promise<void> {
+async function verifyExpectedWorkshopReadiness(
+  request: DockerInstallationRequest,
+  tokenFile: string,
+): Promise<{ readonly semanticState: string }> {
   const token = decodeCanonicalTextSecret(await readFile(tokenFile), 45);
   if (!/^[A-Za-z0-9_-]{43}$/u.test(token)) throw new TypeError('Protected local bearer selector is invalid');
   const endpoint = new URL('/health/ready', request.endpoint);
@@ -704,6 +713,31 @@ async function verifyExpectedWorkshopReadiness(request: DockerInstallationReques
     || semanticState?.fingerprint !== expectedSemanticFingerprint
     || semanticState?.ready !== (request.expected.semanticState === 'ready')
   ) throw new TypeError('Workshop authenticated readiness does not match the immutable installation request');
+  if (
+    typeof semanticState?.state !== 'string'
+    || semanticState.state.length < 1
+    || semanticState.state.length > 128
+    || /[\u0000-\u001f\u007f]/u.test(semanticState.state)
+  ) throw new TypeError('Workshop authenticated readiness semantic state is invalid');
+  return { semanticState: semanticState.state };
+}
+
+async function finalizeInstallationSemanticReceipt(
+  config: SeedbedConfig,
+  semantic: SemanticConfigurationReceiptV1,
+): Promise<void> {
+  const path = join(config.paths.stateDirectory, 'installation-receipt.json');
+  const value = await readJson(path);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Seedbed installation receipt is invalid');
+  }
+  const receipt = value as Record<string, unknown>;
+  if (
+    receipt.format !== 'gnolith-seedbed-install-receipt-v1'
+    || receipt.expectedInstallationId !== config.installationId
+    || receipt.configDigest !== digestObject(config)
+  ) throw new TypeError('Seedbed installation receipt identity mismatch');
+  await atomicReplace(path, { ...receipt, semantic });
 }
 
 async function verifyExpectedWaystone(

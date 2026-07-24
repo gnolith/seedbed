@@ -14,7 +14,7 @@ services:
         WORKSHOP_ARTIFACT: ${WORKSHOP_ARTIFACT}
         WORKSHOP_SHA256: ${WORKSHOP_SHA256}
     command: ["serve", "--config", "/app/seedbed/workshop.config.json"]
-    restart: unless-stopped
+    restart: "no"
     read_only: true
     user: "10001:10001"
     cap_drop: ["ALL"]

@@ -109,6 +109,12 @@ into the digest-bound installation plan. Credential values are read only from
 protected Compose secret files by the Workshop assembly adapter; receipts expose
 only the configuration fingerprint, revision, and state. Configuration completes
 after owner migrations and Workshop bootstrap but before the listener starts.
+The provider `endpoint` is always the complete embeddings POST URL (for example,
+`http://127.0.0.1:8787/v1/embeddings`), never an API base URL. Seedbed validates
+and canonicalizes that URL once at the installation boundary, including the
+Docker host-gateway hostname substitution described below, then passes the exact
+result unchanged to the owner runtime. Neither Seedbed nor the owner appends a
+path segment.
 External provider endpoints are denied by default. A loopback or single-label
 Compose-private HTTP endpoint additionally requires explicit private-endpoint
 approval and a protected credential selector; unsafe nonlocal/private targets,
@@ -119,6 +125,12 @@ exact name to Docker's host gateway. The same mapping applies to an explicitly
 configured loopback Qdrant endpoint. This keeps configuration fingerprints stable
 while making the endpoint reachable from the container; secrets remain Compose
 secret files and are never moved into the URL, plan receipt, or image.
+
+Workshop uses `restart: "no"` in the generated Compose graph. Explicit
+Seedbed repair and operator-requested restarts remain supported, but malformed
+or unreachable semantic configuration cannot create an automatic container
+restart loop. Workshop reports semantic degradation while lexical search and
+the authenticated service remain available.
 
 The Ollama-compatible type is reserved, but local Ollama is deliberately unavailable
 in this candidate. Enabling it requires a separately supplied immutable model

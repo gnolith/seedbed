@@ -97,7 +97,7 @@ describe('digest-bound migration/bootstrap apply', () => {
           name: 'Semantic',
           provider: {
             kind: 'openai-compatible' as const,
-            endpoint: 'https://api.openai.com/v1',
+            endpoint: 'https://api.openai.com/v1/embeddings',
             model: 'text-embedding-3-small',
             dimensions: 1536,
             metric: 'cosine' as const,
@@ -120,7 +120,12 @@ describe('digest-bound migration/bootstrap apply', () => {
     const bootstrap = ports.workshop.bootstrapV1.bind(ports.workshop);
     ports.workshop.bootstrapV1 = async (input) => { order.push('bootstrap'); return bootstrap(input); };
     const configure = ports.workshop.configureSemanticV1.bind(ports.workshop);
-    ports.workshop.configureSemanticV1 = async (input) => { order.push('semantic'); return configure(input); };
+    let configuredEndpoint: string | undefined;
+    ports.workshop.configureSemanticV1 = async (input) => {
+      order.push('semantic');
+      configuredEndpoint = input.configuration.provider.endpoint;
+      return configure(input);
+    };
     const compose = {
       async prepare() {},
       async up() { order.push('up'); },
@@ -129,12 +134,13 @@ describe('digest-bound migration/bootstrap apply', () => {
     };
     const receipt = await applyInstallationPlan({ config, plan: createInstallationPlan(config), ports, compose });
     expect(order).toEqual(['bootstrap', 'semantic', 'up']);
+    expect(configuredEndpoint).toBe('https://api.openai.com/v1/embeddings');
     expect(receipt.semantic).toEqual({
       fingerprint: semanticConfigurationFingerprint(config.semantic.configuration),
       revision: 1,
       state: 'unvalidated',
     });
-    expect(receipt.semantic?.fingerprint).toBe('3d83111a63b5005e56cc809e094771e98102e94db725755a9eb41b8fa04c7924');
+    expect(receipt.semantic?.fingerprint).toBe('3dd271b18d3b2448b51be87af7b8e49ac7046c872d122135f32e859b2d9b33d1');
     expect(JSON.stringify(receipt)).not.toContain('api.openai.com');
     expect(JSON.stringify(receipt)).not.toContain('text-embedding-3-small');
     expect(JSON.stringify(receipt)).not.toContain('protected-openai-profile');

@@ -307,6 +307,7 @@ try {
   ) throw new Error('restored public backup fixture did not verify opaquely');
   await verifySemanticProfile(packed, 'sqlite');
   await verifySemanticProfile(packed, 'qdrant');
+  await verifyUnavailableSemanticProfile(packed);
   console.log('verified exact pinned local Docker graph, repair, backup/restore, protected OpenAI semantic configuration, SQLite, and Qdrant');
 } finally {
   for (const cleanup of semanticCleanups) {
@@ -365,13 +366,14 @@ async function verifySemanticProfile(packed, vectorKind) {
     },
   });
   await startSemanticMock(policy.compose.nodeImage, mockContainer, mockPort);
+  await assertHostGatewayMockReachable(policy.compose.nodeImage, mockPort);
   const configuration = {
     version: 1,
     id: `qualification-${vectorKind}`,
     name: `Qualification ${vectorKind}`,
     provider: {
       kind: 'openai-compatible',
-      endpoint: `http://127.0.0.1:${mockPort}/v1`,
+      endpoint: `http://127.0.0.1:${mockPort}/v1/embeddings`,
       allowPrivateEndpoint: true,
       model: 'text-embedding-3-small',
       dimensions: 8,
@@ -407,8 +409,8 @@ async function verifySemanticProfile(packed, vectorKind) {
       lexicalReady: true,
       blobReady: true,
       producerStatus: 'ready',
-      semanticState: 'degraded',
-      allowLexicalOnly: true,
+      semanticState: 'ready',
+      allowLexicalOnly: false,
     },
     semantic: {
       configuration,
@@ -421,7 +423,7 @@ async function verifySemanticProfile(packed, vectorKind) {
     },
   };
   const semanticPlan = await control.plan(request);
-  if (semanticPlan.request.semantic?.configuration.provider.endpoint !== `http://host.docker.internal:${mockPort}/v1`) {
+  if (semanticPlan.request.semantic?.configuration.provider.endpoint !== `http://host.docker.internal:${mockPort}/v1/embeddings`) {
     throw new Error(`${vectorKind} semantic plan did not expose the pinned host-gateway mapping`);
   }
   const receipt = await control.apply(semanticPlan);
@@ -429,10 +431,20 @@ async function verifySemanticProfile(packed, vectorKind) {
   if (
     receipt.semantic?.fingerprint !== expectedFingerprint
     || receipt.semantic.revision !== 1
+    || receipt.semantic.state !== 'ready'
     || JSON.stringify(receipt).includes('qualification-profile-not-a-usable-api-key')
     || JSON.stringify(receipt).includes('host.docker.internal')
     || JSON.stringify(receipt).includes('text-embedding-3-small')
   ) throw new Error(`${vectorKind} semantic receipt leaked configuration or did not match its fingerprint`);
+  const persistedReceipt = JSON.parse(await readFile(
+    join(semanticStateRoot, 'installations', semanticKey, 'installation-receipt.json'),
+    'utf8',
+  ));
+  if (
+    persistedReceipt.semantic?.state !== 'ready'
+    || persistedReceipt.semantic?.fingerprint !== expectedFingerprint
+    || JSON.stringify(persistedReceipt).includes('/v1/embeddings')
+  ) throw new Error(`${vectorKind} persisted semantic receipt was not finalized safely`);
   const token = decodeCanonicalTextSecret(await readFile(receipt.protectedTokenFile.canonicalPath), 45);
   const response = await fetch(`http://127.0.0.1:${semanticPort}/health/ready`, {
     headers: { authorization: `Bearer ${token}` },
@@ -441,11 +453,11 @@ async function verifySemanticProfile(packed, vectorKind) {
   const status = await response.json();
   if (
     !response.ok
-    || status.semanticState?.state !== 'degraded'
+    || status.semanticState?.state !== 'ready'
     || status.semanticState?.configured !== true
     || status.semanticState?.revision !== 1
     || status.semanticState?.fingerprint !== expectedFingerprint
-    || status.semanticState?.ready !== false
+    || status.semanticState?.ready !== true
   ) throw new Error(`${vectorKind} semantic authenticated readiness was not truthful`);
   const services = (await composeCommand(semanticProjectName, semanticComposeDirectory, ['ps', '--all', '--format', 'json']))
     .stdout.split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line).Service);
@@ -453,6 +465,7 @@ async function verifySemanticProfile(packed, vectorKind) {
     throw new Error(`${vectorKind} semantic Compose capability reporting is invalid`);
   }
   const semanticEntityId = vectorKind === 'qdrant' ? 'Q900011' : 'Q900010';
+  const deniedEntityId = vectorKind === 'qdrant' ? 'Q900013' : 'Q900012';
   await callMcp(semanticPort, token, 'create_item', {
     idempotencyKey: `semantic-${vectorKind}-${key}`,
     authoredText: `Semantic ${vectorKind} qualification`,
@@ -461,10 +474,205 @@ async function verifySemanticProfile(packed, vectorKind) {
       labels: { en: { language: 'en', value: `Semantic ${vectorKind} lighthouse` } },
     },
   });
-  await waitForSemanticSearch(semanticPort, token, semanticEntityId, vectorKind);
+  await callMcp(semanticPort, token, 'create_item', {
+    idempotencyKey: `semantic-denied-${vectorKind}-${key}`,
+    authoredText: `Semantic ${vectorKind} authorization fixture`,
+    data: {
+      id: deniedEntityId,
+      labels: { en: { language: 'en', value: `Restricted semantic ${vectorKind} lighthouse` } },
+    },
+  });
+  const authorization = await callMcp(semanticPort, token, 'authorization_admin', {
+    version: 1,
+    action: 'status',
+  });
+  const policyRevision = authorization.structuredContent?.policyRevision;
+  if (!Number.isSafeInteger(policyRevision)) {
+    throw new Error(`${vectorKind} authorization status did not expose a bounded policy revision`);
+  }
+  await callMcp(semanticPort, token, 'authorization_admin', {
+    version: 1,
+    action: 'visibility-policy-set',
+    expectedPolicyRevision: policyRevision,
+    idempotencyKey: `semantic-visibility-${vectorKind}-${key}`,
+    target: { kind: 'entity', id: deniedEntityId },
+    expectedTargetRevision: 1,
+    visibility: {
+      version: 1,
+      clauses: [[{ kind: 'principal', principalId: 'semantic-denied-principal' }]],
+    },
+  });
+  await waitForSemanticOnlySearch(semanticPort, token, semanticEntityId, deniedEntityId, vectorKind);
   await composeCommand(semanticProjectName, semanticComposeDirectory, ['restart', 'workshop']);
   await assertAuthenticatedReady(semanticPort, token);
-  await waitForSemanticSearch(semanticPort, token, semanticEntityId, vectorKind);
+  await waitForSemanticOnlySearch(semanticPort, token, semanticEntityId, deniedEntityId, vectorKind);
+}
+
+async function verifyUnavailableSemanticProfile(packed) {
+  const packedControl = await import(pathToFileURL(join(packed.root, 'dist', 'local-control.js')).href);
+  const semanticInstallationId = `${installationId}-semantic-unreachable`;
+  const semanticKey = digestObject(semanticInstallationId).slice(0, 24);
+  const semanticProjectName = `gnolith-${semanticKey}`;
+  const semanticStateRoot = join(temporaryRoot, 'semantic-unreachable-state');
+  const semanticComposeDirectory = join(semanticStateRoot, 'installations', semanticKey, 'compose');
+  const semanticPort = await availablePort();
+  const unavailableProviderPort = await availablePort();
+  const providerSelectorPath = join(semanticStateRoot, 'protected', 'openai-profile');
+  await mkdir(dirname(providerSelectorPath), { recursive: true });
+  await writeFile(providerSelectorPath, 'qualification-profile-not-a-usable-api-key\n', { encoding: 'utf8', mode: 0o600 });
+  await chmod(providerSelectorPath, 0o600);
+  const policy = packedControl.defaultSeedbedControlPolicy({
+    projectRoot: packed.project,
+    stateRoot: semanticStateRoot,
+    artifactRoot: packed.root,
+  });
+  semanticCleanups.push({
+    projectName: semanticProjectName,
+    composeDirectory: semanticComposeDirectory,
+    dataVolume: `${semanticProjectName}-data`,
+  });
+  const control = packedControl.createSeedbedControl({
+    ...policy,
+    compose: {
+      ...policy.compose,
+      profiles: ['waystone'],
+    },
+  });
+  const request = {
+    installationId: semanticInstallationId,
+    baseIri: `https://local.gnolith.invalid/${semanticInstallationId}`,
+    endpoint: `http://127.0.0.1:${semanticPort}/mcp`,
+    image: policy.localBuild,
+    expected: {
+      installationId: semanticInstallationId,
+      baseIri: `https://local.gnolith.invalid/${semanticInstallationId}`,
+      serverVersion: lock.packages.workshop.version,
+      operationVersion: lock.migrations.workshop,
+      catalogDigest: lock.migrations.expectedCatalogDigest,
+      migrationReady: true,
+      canonicalReady: true,
+      authorizationReady: true,
+      lexicalReady: true,
+      blobReady: true,
+      producerStatus: 'ready',
+      semanticState: 'degraded',
+      allowLexicalOnly: true,
+    },
+    semantic: {
+      configuration: {
+        version: 1,
+        id: 'qualification-unreachable',
+        name: 'Qualification unreachable provider',
+        provider: {
+          kind: 'openai-compatible',
+          endpoint: `http://127.0.0.1:${unavailableProviderPort}/v1/embeddings`,
+          allowPrivateEndpoint: true,
+          model: 'text-embedding-3-small',
+          dimensions: 8,
+          metric: 'cosine',
+          credentialSelector: 'openai-profile',
+          redirectPolicy: 'error',
+        },
+        vector: { kind: 'sqlite' },
+      },
+      expectedRevision: 0,
+      credentialSelectors: [{
+        id: 'openai-profile',
+        kind: 'protected-file-v1',
+        path: providerSelectorPath,
+      }],
+    },
+  };
+  const plan = await control.plan(request);
+  if (plan.request.semantic?.configuration.provider.endpoint !== `http://host.docker.internal:${unavailableProviderPort}/v1/embeddings`) {
+    throw new Error('unreachable semantic plan did not retain the exact full host-gateway POST endpoint');
+  }
+  const receipt = await control.apply(plan);
+  const receiptText = JSON.stringify(receipt);
+  if (
+    receipt.semantic?.state !== 'degraded'
+    || receipt.semantic?.revision !== 1
+    || receiptText.includes('qualification-profile-not-a-usable-api-key')
+    || receiptText.includes('/v1/embeddings')
+    || receiptText.includes('host.docker.internal')
+  ) throw new Error('unreachable semantic receipt leaked endpoint or protected credential material');
+  const persistedReceipt = JSON.parse(await readFile(
+    join(semanticStateRoot, 'installations', semanticKey, 'installation-receipt.json'),
+    'utf8',
+  ));
+  if (
+    persistedReceipt.semantic?.state !== 'degraded'
+    || JSON.stringify(persistedReceipt).includes('/v1/embeddings')
+    || JSON.stringify(persistedReceipt).includes('qualification-profile-not-a-usable-api-key')
+  ) throw new Error('unreachable persisted semantic receipt was not finalized safely');
+  const token = decodeCanonicalTextSecret(await readFile(receipt.protectedTokenFile.canonicalPath), 45);
+  await assertDegradedSemanticStatus(semanticPort, token, unavailableProviderPort);
+  const workshopContainer = `${semanticProjectName}-workshop-1`;
+  const restartPolicy = await exec('docker', [
+    'inspect', '--format', '{{json .HostConfig.RestartPolicy}}', workshopContainer,
+  ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  const restart = JSON.parse(restartPolicy.stdout);
+  if (restart.Name !== 'no' || restart.MaximumRetryCount !== 0) {
+    throw new Error(`unreachable semantic Workshop restart policy is unsafe: ${restartPolicy.stdout.trim()}`);
+  }
+  await callMcp(semanticPort, token, 'create_item', {
+    idempotencyKey: `semantic-unreachable-lexical-${key}`,
+    authoredText: 'Lexical fallback qualification',
+    data: {
+      id: 'Q900014',
+      labels: { en: { language: 'en', value: 'Lexical fallback marigold' } },
+    },
+  });
+  await waitForLexicalSearch(semanticPort, token, 'Q900014', 'marigold');
+  await composeCommand(semanticProjectName, semanticComposeDirectory, ['restart', 'workshop']);
+  await assertDegradedSemanticStatus(semanticPort, token, unavailableProviderPort);
+  await waitForLexicalSearch(semanticPort, token, 'Q900014', 'marigold');
+  const inspect = await exec('docker', [
+    'inspect', '--format', '{{.RestartCount}}', workshopContainer,
+  ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  if (Number(inspect.stdout.trim()) !== 0) {
+    throw new Error('explicit restart was followed by an automatic Workshop restart loop');
+  }
+}
+
+async function assertDegradedSemanticStatus(workshopPort, token, unavailableProviderPort) {
+  const response = await fetch(`http://127.0.0.1:${workshopPort}/health/ready`, {
+    headers: { authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(10_000),
+  });
+  const status = await response.json();
+  const serialized = JSON.stringify(status);
+  const diagnostic = status.semanticState?.diagnostic
+    ?? status.semanticState?.reason
+    ?? status.semanticState?.failure;
+  if (
+    !response.ok
+    || status.lexicalReady !== true
+    || status.semanticState?.state !== 'degraded'
+    || status.semanticState?.configured !== true
+    || status.semanticState?.ready !== false
+    || diagnostic === undefined
+    || serialized.length > 65_536
+    || serialized.includes('qualification-profile-not-a-usable-api-key')
+    || serialized.includes(`:${unavailableProviderPort}`)
+    || serialized.includes('/v1/embeddings')
+  ) throw new Error(`unreachable semantic status was not bounded, actionable, secret-safe, and lexical-ready: ${serialized.slice(0, 2048)}`);
+}
+
+async function waitForLexicalSearch(workshopPort, token, entityId, text) {
+  const deadline = Date.now() + 60_000;
+  let last;
+  while (Date.now() < deadline) {
+    await callMcp(workshopPort, token, 'search_admin', { action: 'materialize', limit: 100 }).catch(() => undefined);
+    last = await callMcp(workshopPort, token, 'search', {
+      text,
+      kinds: ['item'],
+      limit: 10,
+    }).catch(() => undefined);
+    if (last?.structuredContent?.items?.some((result) => result.id === entityId || result.sourceId === entityId)) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
+  }
+  throw new Error(`lexical fallback search did not remain available: ${JSON.stringify(last).slice(0, 1024)}`);
 }
 
 async function startSemanticMock(nodeImage, containerName, hostPort) {
@@ -475,7 +683,7 @@ async function startSemanticMock(nodeImage, containerName, hostPort) {
     "let body='';req.on('data',c=>body+=c);req.on('end',()=>{",
     "const value=JSON.parse(body);const input=Array.isArray(value.input)?value.input:[];const dimensions=value.dimensions;",
     "if(!Number.isInteger(dimensions)||dimensions<1||input.length<1){res.writeHead(400);return res.end()}",
-    "const data=input.map((_,index)=>({index,embedding:Array.from({length:dimensions},(__,dimension)=>dimension===index%dimensions?1:0)}));",
+    "const data=input.map((text,index)=>{const semantic=/lighthouse|beacon/iu.test(String(text));const slot=semantic?0:1;return {index,embedding:Array.from({length:dimensions},(__,dimension)=>dimension===slot?1:0)}});",
     "const encoded=JSON.stringify({object:'list',data,model:value.model,usage:{prompt_tokens:input.length,total_tokens:input.length}});",
     "res.writeHead(200,{'content-type':'application/json','content-length':Buffer.byteLength(encoded)});res.end(encoded)",
     "})}).listen(8787,'0.0.0.0')",
@@ -492,20 +700,38 @@ async function startSemanticMock(nodeImage, containerName, hostPort) {
   ], { windowsHide: true, maxBuffer: 1024 * 1024 });
 }
 
-async function waitForSemanticSearch(workshopPort, token, entityId, vectorKind) {
+async function assertHostGatewayMockReachable(nodeImage, hostPort) {
+  const endpoint = `http://host.docker.internal:${hostPort}/v1/embeddings`;
+  await exec('docker', [
+    'run', '--rm',
+    '--add-host', 'host.docker.internal:host-gateway',
+    '--read-only',
+    '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges:true',
+    nodeImage,
+    'node', '-e',
+    "fetch(process.argv[1],{method:'POST',headers:{authorization:'Bearer qualification-profile-not-a-usable-api-key','content-type':'application/json'},body:JSON.stringify({model:'text-embedding-3-small',dimensions:8,input:['host gateway probe']})}).then(async r=>{if(r.status!==200)throw new Error('mock status '+r.status);const v=await r.json();if(!Array.isArray(v.data)||v.data.length!==1)throw new Error('mock body')})",
+    endpoint,
+  ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+}
+
+async function waitForSemanticOnlySearch(workshopPort, token, entityId, deniedEntityId, vectorKind) {
   const deadline = Date.now() + 90_000;
   let last;
   while (Date.now() < deadline) {
     await callMcp(workshopPort, token, 'search_admin', { action: 'materialize', limit: 100 }).catch(() => undefined);
     last = await callMcp(workshopPort, token, 'search', {
-      text: `Semantic ${vectorKind} lighthouse`,
+      text: 'beacon',
       kinds: ['item'],
       limit: 10,
     }).catch(() => undefined);
-    if (last?.structuredContent?.items?.some((result) => result.id === entityId || result.sourceId === entityId)) return;
+    const items = last?.structuredContent?.items ?? [];
+    const visible = items.find((result) => result.id === entityId || result.sourceId === entityId);
+    const denied = items.some((result) => result.id === deniedEntityId || result.sourceId === deniedEntityId);
+    if (visible && !denied && Number(visible.score) > 0 && Number(visible.score) < 0.02) return;
     await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
   }
-  throw new Error(`${vectorKind} semantic search did not return the isolated mock-provider fixture: ${JSON.stringify(last).slice(0, 1024)}`);
+  throw new Error(`${vectorKind} semantic-only authorization-filtered search did not return the isolated mock-provider fixture: ${JSON.stringify(last).slice(0, 1024)}`);
 }
 
 function installationConfig(input) {
