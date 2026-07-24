@@ -1,169 +1,123 @@
 # Seedbed
 
-Seedbed assembles Gnolith as one local, headless Node.js process. It uses a durable
-SQLite file, exposes tools over MCP stdio or one-shot commands, and never starts an
-HTTP server, listening socket, UI, or implicit migration.
+Seedbed 0.4 is the deterministic Compose-first installer and offline operator control
+plane for a local Gnolith installation. It is not the Gnolith application or a
+server. Workshop is the sole HTTP `/mcp` service.
 
-## Requirements
+Seedbed owns:
 
-- Node.js 24
-- public exact `@gnolith/diamond`, `@gnolith/taproot`, and `@gnolith/workshop` versions
-- a restart-stable file or inherited descriptor containing exactly 32 random bytes
+- strict installation configuration and exact artifact/source digests;
+- local Compose generation and hardened local-build plumbing;
+- Diamond → Taproot → Workshop migration ordering;
+- protected `local-bearer-v1` credential creation and Workshop `bootstrap-v1`
+  invocation before listener start;
+- bounded Docker-local diagnostics;
+- opaque owner backup/restore and exact legacy 0.3.2 offline adoption;
+- secret-safe plans and receipts for Alembic verification.
 
-## Start
+Seedbed contains no MCP transport, application runtime, domain CRUD, authorization
+implementation, search/semantic dispatcher, live snapshot endpoint, HTTP listener,
+published application image, or GHCR publication workflow.
 
-Create the root-secret file with an operating-system secret manager or a CSPRNG,
-and restrict it to the Seedbed process account. Never place the bytes in a command,
-environment variable, JSON configuration, log, or MCP argument.
+Installable control planes use the fixed-command local adapter rather than
+constructing child-process commands:
 
-```sh
-seedbed --base-iri https://example.com/my-gnolith/ --root-secret-file /run/secrets/seedbed-root init
-seedbed --base-iri https://example.com/my-gnolith/ --root-secret-file /run/secrets/seedbed-root \
-  --principal owner --workspace primary auth bootstrap
-seedbed --base-iri https://example.com/my-gnolith/ --root-secret-file /run/secrets/seedbed-root \
-  --principal owner --workspace primary auth status
-seedbed --base-iri https://example.com/my-gnolith/ --root-secret-file /run/secrets/seedbed-root \
-  --principal owner --workspace primary mcp --stdio
+```ts
+import { createSeedbedControl } from '@gnolith/seedbed/local-control';
+
+const local = createSeedbedControl(immutableSeedbedPolicy);
+const plan = await local.plan(dockerInstallationRequest);
+const receipt = await local.apply(plan);
+await local.resume(plan.id);
+const inspection = await local.inspect({ installationId, projectRoot });
+const doctor = await local.diagnose({ installationId, projectRoot });
 ```
 
-`init` only creates a new package assembly. `migrate` is the only normal command
-that advances package schemas. Authorization remains quarantined until the explicit,
-one-time `auth bootstrap` atomically creates the first durable grants and advances
-Taproot's sole authorization/search generation. An identical bootstrap retry is
-idempotent; a different second bootstrap is rejected.
+The installable default uses `createDefaultSeedbedControl({ projectRoot })`.
+Seedbed resolves its own installed package root and safe per-user external state
+root, then returns the canonical opaque state selector in its plan. An explicitly
+approved absolute external `stateRoot` may override the default; project-local,
+worktree-local, symlink, junction, and path-alias selectors fail closed. Seedbed
+alone reads and validates the fixed `seedbed-component-lock.json`; tests and
+candidate staging may explicitly override `artifactRoot`.
 
 ## Commands
 
 ```text
-seedbed init
-seedbed migrate
-seedbed doctor
-seedbed auth bootstrap
-seedbed auth status
-seedbed auth apply --manifest ./principal-authorization.json
-seedbed auth backfill taproot --manifest <path>
-seedbed auth backfill workshop --domain <task|memory>
-seedbed snapshot create --output ./installation.seedbed-snapshot.gz
-seedbed snapshot inspect --input ./installation.seedbed-snapshot.gz
-seedbed snapshot verify --input ./installation.seedbed-snapshot.gz
-seedbed snapshot restore --input ./installation.seedbed-snapshot.gz
-seedbed mcp --stdio
-seedbed tools
-seedbed call <tool-name> [--arguments '{"key":"value"}']
+seedbed init --config <path> --from <canonical-config-template>
+seedbed plan --config <path> [--out <path>]
+seedbed apply --config <path> --plan <path>
+seedbed migrate plan --config <path> [--out <path>]
+seedbed migrate apply --config <path> --plan <path>
+seedbed doctor --config <path>
+seedbed backup create --config <path> --out <path>
+seedbed backup inspect --config <path> --archive <path>
+seedbed backup verify --config <path> --archive <path>
+seedbed backup restore --config <path> --archive <path> [--dry-run]
+seedbed adopt legacy-local plan --config <path> --manifest <path> [--out <path>]
+seedbed adopt legacy-local apply --config <path> --manifest <path> --plan <path>
+seedbed uninstall --config <path> --retain-data
 ```
 
-Principal authorization changes are strict host-only manifests and never MCP tools.
-They replace the principal's enabled flag, complete workspace set, and complete
-capability set in one Taproot authorization advance. Bind every change to the
-revision reported by `auth status`:
+There is no native or stdio product mode. Remote Workshop installation and Codex
+configuration are Alembic responsibilities.
 
-```json
-{
-  "version": 1,
-  "expectedAuthorizationRevision": 2,
-  "principal": "agent",
-  "enabled": true,
-  "workspaces": ["primary"],
-  "capabilities": ["read", "task-write"]
-}
-```
+## Local topology
 
-To revoke a principal, set `enabled` to `false` and both arrays to empty. Stale
-manifests fail without writes. Seedbed also rejects any update that would remove
-the final enabled principal holding exact `admin`, `knowledge:write`, and
-`knowledge:policy`, preventing an unrecoverable authorization lockout.
+The default graph is one locally built Workshop service, an internal Compose network,
+one application-data volume, and one read-only protected bearer secret. Workshop
+binds `0.0.0.0:4317` inside its container; Compose publishes only
+`127.0.0.1:<configured-port>` by default. The explicit IPv6 override publishes
+`[::1]`. Optional `qdrant` and `ollama` profiles remain internal. The `waystone`
+profile mounts verified immutable browser assets into Workshop and starts no second
+service.
 
-There is no raw SPARQL command. Legacy authorization rows remain invisible until
-an explicit, bounded host-only backfill. Maintenance requires exact `search:admin`;
-principal changes additionally require exact `admin`, Taproot `knowledge:write`, and
-Taproot `knowledge:policy`. These Taproot capabilities are required by its guarded
-installation advance and are distinct from Workshop's `knowledge-write`; generic
-`admin` implies none of them.
+The build consumes exact tarball paths and lowercase SHA-256 values from the config.
+No Seedbed-owned application image is published.
 
-Taproot's `search` and `search_hydrate` tools provide the single relevance-search
-surface. Seedbed owns Resource and Annotation CRUD/hydration tools and runs the
-bounded Taproot materializer after successful mutations and during graceful drain.
-Materialization and semantic maintenance tools require exact `search:admin`.
-Task, Memory, and Prompt results are enabled only when their exact Workshop-owned
-producer adapters are present; Seedbed does not duplicate those domain owners.
+## Credential handoff
 
-Authorized `item_history`/`item_revision`, `statement_history`/`statement_revision`,
-`resource_history`/`resource_revision`, and
-`annotation_history`/`annotation_revision` expose bounded canonical revisions without
-bypassing current visibility. Existing Item mutations preserve the complete current
-statement authorization map when `statementRestrictions` is omitted; an explicitly
-supplied replacement must exactly cover the post-mutation statement IDs.
-Workshop-owned `task_history`, `memory_history`, and `prompt_history` are composed
-through the same current-authorization recheck across process and MCP boundaries.
+For `local-bearer-v1`, apply creates a new protected user-state file outside the
+project using exactly 32 OS-CSPRNG bytes encoded as canonical base64url without
+padding plus LF. The file is exclusively created and owner-protected. Seedbed passes
+only its selector to `gnolith-workshop bootstrap-v1`.
 
-Structured results are one-line JSON on stdout. Diagnostics and JSON logs go only
-to stderr. Exit codes are `0` success, `2` usage, `3` configuration, `4`
-persistence/readiness, `5` authorization, and `6` operation failure.
+Receipts contain credential ID, a non-secret digest, the protected selector, and the
+required environment selector `GNOLITH_BEARER_TOKEN`. They never contain the token.
+Seedbed does not write Codex project configuration and reports `clientVerified:
+false`; Alembic performs the authenticated verification and selector-to-environment
+handoff.
 
-## Configuration
+## Backup and adoption
 
-Precedence is CLI, then `SEEDBED_*` environment variables, then
-`seedbed.config.json`, then defaults.
+Owner backup sections and namespace-sliced Diamond ledger evidence are opaque to
+Seedbed. Restore validates owner ports, stages Taproot blob streams first, imports
+Diamond/Taproot/Workshop in order, and exposes the canonical database last. Dry-run
+reports retained, rebuildable, deferred, expired, and unsupported data.
 
-| Setting | CLI | Environment | Default |
-| --- | --- | --- | --- |
-| SQLite path | `--database` | `SEEDBED_DATABASE_PATH` | `./.seedbed/gnolith.sqlite` |
-| local blob path | `--blobs` | `SEEDBED_BLOB_PATH` | `./.seedbed/blobs` |
-| SQLite busy timeout | `--busy-timeout-ms` | `SEEDBED_BUSY_TIMEOUT_MS` | `5000` |
-| stable base IRI | `--base-iri` | `SEEDBED_BASE_IRI` | none |
-| root-secret file selector | `--root-secret-file` | `SEEDBED_ROOT_SECRET_FILE` | none |
-| inherited secret descriptor | `--root-secret-fd` | `SEEDBED_ROOT_SECRET_FD` | none |
-| principal selector | `--principal` | `SEEDBED_PRINCIPAL_SELECTOR` | none |
-| workspace selector | `--workspace` | `SEEDBED_WORKSPACE_SELECTOR` | none |
-| log level | `--log-level` | `SEEDBED_LOG_LEVEL` | `info` |
+`legacy-local-v1` accepts only raw Seedbed 0.3.2 state or snapshot-v1 with the exact
+Diamond 0.4.1 / Taproot 0.4.2 / Workshop 0.4.2 / Seedbed 0.3.2 tuple. It refuses
+locked, changed, lossy, empty-target-from-nonempty-source, or nonempty-target
+operations and leaves source state untouched.
+Snapshot-v1 envelope verification belongs to Seedbed. Owner conversion belongs to
+the checksum-pinned public Diamond, Taproot, and Workshop adapters running against a
+read-only portable source capability; Seedbed never parses owner tables or fragment
+payloads.
 
-Exactly one root-secret selector is required for authorization. Seedbed derives
-non-extractable, installation-bound and domain-separated keys with HKDF-SHA-256.
-Changing the secret, installation, or base IRI fails closed across restarts.
+See [architecture reset](docs/architecture-reset.md),
+[migration guide](docs/migrations.md), and the
+[example config](examples/seedbed.config.example.json).
 
-Optional `semanticConfigurations` are declared only in the JSON configuration.
-Each chooses an OpenAI- or Ollama-compatible embedding endpoint and either SQLite
-or Qdrant vectors. Provider and Qdrant credentials use `{ "file": "..." }` or
-`{ "fd": 3 }` selectors; literal credential values, environment credential bytes,
-CLI credential flags, and MCP credential arguments are intentionally unsupported.
-Private endpoints require the explicit `allowPrivateEndpoint` opt-in. See
-[`seedbed.config.example.json`](seedbed.config.example.json) for the complete shape.
-
-## Snapshot and restore
-
-Snapshot maintenance requires an authorized principal with exact `search:admin`.
-`snapshot create` uses SQLite's consistent `VACUUM INTO` boundary, includes every
-local blob with byte length and SHA-256 metadata, and writes a compressed portable
-envelope with an exclusive create. Root secrets, credential bytes, access tokens,
-and secret selectors are never included. Keep those separately in an OS secret
-facility. The candidate archive is fully decoded and checksum-verified before it is
-atomically published. Compressed, expanded, and decoded payload sizes are explicitly
-bounded, including archives containing blobs larger than 32 MiB.
-
-`snapshot verify` checks the database and every blob before any restore write.
-`snapshot restore` accepts only an empty target installation, validates the exact
-package schema, stable base IRI, root-secret binding, installation identity, and
-administrator authorization in staging, installs blobs first, and exposes the
-canonical database last. A failed or interrupted restore removes staging state
-without replacing a valid installation.
-
-## Docker
-
-The image runs as the unprivileged `node` user, uses `tini`, exposes no port,
-defaults to MCP stdio, and stores SQLite at `/var/lib/seedbed/gnolith.sqlite`.
-Mount the root secret read-only; do not pass its bytes as an environment value. On
-Linux it must be owned so the image's non-root `node` user can read it while group
-and other permission bits remain clear (for example, owner-readable mode `0400`).
+## Candidate verification
 
 ```sh
-docker volume create seedbed-data
-docker run --rm -i \
-  -v seedbed-data:/var/lib/seedbed \
-  -v /host/secret/seedbed-root:/run/secrets/seedbed-root:ro \
-  -e SEEDBED_BASE_IRI=https://example.com/my-gnolith/ \
-  -e SEEDBED_ROOT_SECRET_FILE=/run/secrets/seedbed-root \
-  ghcr.io/gnolith/seedbed:0.3.2 init
+npm ci --ignore-scripts
+npm run check
+npm run test:packed
+npm run test:compose
+npm run test:docker
 ```
 
-See [`docs/migrations.md`](docs/migrations.md) for exact transition and recovery
-rules and [`docs/release.md`](docs/release.md) for trusted publishing.
+After committing a clean candidate, `npm run candidate` regenerates the exact package,
+Compose bundle, CycloneDX SBOM, rendered graph inventory, and lowercase SHA-256
+checksums. It never tags, publishes npm, creates a Release, or pushes an image.

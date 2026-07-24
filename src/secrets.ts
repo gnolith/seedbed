@@ -1,116 +1,102 @@
-import { lstat, open, readFile } from 'node:fs/promises';
-import { constants, readSync } from 'node:fs';
-import { subtle, type webcrypto } from 'node:crypto';
-import type { SecretSelector, SeedbedConfig } from './config.js';
-import { ExitCode, SeedbedError } from './errors.js';
+import { randomBytes } from 'node:crypto';
+import { constants } from 'node:fs';
+import { chmod, lstat, mkdir, open, readFile, realpath, rm } from 'node:fs/promises';
+import { dirname, isAbsolute, normalize } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { sha256 } from './canonical.js';
 
-const encoder = new TextEncoder();
-
-export interface InstallationKeys {
-  readonly binding: webcrypto.CryptoKey;
-  readonly hostWrite: webcrypto.CryptoKey;
-  readonly cursorAead: webcrypto.CryptoKey;
-  readonly cursorDigest: webcrypto.CryptoKey;
-  readonly taprootCursorAead: webcrypto.CryptoKey;
+export interface BearerCredentialMetadata {
+  readonly credentialId: string;
+  readonly credentialDigest: string;
+  readonly protectedFile: string;
+  readonly requiredEnvironmentSelector: 'GNOLITH_BEARER_TOKEN';
 }
 
-export async function deriveInstallationKeys(config: SeedbedConfig, installationId: string): Promise<InstallationKeys> {
-  const raw = await readRootSecret(config);
+export async function createLocalBearerCredential(
+  credentialId: string,
+  path: string,
+  options: { platform?: NodeJS.Platform; random?: (bytes: number) => Buffer; windowsAcl?: (path: string) => void } = {},
+): Promise<BearerCredentialMetadata> {
+  if (!isAbsolute(path) || /^\\\\/u.test(path)) throw new TypeError('Credential path must be an absolute local path');
+  await ensureProtectedParents(dirname(path));
+  const platform = options.platform ?? process.platform;
+  const bytes = (options.random ?? randomBytes)(32);
+  if (bytes.byteLength !== 32) throw new TypeError('Credential generator must return exactly 32 bytes');
+  const token = bytes.toString('base64url');
+  bytes.fill(0);
+  let created = false;
   try {
-    const material = await subtle.importKey('raw', raw, 'HKDF', false, ['deriveKey']);
-    const derive = (info: string, algorithm: webcrypto.AesKeyGenParams | webcrypto.HmacImportParams, usages: webcrypto.KeyUsage[]) =>
-      subtle.deriveKey(
-        { name: 'HKDF', hash: 'SHA-256', salt: encoder.encode(`@gnolith/seedbed/${installationId}`), info: encoder.encode(info) },
-        material,
-        algorithm,
-        false,
-        usages,
-      );
-    const [binding, hostWrite, cursorAead, cursorDigest, taprootCursorAead] = await Promise.all([
-      derive('installation-binding/v1', { name: 'HMAC', hash: 'SHA-256', length: 256 }, ['sign', 'verify']),
-      derive('taproot-host-write/v1', { name: 'HMAC', hash: 'SHA-256', length: 256 }, ['sign', 'verify']),
-      derive('workshop-cursor-aead/v1', { name: 'AES-GCM', length: 256 }, ['encrypt', 'decrypt']),
-      derive('workshop-cursor-digest/v1', { name: 'HMAC', hash: 'SHA-256', length: 256 }, ['sign', 'verify']),
-      derive('taproot-cursor-aead/v1', { name: 'AES-GCM', length: 256 }, ['encrypt', 'decrypt']),
-    ]);
-    return { binding, hostWrite, cursorAead, cursorDigest, taprootCursorAead };
-  } finally {
-    raw.fill(0);
-  }
-}
-
-async function readRootSecret(config: SeedbedConfig): Promise<Uint8Array> {
-  if ((config.rootSecretFile === undefined) === (config.rootSecretFd === undefined)) {
-    throw secretError('Configure exactly one root-secret file or inherited file descriptor');
-  }
-  let bytes: Uint8Array;
-  if (config.rootSecretFile !== undefined) {
-    const metadata = await lstat(config.rootSecretFile);
-    if (metadata.isSymbolicLink()) throw secretError('Root-secret selector must not identify a symbolic link');
-    if (!metadata.isFile()) throw secretError('Root-secret selector must identify a regular file');
-    if (process.platform !== 'win32' && (metadata.mode & 0o077) !== 0) {
-      throw secretError('Root-secret file must not be accessible by group or others');
-    }
-    const handle = await open(config.rootSecretFile, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600);
+    created = true;
     try {
-      const opened = await handle.stat();
-      if (!opened.isFile()) throw secretError('Root-secret selector must identify a regular file');
-      if (process.platform !== 'win32' && (opened.mode & 0o077) !== 0) {
-        throw secretError('Root-secret file must not be accessible by group or others');
-      }
-      if (opened.dev !== metadata.dev || opened.ino !== metadata.ino) {
-        throw secretError('Root-secret file changed while it was being opened');
-      }
-      bytes = await readFile(handle);
+      await handle.writeFile(`${token}\n`, { encoding: 'utf8' });
+      await handle.sync();
     } finally {
       await handle.close();
     }
-  } else {
-    const buffer = Buffer.alloc(33);
-    let count = 0;
-    while (count < buffer.length) {
-      const read = readSync(config.rootSecretFd!, buffer, count, buffer.length - count, null);
-      if (read === 0) break;
-      count += read;
+    if (platform === 'win32') {
+      (options.windowsAcl ?? applyWindowsAcl)(path);
+    } else {
+      await chmod(path, 0o600);
     }
-    bytes = buffer.subarray(0, count);
+    const metadata = await lstat(path);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) throw new TypeError('Credential file is not a regular protected file');
+    if (platform !== 'win32' && (metadata.mode & 0o077) !== 0) throw new TypeError('Credential file permissions are not owner-only');
+    return {
+      credentialId,
+      credentialDigest: sha256(token),
+      protectedFile: normalize(path),
+      requiredEnvironmentSelector: 'GNOLITH_BEARER_TOKEN',
+    };
+  } catch (error) {
+    if (created) await rm(path, { force: true }).catch(() => undefined);
+    throw error;
   }
-  if (bytes.byteLength !== 32) {
-    bytes.fill(0);
-    throw secretError('Root-secret source must contain exactly 32 bytes');
-  }
-  return bytes;
 }
 
-function secretError(message: string): SeedbedError {
-  return new SeedbedError(message, ExitCode.configuration, 'invalid_root_secret');
+export async function inspectProtectedCredential(path: string, platform: NodeJS.Platform = process.platform): Promise<{ credentialDigest: string }> {
+  if (!isAbsolute(path) || /^\\\\/u.test(path)) throw new TypeError('Credential path must be an absolute local path');
+  const metadata = await lstat(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) throw new TypeError('Credential selector must identify a regular non-link file');
+  if (metadata.size !== 44) throw new TypeError('Credential file must contain canonical 32-byte base64url plus LF');
+  if (platform !== 'win32' && (metadata.mode & 0o077) !== 0) throw new TypeError('Credential file permissions are not owner-only');
+  const encoded = await readFile(path, 'utf8');
+  if (!/^[A-Za-z0-9_-]{43}\n$/u.test(encoded)) throw new TypeError('Credential file encoding is not canonical base64url-without-padding plus LF');
+  const token = encoded.slice(0, -1);
+  if (Buffer.from(token, 'base64url').byteLength !== 32) throw new TypeError('Credential file does not encode exactly 32 bytes');
+  return { credentialDigest: sha256(token) };
 }
 
-/** Returns a process-local credential callback; selector metadata is safe to persist, secret bytes are not. */
-export function createCredentialReader(selector: SecretSelector | undefined): (() => Promise<string>) | undefined {
-  if (!selector) return undefined;
-  let inherited: string | undefined;
-  return async () => {
-    if (selector.file !== undefined) {
-      const metadata = await lstat(selector.file);
-      if (metadata.isSymbolicLink() || !metadata.isFile()) throw secretError('Credential selector must identify a regular non-symbolic-link file');
-      if (process.platform !== 'win32' && (metadata.mode & 0o077) !== 0) throw secretError('Credential file must not be accessible by group or others');
-      const value = (await readFile(selector.file, 'utf8')).trim();
-      if (!value) throw secretError('Credential source must not be empty');
-      return value;
+async function ensureProtectedParents(path: string): Promise<void> {
+  const missing: string[] = [];
+  let cursor = normalize(path);
+  while (true) {
+    try {
+      const metadata = await lstat(cursor);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory()) throw new TypeError('Credential parent must be a real directory, not a link or junction');
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      missing.push(cursor);
+      const parent = dirname(cursor);
+      if (parent === cursor) throw new TypeError('Credential parent has no existing local root');
+      cursor = parent;
     }
-    if (inherited !== undefined) return inherited;
-    const buffer = Buffer.alloc(65_537);
-    let count = 0;
-    while (count < buffer.length) {
-      const size = readSync(selector.fd!, buffer, count, buffer.length - count, null);
-      if (size === 0) break;
-      count += size;
-    }
-    if (count === buffer.length) throw secretError('Credential source exceeds 65536 bytes');
-    inherited = buffer.subarray(0, count).toString('utf8').trim();
-    buffer.fill(0);
-    if (!inherited) throw secretError('Credential source must not be empty');
-    return inherited;
-  };
+  }
+  for (const directory of missing.reverse()) {
+    await mkdir(directory, { mode: 0o700 });
+    const metadata = await lstat(directory);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) throw new TypeError('Credential parent creation was redirected');
+  }
+  const resolved = await realpath(path);
+  if (normalize(resolved) !== normalize(path)) throw new TypeError('Credential parent resolved through an ambiguous link or junction');
+}
+
+function applyWindowsAcl(path: string): void {
+  const user = process.env.USERNAME;
+  if (!user || !/^[^"<>|?*\r\n]{1,128}$/u.test(user)) throw new TypeError('Cannot determine a safe Windows credential owner');
+  execFileSync('icacls.exe', [path, '/inheritance:r', '/grant:r', `${user}:(R,W)`], {
+    windowsHide: true,
+    stdio: 'ignore',
+  });
 }

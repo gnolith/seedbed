@@ -1,0 +1,7 @@
+services:
+  workshop:
+    volumes:
+      - type: bind
+        source: ${WAYSTONE_ASSET_DIRECTORY}
+        target: /srv/waystone
+        read_only: true

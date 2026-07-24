@@ -1,0 +1,93 @@
+name: ${COMPOSE_PROJECT_NAME}
+services:
+  workshop:
+    image: ${COMPOSE_PROJECT_NAME}-workshop:local
+    build:
+      context: ..
+      dockerfile: docker/local-build.Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE}
+        DIAMOND_ARTIFACT: ${DIAMOND_ARTIFACT}
+        DIAMOND_SHA256: ${DIAMOND_SHA256}
+        TAPROOT_ARTIFACT: ${TAPROOT_ARTIFACT}
+        TAPROOT_SHA256: ${TAPROOT_SHA256}
+        WORKSHOP_ARTIFACT: ${WORKSHOP_ARTIFACT}
+        WORKSHOP_SHA256: ${WORKSHOP_SHA256}
+    command: ["serve", "--config", "/app/seedbed/workshop.config.json"]
+    restart: unless-stopped
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    ports:
+      - "127.0.0.1:${WORKSHOP_PORT}:4317"
+    volumes:
+      - application-data:/var/lib/gnolith
+    secrets: [gnolith-bearer]
+    networks: [gnolith]
+    healthcheck:
+      test: ["CMD", "node", "-e", "const t=require('fs').readFileSync('/run/secrets/gnolith-bearer','utf8').trim();fetch('http://127.0.0.1:4317/health/ready',{headers:{authorization:'Bearer '+t}}).then(function(r){if(!r.ok)process.exit(1)}).catch(function(){process.exit(1)})"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 2G }
+
+  seedbed-operator:
+    image: ${COMPOSE_PROJECT_NAME}-workshop:local
+    profiles: ["seedbed-operator"]
+    entrypoint: ["node", "/app/seedbed/operator-runner.mjs"]
+    restart: "no"
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    volumes:
+      - application-data:/var/lib/gnolith
+    networks: [gnolith]
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 2G }
+
+  qdrant:
+    image: ${QDRANT_IMAGE}
+    profiles: ["qdrant"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks: [gnolith]
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 2G }
+
+  ollama:
+    image: ${OLLAMA_IMAGE}
+    profiles: ["ollama"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=256m"]
+    networks: [gnolith]
+    deploy:
+      resources:
+        limits: { cpus: "4.0", memory: 8G }
+
+networks:
+  gnolith:
+    name: ${GNOLITH_NETWORK_NAME}
+    internal: false
+volumes:
+  application-data:
+    name: ${APPLICATION_DATA_VOLUME}
+  qdrant-data:
+    name: ${QDRANT_DATA_VOLUME}
+secrets:
+  gnolith-bearer:
+    file: ${GNOLITH_BEARER_FILE}

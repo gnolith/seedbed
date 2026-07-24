@@ -1,0 +1,61 @@
+{
+  "formatVersion": 1,
+  "installationId": "replace-with-stable-installation-id",
+  "baseIri": "https://local.gnolith.invalid/installation/",
+  "packages": {
+    "diamond": {
+      "version": "0.5.0",
+      "artifact": "components/gnolith-diamond-0.5.0.tgz",
+      "sha256": "6a8075a70162fe2567579f7fe110e674509b648923b18fdb310833b44739c300",
+      "sourceCommit": "fe9185a4dae73330969866d8871cefad6fc7e87c"
+    },
+    "taproot": {
+      "version": "0.5.0",
+      "artifact": "components/gnolith-taproot-0.5.0.tgz",
+      "sha256": "de43e8a8bc99a6045efe4bb924ee5de528b28b338c7974cb74fea98911427f30",
+      "sourceCommit": "992b0c5a4dff72500f9c1014bed779252560e808"
+    },
+    "workshop": {
+      "version": "0.5.0",
+      "artifact": "components/gnolith-workshop-0.5.0.tgz",
+      "sha256": "477ce5b388aa75f4d451555341fbdd7cc74092d90256de2ec6ae054aff019b70",
+      "sourceCommit": "c2e345c0b287af7c8622e226943af83a11a33ac7"
+    },
+    "waystone": {
+      "version": "0.3.0",
+      "artifact": "components/waystone/waystone-assets.json",
+      "sha256": "f341c3fe00d3a93d9af6ca379453c02eb02287fa486847a5cf0764f1fef87a65",
+      "sourceCommit": "b4b8d1be2ce2052cf4d38bbb7aed5bc071828d48"
+    }
+  },
+  "compose": {
+    "projectName": "gnolith-local",
+    "workshopPort": 4317,
+    "publishIpv6Loopback": false,
+    "profiles": [],
+    "networkName": "gnolith",
+    "dataVolume": "application-data",
+    "nodeImage": "node@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8"
+  },
+  "paths": {
+    "stateDirectory": "/home/user/.local/state/gnolith-local",
+    "dataDirectory": "/home/user/.local/share/gnolith-local",
+    "backupDirectory": "/home/user/.local/state/gnolith-local/backups"
+  },
+  "authentication": {
+    "mode": "local-bearer-v1",
+    "credentialId": "local-owner",
+    "tokenFile": "/home/user/.local/state/gnolith-local/secrets/bearer"
+  },
+  "endpoints": {},
+  "migrations": {
+    "diamond": "0001-current-rdf-schema",
+    "taproot": "0009-architecture-reset",
+    "workshop": "9",
+    "expectedCatalogDigest": "577cc1de501b0ae3556eb1d32e7dd516c70a09c5b6226d671cec312068fba3dd"
+  },
+  "backup": {
+    "maxArchiveBytes": 268435456,
+    "maxBlobBytes": 134217728,
+    "retain": 7
+  }

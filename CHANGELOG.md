@@ -1,114 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — architecture-reset candidate
 
-- Preserve canonical statement authorization across ordinary existing Item edits,
-  require exact post-mutation maps for explicit replacements, and publish strict,
-  nonempty MCP input schemas with bounded stable failures.
-- Add authorized bounded Item, Statement, Resource, and Annotation history/revision
-  tools across one-shot CLI, MCP stdio, packed, restart, and Docker paths; compose
-  Workshop 0.4.2 Task, Memory, and Prompt history through the same authorization boundary.
-- Make snapshot input and decoded payload memory explicitly bounded, replace
-  whole-string base64 regular-expression validation, and verify a temporary archive
-  before atomic publication. Cover 32 MiB+ blobs, tampering, interruptions, retries,
-  wrong roots, nonempty targets, and secret canaries.
-- Pin the native assembly to Diamond 0.4.1, Taproot 0.4.2, and Workshop 0.4.2 with one
-  deduplicated Diamond runtime and explicit migration from released Seedbed 0.3.0 and
-  0.3.1 tuples.
-- Permit durable Prompt list cursors under the same exact read-bound tagged-SQL guard as
-  Task and Memory, with packed CLI/MCP continuation, restart, stale-row, and grant-revision proofs.
-- Gate every Taproot-owned knowledge/content mutation on exact `knowledge:write`, preserving
-  the distinct legacy `knowledge-write` spelling without implication in either direction.
-- Expose `validate_sparql`, `dry_run_sparql`, and `query_sparql` under exact `read` while
-  retaining a hard read-only Diamond handler and rejecting updates and administrative grants.
-- Register Workshop Task, Memory, and Prompt search producers, advance durable
-  adoption headlessly, and prove authorized seven-kind search, hydration, and rebuild.
-- Compose Taproot Resource and Annotation ownership, bounded unified-search
-  materialization, authorized search/hydration, and semantic administration.
-- Add SQLite and Qdrant vector attachments plus OpenAI- and Ollama-compatible
-  embedding attachments. Credentials are selected only by protected file or
-  inherited descriptor and are never accepted as tool arguments or persisted.
-
-## Unreleased
-
-- Add an explicit native installation adapter and future host-binding ports, plus
-  search-admin-gated consistent snapshot/inspect/verify/restore for the complete
-  SQLite installation and local blobs. Snapshots carry per-object integrity and
-  package identity but never secret selectors or credential material; restore
-  stages and validates everything before making the canonical database visible.
-- Add installation-bound authorization state with durable principals, workspaces,
-  memberships, exact grants, immutable audit records, and Taproot-owned revisions.
-- Require an exact 32-byte root secret from a protected file or inherited descriptor;
-  derive non-extractable installation, host-write, and cursor keys with HKDF.
-- Replace the fixed local owner and raw SPARQL surface with explicit one-time bootstrap,
-  authorization administration, bounded backfills, and guarded Task/Memory operations.
-- Add revision-bound, file-driven principal updates that atomically replace enabled
-  state, workspace memberships, and exact grants, including complete revocation,
-  while preventing removal of the last durable grant administrator.
-- Add native headless, packed-package, Docker replacement-volume, stale-context,
-  rollback, and concurrent-bootstrap acceptance coverage.
-- Upgrade the assembly to Taproot 0.3.0 and Workshop 0.3.3. This breaking pre-1.0
-  authorization boundary will be released completely as Seedbed 0.2.2.
-- Compile the exact MCP SDK 1.29.0 stdio server surface into an audited, tree-shaken
-  runtime artifact, externalizing Gnolith/native dependencies and excluding Hono HTTP
-  code; ship an exact integrity/license/input SBOM and parsed zero-vulnerability
-  production and reproducible packed-consumer audit gates.
-- Upgrade Vitest and its V8 coverage provider to 3.2.6 to remediate
-  GHSA-5xrq-8626-4rwp in development tooling.
-- Replace the temporary npm bootstrap token path with OIDC-only trusted publishing.
-- Retry root-packument propagation and a clean exact-version install before accepting
-  post-publish registry evidence.
-- Drive releases from protected annotated `v*` tags, fail closed on remote artifact
-  conflicts, verify recoverable npm and GHCR publication by exact identity, and create
-  the content-addressed immutable GitHub Release only after all package/runtime gates.
-- Map the built-in GitHub token only into signed image-attestation verification so the
-  `v0.2.1` fix-forward can verify signed provenance after `v0.2.0` stopped safely.
-- Derive a portable, deterministic image-evidence artifact name that replaces every
-  GitHub-forbidden character while retaining the exact container digest inside the
-  evidence and immutable Release asset identities.
-- Preserve the staged `docs/mcp-runtime-sbom.json` extraction path and add a
-  capability-scoped manual recovery mode for the frozen v0.2.2 artifacts. Recovery
-  verifies exact tag ancestry, npm SLSA/signatures/install, GHCR runtime/SBOM/signed
-  provenance, retained artifact service digests and contents, then creates only the
-  missing immutable GitHub Release last.
-
-## 0.2.2 - 2026-07-22
-
-- Published the OIDC-provenanced npm package and exact versioned GHCR image
-  `sha256:f1a05b0e43ee76c3ce0a8ef5806ade7a5b64603b25f5fca021a47ff3ac44b389`.
-- Verified the image runtime, SPDX SBOM, signed GitHub provenance, portable evidence
-  upload, and `latest` identity.
-- Stopped fail-closed before GitHub Release creation because the staging artifact
-  retained `docs/mcp-runtime-sbom.json` while Release-last assumed a flattened path.
-
-## 0.2.1 - 2026-07-22
-
-- Published the OIDC-provenanced npm package and exact versioned GHCR image
-  `sha256:9ec6b73aa9997e28da5a80f1b39e158532b744c42babf804257b15479a64be5f`.
-- Verified the image runtime, SPDX SBOM, and signed GitHub provenance with the scoped
-  `GH_TOKEN`, then moved `latest` to that exact verified digest.
-- Stopped fail-closed when the image-evidence artifact name included the forbidden
-  colon from `sha256:<hex>`. No GitHub Release was created; `0.2.2` is the immutable
-  fix-forward.
-
-## 0.2.0 - 2026-07-22
-
-- Published the OIDC-provenanced npm package and exact versioned GHCR image, including
-  its SBOM and signed GitHub provenance.
-- Stopped fail-closed when `gh attestation verify` lacked its required `GH_TOKEN`
-  mapping. The workflow did not move `latest` or create a GitHub Release; `0.2.1` is
-  the immutable fix-forward.
-
-## 0.1.1 - 2026-07-21
-
-- Publish the first npm and container artifacts for the headless Seedbed runtime.
-- Fix the release verifier's inline heredoc so the exact YAML-decoded shell script
-  parses and executes on the protected publish runner.
-- Add syntax and safe recovery execution tests for the exact decoded publish script.
-
-## 0.1.0 - 2026-07-21
-
-- Created the initial public source tag and GitHub Release.
-- Publication stopped before npm or GHCR mutation because the protected publish
-  runner rejected a malformed inline verifier script. No npm package or container
-  image exists for this version; `0.1.1` is the immutable fix-forward release.
+- Breaking: reduce Seedbed to Compose-first installation, configuration, migration
+  ordering, Workshop bootstrap, offline backup/adoption orchestration, diagnostics,
+  and retain-data uninstall.
+- Remove MCP/stdio transport, runtime/domain/auth/search/semantic/snapshot
+  implementations, native product mode, one-shot tools/call commands, server
+  lifecycle, and application-image/GHCR ownership.
+- Add exact artifact/source coordinates, hardened loopback-only Compose, protected
+  32-byte local bearer generation, digest-bound resumable operations, secret-safe
+  receipts, opaque owner backup/restore, and exact 0.3.2 legacy adoption.
+- Add candidate-only packed, Compose, inventory, audit, static-analysis, and
+  secret-canary gates. No tag or publication is part of this candidate.

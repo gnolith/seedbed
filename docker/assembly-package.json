@@ -1,0 +1,14 @@
+{
+  "name": "gnolith-seedbed-local-assembly",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "dependencies": {
+    "@gnolith/diamond": "file:components/gnolith-diamond-0.5.0.tgz",
+    "@gnolith/taproot": "file:components/gnolith-taproot-0.5.0.tgz",
+    "@gnolith/workshop": "file:components/gnolith-workshop-0.5.0.tgz"
+  }
+}

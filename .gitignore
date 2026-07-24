@@ -3,7 +3,10 @@ dist/
 coverage/
 .seedbed/
 *.tgz
+!components/*.tgz
 *.tar.gz
 *.tar.gz.sha256
 *.sqlite*
+candidate/
+artifacts/
 
