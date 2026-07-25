@@ -92,12 +92,13 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
         return output(await verifyInstallationBackup(required(parsed.options, 'archive'), config, ports));
       case 'backup restore': {
         const archive = required(parsed.options, 'archive');
-        if (parsed.flags.has('dry-run')) return output(await dryRunRestore(archive, config, ports));
-        // A real restore must also work from a pristine packed installation.
-        // Stage and build only the checksum-pinned one-shot operator before
-        // validation; this creates no target database, volume, or service.
+        // Dry-run and real restore must both work from a pristine packed
+        // installation. Stage and build only the checksum-pinned one-shot
+        // operator before validation; this creates no target database, volume,
+        // network, or application service.
         await compose.prepare(config);
         await compose.buildOperator(config);
+        if (parsed.flags.has('dry-run')) return output(await dryRunRestore(archive, config, ports));
         return output(await restoreInstallationBackup({ path: archive, config, ports, target: new ComposeRestoreTarget(config, compose) }));
       }
       case 'adopt legacy-local plan': {

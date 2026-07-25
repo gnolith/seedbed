@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { access, chmod, copyFile, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Writable } from 'node:stream';
 import { renderCompose, assertSafeComposeEnvironment } from './compose.js';
 import type { SeedbedConfig } from './types.js';
 import type { ComposeDriver } from './migration.js';
@@ -55,12 +56,12 @@ export class SeedbedOperationAbortedError extends Error {
 
 export class SeedbedOperatorExecutionError extends Error {
   readonly code = 'seedbed-operator-execution-failed';
-  readonly retryable = false;
   constructor(
     readonly operation: string,
     readonly stage: string,
     readonly classification: string,
     readonly diagnostic?: Readonly<Record<string, string | number | boolean>>,
+    readonly retryable = false,
   ) {
     super(`Seedbed operator ${operation} failed at ${stage}: ${classification}`);
     this.name = 'SeedbedOperatorExecutionError';
@@ -78,6 +79,15 @@ const OPERATOR_OPERATIONS = new Set([
   'adoption-payload-rebind-v1', 'adoption-payload-commit-v1', 'adoption-payload-rollback-v1',
   'adoption-diagnostics-v1',
   'restore-target-empty-v1', 'restore-prepare-staging-v1', 'restore-expose-database-last-v1', 'restore-cleanup-v1',
+  'legacy-owner-inspect-v1', 'legacy-owner-export-v1', 'legacy-taproot-payload-open-v1',
+]);
+
+const IDEMPOTENT_OPERATOR_OPERATIONS = new Set([
+  'owner-migration-plan-v1', 'owner-diagnostics-v1',
+  'owner-backup-inspect-v1', 'owner-backup-export-v1', 'owner-backup-validate-v1',
+  'taproot-blob-enumerate-v1', 'taproot-blob-open-v1', 'taproot-blob-collision-check-v1',
+  'adoption-payload-collision-check-v1', 'adoption-diagnostics-v1',
+  'restore-target-empty-v1',
   'legacy-owner-inspect-v1', 'legacy-owner-export-v1', 'legacy-taproot-payload-open-v1',
 ]);
 
@@ -274,31 +284,47 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
   async invoke<T>(config: SeedbedConfig, operation: string, input: unknown): Promise<T> {
     const protectedVolume = await this.stageProtectedOperatorVolume(config, operation);
     try {
-      const process = this.operatorProcess(
-        config,
-        operation,
-        [],
-        protectedVolume === undefined ? [] : protectedOperatorMountArgs(operation, protectedVolume),
-        operatorSubject(input),
-      );
-      const { child } = process;
-      const stdin = child.stdin!;
-      const stdout = child.stdout!;
-      const output: Buffer[] = [];
-      let bytes = 0;
-      const limit = operation === 'owner-backup-export-v1'
-        ? encodedResponseLimit(config.backup.maxArchiveBytes)
-        : 8 * 1024 * 1024;
-      stdout.on('data', (chunk: Buffer) => {
-        bytes += chunk.byteLength;
-        if (bytes > limit) void terminateOperator(process);
-        else output.push(chunk);
-      });
-      const completion = operatorCompletion(process, 'Seedbed Compose operator');
-      stdin.end(`${canonicalJson({ context: operatorContext(config), input })}\n`);
-      await completion;
-      if (bytes > limit) throw new TypeError('Seedbed operator response exceeded configured bounds');
-      return JSON.parse(Buffer.concat(output).toString('utf8')) as T;
+      const attempts = IDEMPOTENT_OPERATOR_OPERATIONS.has(operation) ? 2 : 1;
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        const process = this.operatorProcess(
+          config,
+          operation,
+          [],
+          protectedVolume === undefined ? [] : protectedOperatorMountArgs(operation, protectedVolume),
+          operatorSubject(input),
+        );
+        try {
+          const { child } = process;
+          const stdout = child.stdout!;
+          const output: Buffer[] = [];
+          let bytes = 0;
+          const limit = operation === 'owner-backup-export-v1'
+            ? encodedResponseLimit(config.backup.maxArchiveBytes)
+            : 8 * 1024 * 1024;
+          stdout.on('data', (chunk: Buffer) => {
+            bytes += chunk.byteLength;
+            if (bytes > limit) void terminateOperator(process);
+            else output.push(chunk);
+          });
+          const completion = operatorCompletion(process, 'Seedbed Compose operator');
+          const inputCompletion = writeOperatorInput(
+            child.stdin!,
+            singleInput(`${canonicalJson({ context: operatorContext(config), input })}\n`),
+          );
+          await settleOperatorIo(process, inputCompletion, completion);
+          if (bytes > limit) throw new TypeError('Seedbed operator response exceeded configured bounds');
+          return JSON.parse(Buffer.concat(output).toString('utf8')) as T;
+        } catch (error) {
+          await terminateOperator(process);
+          if (
+            attempt < attempts
+            && error instanceof SeedbedOperatorExecutionError
+            && error.classification === 'operator-input-closed'
+          ) continue;
+          throw error;
+        }
+      }
+      throw new Error('Seedbed operator retry state is unreachable');
     } finally {
       if (protectedVolume !== undefined) {
         await this.docker(['volume', 'rm', '--force', protectedVolume], 10_000).catch(() => undefined);
@@ -314,10 +340,13 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
       const stdin = child.stdin!;
       const stdout = child.stdout!;
       const completion = operatorCompletion(process, 'Seedbed Compose streaming operator');
-      stdin.end(`${canonicalJson({ context: operatorContext(config), input })}\n`);
+      const inputCompletion = writeOperatorInput(
+        stdin,
+        singleInput(`${canonicalJson({ context: operatorContext(config), input })}\n`),
+      );
       try {
         for await (const chunk of stdout) yield chunk as Buffer;
-        await completion;
+        await settleOperatorIo(process, inputCompletion, completion);
       } catch (error) {
         await terminateOperator(process);
         await completion.catch(() => undefined);
@@ -334,12 +363,9 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
     const { child } = process;
     const stdin = child.stdin!;
     const completion = operatorCompletion(process, 'Seedbed Compose streaming operator');
+    const inputCompletion = writeOperatorInput(stdin, source);
     try {
-      for await (const chunk of source) {
-        if (!stdin.write(chunk)) await new Promise<void>((resolveDrain) => stdin.once('drain', resolveDrain));
-      }
-      stdin.end();
-      await completion;
+      await settleOperatorIo(process, inputCompletion, completion);
     } catch (error) {
       stdin.destroy();
       await terminateOperator(process);
@@ -367,8 +393,11 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
       else output.push(chunk);
     });
     const completion = operatorCompletion(process, 'Seedbed legacy owner adapters');
-    stdin.end(`${canonicalJson({ context: operatorContext(config), input, source: portableContainerSource() })}\n`);
-    await completion;
+    const inputCompletion = writeOperatorInput(
+      stdin,
+      singleInput(`${canonicalJson({ context: operatorContext(config), input, source: portableContainerSource() })}\n`),
+    );
+    await settleOperatorIo(process, inputCompletion, completion);
     if (bytes > limit) throw new TypeError('Legacy owner adapter response exceeded configured bounds');
     return JSON.parse(Buffer.concat(output).toString('utf8')) as T;
   }
@@ -386,10 +415,13 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
       const stdin = child.stdin!;
       const stdout = child.stdout!;
       const completion = operatorCompletion(process, 'Seedbed legacy Taproot payload adapter');
-      stdin.end(`${canonicalJson({ context: operatorContext(config), input, source: portableContainerSource() })}\n`);
+      const inputCompletion = writeOperatorInput(
+        stdin,
+        singleInput(`${canonicalJson({ context: operatorContext(config), input, source: portableContainerSource() })}\n`),
+      );
       try {
         for await (const chunk of stdout) yield chunk as Buffer;
-        await completion;
+        await settleOperatorIo(process, inputCompletion, completion);
       } catch (error) {
         await terminateOperator(process);
         await completion.catch(() => undefined);
@@ -427,14 +459,26 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
     if (!OPERATOR_OPERATIONS.has(operation)) throw new TypeError('Unsupported Seedbed operator operation');
     if (this.execution.signal?.aborted) throw new SeedbedOperationAbortedError(operation);
     const containerName = `gnolith-seedbed-op-${randomUUID().replaceAll('-', '')}`;
-    const installationProfiles = config.compose.profiles.flatMap((profile) => ['--profile', profile]);
-    const child = spawn('docker', [
-      ...this.args(config),
-      ...installationProfiles,
-      '--profile', 'seedbed-operator',
-      'run', '--rm', '--name', containerName, '--no-deps', '-T', ...mounts, 'seedbed-operator',
-      operation, ...mode,
-    ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const isolatedValidation = operation === 'owner-backup-validate-v1';
+    const args = isolatedValidation
+      ? [
+          'run', '--rm', '--interactive', '--name', containerName,
+          '--pull', 'never', '--network', 'none', '--read-only',
+          '--user', '10001:10001', '--cap-drop', 'ALL',
+          '--security-opt', 'no-new-privileges:true',
+          '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
+          '--entrypoint', 'node',
+          `${config.compose.projectName}-workshop:local`,
+          '/app/seedbed/operator-runner.mjs', operation, ...mode,
+        ]
+      : [
+          ...this.args(config),
+          ...config.compose.profiles.flatMap((profile) => ['--profile', profile]),
+          '--profile', 'seedbed-operator',
+          'run', '--rm', '--name', containerName, '--no-deps', '-T', ...mounts, 'seedbed-operator',
+          operation, ...mode,
+        ];
+    const child = spawn('docker', args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     return {
       child,
       containerName,
@@ -496,14 +540,23 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
     child.stderr!.on('data', (chunk: Buffer) => {
       if (Buffer.concat(stderr).byteLength < 16 * 1024) stderr.push(chunk);
     });
-    child.stdin!.end(`${canonicalJson(files)}\n`);
+    const inputCompletion = writeOperatorInput(
+      child.stdin!,
+      singleInput(`${canonicalJson(files)}\n`),
+    );
+    const completion = new Promise<void>((resolveStage, rejectStage) => {
+      child.once('error', rejectStage);
+      child.once('close', (code) => code === 0
+        ? resolveStage()
+        : rejectStage(new Error(`Protected operator credential staging failed: ${redactFilesystemPaths(Buffer.concat(stderr).toString('utf8')).slice(0, 512)}`)));
+    });
+    void completion.catch(() => undefined);
     try {
-      await new Promise<void>((resolveStage, rejectStage) => {
-        child.once('error', rejectStage);
-        child.once('close', (code) => code === 0
-          ? resolveStage()
-          : rejectStage(new Error(`Protected operator credential staging failed: ${redactFilesystemPaths(Buffer.concat(stderr).toString('utf8')).slice(0, 512)}`)));
-      });
+      const [inputResult, completionResult] = await Promise.allSettled([inputCompletion, completion]);
+      if (inputResult.status === 'rejected') {
+        throw new Error(`Protected operator credential staging input failed: ${operatorInputCode(inputResult.reason)}`);
+      }
+      if (completionResult.status === 'rejected') throw completionResult.reason;
     } catch (error) {
       await this.docker(['volume', 'rm', '--force', volume], 10_000).catch(() => undefined);
       throw error;
@@ -726,6 +779,102 @@ async function version(args: string[]): Promise<{ available: boolean; version?: 
   }
 }
 
+async function* singleInput(value: string | Uint8Array): AsyncIterable<Uint8Array> {
+  yield typeof value === 'string' ? Buffer.from(value) : value;
+}
+
+function writeOperatorInput(stdin: Writable, source: AsyncIterable<Uint8Array>): Promise<void> {
+  const result = (async () => {
+    let observedError: unknown;
+    let rejectFailure!: (error: unknown) => void;
+    const failure = new Promise<never>((_resolveFailure, reject) => {
+      rejectFailure = reject;
+    });
+    void failure.catch(() => undefined);
+    const fail = (error: unknown) => {
+      if (observedError !== undefined) return;
+      observedError = error;
+      rejectFailure(error);
+    };
+    stdin.on('error', fail);
+    stdin.on('close', () => {
+      if (!stdin.writableFinished) {
+        fail(Object.assign(new Error('Seedbed operator input closed before completion'), { code: 'EPIPE' }));
+      }
+    });
+    try {
+      for await (const chunk of source) {
+        if (observedError !== undefined) throw observedError;
+        const accepted = await new Promise<boolean>((resolveWrite) => {
+          try {
+            resolveWrite(stdin.write(chunk));
+          } catch (error) {
+            fail(error);
+            resolveWrite(false);
+          }
+        });
+        if (!accepted) {
+          await Promise.race([
+            new Promise<void>((resolveDrain) => stdin.once('drain', resolveDrain)),
+            failure,
+          ]);
+        }
+      }
+      if (observedError !== undefined) throw observedError;
+      stdin.end();
+      await Promise.race([
+        new Promise<void>((resolveFinish) => stdin.once('finish', resolveFinish)),
+        failure,
+      ]);
+    } catch (error) {
+      if (!stdin.destroyed) stdin.destroy();
+      throw error;
+    }
+  })();
+  void result.catch(() => undefined);
+  return result;
+}
+
+async function settleOperatorIo(
+  process: OperatorProcess,
+  input: Promise<void>,
+  completion: Promise<void>,
+): Promise<void> {
+  const [inputResult, completionResult] = await Promise.allSettled([input, completion]);
+  if (inputResult.status === 'rejected') {
+    const code = operatorInputCode(inputResult.reason);
+    if (code === 'EPIPE' || code === 'EOF' || code === 'ERR_STREAM_DESTROYED') {
+      const childClassification = completionResult.status === 'rejected'
+        && completionResult.reason instanceof SeedbedOperatorExecutionError
+        ? completionResult.reason.classification
+        : undefined;
+      const diagnostic: Record<string, string> = { causeCode: code };
+      if (childClassification !== undefined) diagnostic.childClassification = childClassification;
+      throw new SeedbedOperatorExecutionError(
+        process.operation,
+        classifyOperatorFailure(process.operation, process.subject, '').stage,
+        'operator-input-closed',
+        diagnostic,
+        IDEMPOTENT_OPERATOR_OPERATIONS.has(process.operation),
+      );
+    }
+    if (completionResult.status === 'rejected') throw completionResult.reason;
+    throw new SeedbedOperatorExecutionError(
+      process.operation,
+      classifyOperatorFailure(process.operation, process.subject, '').stage,
+      'operator-input-failed',
+      { causeCode: code },
+    );
+  }
+  if (completionResult.status === 'rejected') throw completionResult.reason;
+}
+
+function operatorInputCode(error: unknown): string {
+  if (!error || typeof error !== 'object' || !('code' in error)) return 'UNKNOWN';
+  const code = String((error as { code?: unknown }).code);
+  return /^[A-Z][A-Z0-9_]{1,31}$/u.test(code) ? code : 'UNKNOWN';
+}
+
 function operatorCompletion(process: OperatorProcess, label: string): Promise<void> {
   const { child } = process;
   const stderr: Buffer[] = [];
@@ -736,7 +885,7 @@ function operatorCompletion(process: OperatorProcess, label: string): Promise<vo
     stderr.push(bounded);
     stderrBytes += bounded.byteLength;
   });
-  return new Promise<void>((resolveCompletion, rejectCompletion) => {
+  const completion = new Promise<void>((resolveCompletion, rejectCompletion) => {
     let termination: 'timeout' | 'aborted' | undefined;
     let settled = false;
     const finish = (error?: Error) => {
@@ -781,6 +930,8 @@ function operatorCompletion(process: OperatorProcess, label: string): Promise<vo
       }
     });
   });
+  void completion.catch(() => undefined);
+  return completion;
 }
 
 function safeOperatorDiagnostic(stderr: string): Readonly<Record<string, string | number | boolean>> | undefined {

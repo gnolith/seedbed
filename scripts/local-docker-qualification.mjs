@@ -248,6 +248,35 @@ try {
     restoreConfigPath,
     `${JSON.stringify(restoreConfig, null, 2)}\n`,
   );
+  const preexistingRestoreImage = await exec('docker', [
+    'image', 'ls', '--quiet', '--no-trunc',
+    `${restoreProjectName}-workshop:local`,
+  ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  if (preexistingRestoreImage.stdout.trim()) {
+    throw new Error('pristine restore qualification unexpectedly found a cached operator image');
+  }
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await runPackedCli(packed.cli, [
+      'backup', 'restore',
+      '--config', restoreConfigPath,
+      '--archive', backupPath,
+      '--dry-run',
+    ]);
+    await assertRestoreTargetAbsent(
+      restoreProjectName,
+      `${restoreProjectName}-data`,
+    );
+  }
+  await expectPackedCliFailure(packed.cli, [
+    'backup', 'restore',
+    '--config', restoreConfigPath,
+    '--archive', tamperedPath,
+    '--dry-run',
+  ]);
+  await assertRestoreTargetAbsent(
+    restoreProjectName,
+    `${restoreProjectName}-data`,
+  );
   await expectPackedCliFailure(packed.cli, [
     'backup', 'restore',
     '--config', restoreConfigPath,
@@ -262,6 +291,16 @@ try {
     '--config', restoreConfigPath,
     '--archive', backupPath,
   ]);
+  const afterRestore = await snapshotVolume(`${restoreProjectName}-data`);
+  await runPackedCli(packed.cli, [
+    'backup', 'restore',
+    '--config', restoreConfigPath,
+    '--archive', backupPath,
+    '--dry-run',
+  ]);
+  if (JSON.stringify(await snapshotVolume(`${restoreProjectName}-data`)) !== JSON.stringify(afterRestore)) {
+    throw new Error('post-restore packed backup dry-run changed its target');
+  }
   const restoreDriver = new DockerComposeDriver(root);
   const restorePorts = createOperatorOwnerPorts(restoreConfig, restoreDriver);
   for (const owner of ['diamond', 'taproot', 'workshop']) {

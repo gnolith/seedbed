@@ -159,9 +159,12 @@ floating runtime model pull and does not report Ollama ready without that proof.
 ## Backup and adoption
 
 Owner backup sections and namespace-sliced Diamond ledger evidence are opaque to
-Seedbed. A packed real restore first stages and builds only the checksum-pinned
-one-shot operator, validates every exact owner section before creating target
-storage, then passes those same opaque section values to the owner import APIs.
+Seedbed. Packed dry-run and real restore first stage and build only the
+checksum-pinned one-shot operator. Dry-run validates every exact owner section
+in a networkless, read-only container with in-memory owner state and creates no
+target volume, project network, credential volume, or application service. Real
+restore validates before creating target storage, then passes those same opaque
+section values to the owner import APIs.
 Restore stages Taproot blob streams first, imports Diamond/Taproot/Workshop in
 order, and exposes the canonical database last. Dry-run reports retained,
 rebuildable, deferred, expired, and unsupported data.
