@@ -33,4 +33,20 @@ describe('bounded operator failure diagnostics', () => {
       classification: 'operator-dependency-unavailable',
     });
   });
+
+  it('exposes only a bounded retryable classification for an idempotent input closure', () => {
+    const error = new SeedbedOperatorExecutionError(
+      'owner-backup-validate-v1',
+      'owner-backup-taproot-validate',
+      'operator-input-closed',
+      { causeCode: 'EOF', childClassification: 'required-input-unavailable' },
+      true,
+    );
+    expect(error.retryable).toBe(true);
+    expect(error.diagnostic).toEqual({
+      causeCode: 'EOF',
+      childClassification: 'required-input-unavailable',
+    });
+    expect(error.message).not.toContain('write');
+  });
 });

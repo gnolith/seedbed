@@ -2,7 +2,7 @@
   "kind": "seedbed-local-build-v1",
   "selector": "gnolith-seedbed-local-build-v1",
   "pullPolicy": "never",
-  "componentLockSha256": "eb28cb988b0c507d5c9ef4242ec13895af2c8cd8f2c57ba722d01eb89b55ed7d",
-  "graphSha256": "e400df1282ea7bb395a634abd267936137ab358091afb6cfa37618ccc4c75909",
-  "composeBundleSha256": "5d5d9aab98e21a019f551b36f28fe8fcacb4f2183ab2cdef1350e6b3185a2a52"
+  "componentLockSha256": "1f32ff319bc4094d3b91f38c8d89db1cf27b4b7c466b89437c3e79a644688d6c",
+  "graphSha256": "2376959c697e63ac1deb674a1e7bfe2b2f4fd117173334d74f8cc3f7255046c7",
+  "composeBundleSha256": "696fcebfdd429b4e71b04a9f48d6c8dd500cfdde1a16db1bcd0fc582108d76a8"
 }
