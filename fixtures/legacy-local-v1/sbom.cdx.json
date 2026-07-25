@@ -1,0 +1,52 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "data",
+      "name": "gnolith-seedbed-legacy-local-v1-fixture",
+      "version": "1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7e9722a1a1d993e13207d5bb2900e2f7e5457ee70c572566c6c9ddb2e637d736"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "@gnolith/diamond",
+      "version": "0.4.1",
+      "purl": "pkg:npm/%40gnolith/diamond@0.4.1",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "hashes": [{ "alg": "SHA-256", "content": "084718233136619dd935b251fbc0bd5b539085bad7dd63210d2c06b915b078e4" }]
+    },
+    {
+      "type": "library",
+      "name": "@gnolith/taproot",
+      "version": "0.4.2",
+      "purl": "pkg:npm/%40gnolith/taproot@0.4.2",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "hashes": [{ "alg": "SHA-256", "content": "1eb701052222958c34ae45213e6ec396a9c2f734da56ecc12fd8b13282fc69fa" }]
+    },
+    {
+      "type": "library",
+      "name": "@gnolith/workshop",
+      "version": "0.4.2",
+      "purl": "pkg:npm/%40gnolith/workshop@0.4.2",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "hashes": [{ "alg": "SHA-256", "content": "56bea740742056eab84b6d24ecfc91e74e6dea969cc828a1bbf006b5f17c21a6" }]
+    },
+    {
+      "type": "library",
+      "name": "@gnolith/seedbed",
+      "version": "0.3.2",
+      "purl": "pkg:npm/%40gnolith/seedbed@0.3.2",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "hashes": [{ "alg": "SHA-256", "content": "7e4c57e35381f38d91aeca611c9513a220848a0b92b7a02e3d95de2a250e9287" }]
+    }
+  ]
+}

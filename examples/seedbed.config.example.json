@@ -1,0 +1,65 @@
+{
+  "formatVersion": 1,
+  "installationId": "replace-with-stable-installation-id",
+  "baseIri": "https://local.gnolith.invalid/installation",
+  "packages": {
+    "diamond": {
+      "version": "0.5.0",
+      "artifact": "components/gnolith-diamond-0.5.0.tgz",
+      "sha256": "3ce5d33478667dc4ec9a8ae4b4c3e0a94c3bce61e741ba62511ab668d1c20228",
+      "sourceCommit": "e82f58ba8028ff9c16a34f4b8a9a2bc356495b64"
+    },
+    "taproot": {
+      "version": "0.5.0",
+      "artifact": "components/gnolith-taproot-0.5.0.tgz",
+      "sha256": "030e0bc4b58873b1ba362cc7ea0a232b769fcd5163ce7679d397c47b8f15b818",
+      "sourceCommit": "98c7bc6e66b39d4bba0862a7e5dcb3a58a7882ac"
+    },
+    "workshop": {
+      "version": "0.5.0",
+      "artifact": "components/gnolith-workshop-0.5.0.tgz",
+      "sha256": "6479db87d6c2529b4a5c9e5063cc705f8f2aa3057ae4c7d5a0668e36e48163e4",
+      "sourceCommit": "10ce0e1ae441094b28e61ad2772e10e1b391a464"
+    },
+    "waystone": {
+      "version": "0.3.0",
+      "artifact": "components/waystone/waystone-assets.json",
+      "sha256": "f341c3fe00d3a93d9af6ca379453c02eb02287fa486847a5cf0764f1fef87a65",
+      "sourceCommit": "1d596bd838d142a57faff8a9f1146321fbe32ac2"
+    }
+  },
+  "compose": {
+    "projectName": "gnolith-local",
+    "workshopPort": 4317,
+    "publishIpv6Loopback": false,
+    "profiles": [
+      "waystone"
+    ],
+    "networkName": "gnolith",
+    "dataVolume": "application-data",
+    "nodeImage": "node@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8",
+    "qdrantImage": "qdrant/qdrant@sha256:0bd98fa7977f1e75694779359ca4e212822e5a71334e28421182f72f209d5286"
+  },
+  "paths": {
+    "stateDirectory": "/home/user/.local/state/gnolith-local",
+    "dataDirectory": "/home/user/.local/share/gnolith-local",
+    "backupDirectory": "/home/user/.local/state/gnolith-local/backups"
+  },
+  "authentication": {
+    "mode": "local-bearer-v1",
+    "credentialId": "local-owner",
+    "tokenFile": "/home/user/.local/state/gnolith-local/secrets/bearer"
+  },
+  "endpoints": {},
+  "migrations": {
+    "diamond": "0001-current-rdf-schema",
+    "taproot": "0009-architecture-reset",
+    "workshop": "11",
+    "expectedCatalogDigest": "af455b4d6ab3560bca9c0ab48e9db7bd3cbcfa166ace875578d88d182069071f"
+  },
+  "backup": {
+    "maxArchiveBytes": 268435456,
+    "maxBlobBytes": 134217728,
+    "retain": 7
+  }
+}

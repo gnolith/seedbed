@@ -1,0 +1,85 @@
+{
+  "format": "gnolith-seedbed-legacy-fixture-evidence-v1",
+  "replacementRationale": {
+    "supersedesSha256": "581de9721f35a103054910610edaff12091341c8d69593760376696950afd409",
+    "reason": "The superseded experimental source contained accidental partial-run entity ghosts and an embedded loopback semantic provider endpoint. This fixture was generated once from an empty exact public-package installation and contains only intentionally authored coverage."
+  },
+  "snapshot": {
+    "path": "legacy-local-v1.snapshot",
+    "bytes": 124335,
+    "sha256": "7e9722a1a1d993e13207d5bb2900e2f7e5457ee70c572566c6c9ddb2e637d736",
+    "databaseBytes": 1150976,
+    "databaseSha256": "90132777ca668b034621d216b3819aa59ad95b2cab46e9e35dc5ebb392a73805",
+    "installationId": "e866a050-9efe-473e-897a-5e13941cfbbf",
+    "baseIri": "https://fixture.invalid/gnolith"
+  },
+  "packages": {
+    "diamond": {
+      "name": "@gnolith/diamond",
+      "version": "0.4.1",
+      "tarballSha256": "084718233136619dd935b251fbc0bd5b539085bad7dd63210d2c06b915b078e4",
+      "integrity": "sha512-DMibXt/WDezuZM/dDFXx4G8pyFoC6bZ9uOODIfg+To0/vG63BGVfEHgxm2ZuPCuPQh6T7NU+cIe6DE/f+H5o/A=="
+    },
+    "taproot": {
+      "name": "@gnolith/taproot",
+      "version": "0.4.2",
+      "tarballSha256": "1eb701052222958c34ae45213e6ec396a9c2f734da56ecc12fd8b13282fc69fa",
+      "integrity": "sha512-5m8ntbfDC8pP09TdEuYoWrP0Y/e1cdbtvxEltMO4t4te3uvRFvaugPOF3AoQ80Ge78yXcbkiTWm4s4Ga2jdNMw=="
+    },
+    "workshop": {
+      "name": "@gnolith/workshop",
+      "version": "0.4.2",
+      "tarballSha256": "56bea740742056eab84b6d24ecfc91e74e6dea969cc828a1bbf006b5f17c21a6",
+      "integrity": "sha512-dNerKrlFrs5ze5HbuLUFNYNc5+uzGU1mEbMw3ZmM43Bx/79Dvx3LSTlXrjs5iOsVHqNB1UFHN1ZLMgMJOMMSSQ=="
+    },
+    "seedbed": {
+      "name": "@gnolith/seedbed",
+      "version": "0.3.2",
+      "tarballSha256": "7e4c57e35381f38d91aeca611c9513a220848a0b92b7a02e3d95de2a250e9287",
+      "integrity": "sha512-Kyf5n3K9ZFHQFcakGoB7FABi1YNJdm4DKr9uL+IJK4SK+xtW+yczS5z2RJGeL0T2PU6+FcOlLN0bQNyCZyYNtQ=="
+    }
+  },
+  "expectedOwnerCounts": {
+    "items": 1,
+    "properties": 1,
+    "statements": 1,
+    "resources": 1,
+    "annotations": 1,
+    "tasks": 1,
+    "memories": 1,
+    "prompts": 1,
+    "revisions": 14,
+    "payloads": 1
+  },
+  "payloads": [
+    {
+      "id": "fixture/payload.txt",
+      "bytes": 35,
+      "sha256": "9fc576a110e5c41d15e4e51630c974a7dfc3edcea06ff92cfa720ded5a4210ce"
+    }
+  ],
+  "dispositions": {
+    "source": "offline",
+    "secretsExported": false,
+    "semanticConfiguration": {
+      "count": 0,
+      "disposition": "absent-no-usable-endpoint",
+      "publicSearchStatus": {
+        "configured": 0,
+        "selectedConfigurationId": null,
+        "selectedReady": false
+      }
+    },
+    "onboarding": {
+      "count": 0,
+      "disposition": "unavailable-in-public-legacy-api"
+    },
+    "liveTaskLease": "expire-on-adoption",
+    "derivedSearchState": "discard-and-rebuild"
+  },
+  "attestations": {
+    "credentialBytesExported": false,
+    "providerEndpointsConfigured": 0,
+    "intentionalCoverageOnly": true
+  }
+}

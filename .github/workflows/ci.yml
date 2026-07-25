@@ -10,144 +10,53 @@ permissions:
   contents: read
 
 jobs:
-  exact-handoffs:
+  candidate:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Check out exact public source handoffs
-        shell: bash
-        run: |
-          checkout_exact() {
-            name="$1"
-            revision="$2"
-            directory="$RUNNER_TEMP/handoffs/$name"
-            git init "$directory"
-            git -C "$directory" remote add origin "https://github.com/gnolith/$name.git"
-            git -C "$directory" fetch --depth=1 origin "$revision"
-            git -C "$directory" checkout --detach FETCH_HEAD
-            test "$(git -C "$directory" rev-parse HEAD)" = "$revision"
-          }
-          checkout_exact diamond 0d3c6ceda09b7124c32835a985d7359057b2c735
-          checkout_exact taproot 92fd343e87db34ed0dd2f138acbfa0c9cca6ffcf
-          test "$(git ls-remote https://github.com/gnolith/taproot.git 'refs/tags/v0.4.2' | cut -f1)" = \
-            "ea7615cc089e59a840db0880d95ffd1f3f387830"
-          test "$(git ls-remote https://github.com/gnolith/taproot.git 'refs/tags/v0.4.2^{}' | cut -f1)" = \
-            "92fd343e87db34ed0dd2f138acbfa0c9cca6ffcf"
-          checkout_exact workshop 60f979c0c40734e8d931e90fa68aac6b8abb466a
-          test "$(git ls-remote https://github.com/gnolith/workshop.git 'refs/tags/v0.4.2' | cut -f1)" = \
-            "1cb8364ae50d8fbae2e2db888c1099a844ed9605"
-          test "$(git ls-remote https://github.com/gnolith/workshop.git 'refs/tags/v0.4.2^{}' | cut -f1)" = \
-            "60f979c0c40734e8d931e90fa68aac6b8abb466a"
       - uses: ./.github/actions/setup-node
-      - name: Build and verify exact package handoffs
-        shell: bash
-        run: |
-          npm ci --ignore-scripts --prefix "$RUNNER_TEMP/handoffs/diamond"
-          npm pack "$RUNNER_TEMP/handoffs/diamond" --pack-destination "$RUNNER_TEMP"
-          echo "084718233136619dd935b251fbc0bd5b539085bad7dd63210d2c06b915b078e4  $RUNNER_TEMP/gnolith-diamond-0.4.1.tgz" | sha256sum --check
-
-          npm install --ignore-scripts --no-save --package-lock=false --prefix "$RUNNER_TEMP/handoffs/taproot" "$RUNNER_TEMP/gnolith-diamond-0.4.1.tgz"
-          npm pack "$RUNNER_TEMP/handoffs/taproot" --pack-destination "$RUNNER_TEMP"
-          echo "1eb701052222958c34ae45213e6ec396a9c2f734da56ecc12fd8b13282fc69fa  $RUNNER_TEMP/gnolith-taproot-0.4.2.tgz" | sha256sum --check
-      - name: Download and verify the exact Workshop release artifact
-        shell: bash
-        run: |
-          expected_integrity='sha512-dNerKrlFrs5ze5HbuLUFNYNc5+uzGU1mEbMw3ZmM43Bx/79Dvx3LSTlXrjs5iOsVHqNB1UFHN1ZLMgMJOMMSSQ=='
-          registry_response="$RUNNER_TEMP/workshop-registry.json"
-          curl --fail --silent --show-error --location \
-            --output "$registry_response" \
-            'https://registry.npmjs.org/@gnolith%2fworkshop/0.4.2'
-          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).name" "$registry_response")" = '@gnolith/workshop'
-          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$registry_response")" = '0.4.2'
-          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.integrity" "$registry_response")" = "$expected_integrity"
-          attestations_url=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.url || ''" "$registry_response")
-          test "$attestations_url" = 'https://registry.npmjs.org/-/npm/v1/attestations/@gnolith%2fworkshop@0.4.2'
-          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.attestations?.provenance?.predicateType || ''" "$registry_response")" = 'https://slsa.dev/provenance/v1'
-          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).dist.signatures?.length || 0" "$registry_response")" -gt 0
-
-          cd "$RUNNER_TEMP"
-          npm pack '@gnolith/workshop@0.4.2' --json > workshop-pack.json
-          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))[0].filename" workshop-pack.json)" = 'gnolith-workshop-0.4.2.tgz'
-          test "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))[0].integrity" workshop-pack.json)" = "$expected_integrity"
-          echo '56bea740742056eab84b6d24ecfc91e74e6dea969cc828a1bbf006b5f17c21a6  gnolith-workshop-0.4.2.tgz' | sha256sum --check
-          expected_sha512_hex=$(sha512sum gnolith-workshop-0.4.2.tgz | cut -d ' ' -f 1)
-
-          audit_dir="$RUNNER_TEMP/workshop-signature-audit"
-          mkdir "$audit_dir"
-          cd "$audit_dir"
-          npm init --yes >/dev/null
-          npm install --ignore-scripts --save-exact '@gnolith/workshop@0.4.2'
-          test "$(node -p "JSON.parse(require('fs').readFileSync('package-lock.json', 'utf8')).packages['node_modules/@gnolith/workshop'].integrity")" = "$expected_integrity"
-          npm audit signatures | tee "$RUNNER_TEMP/workshop-signature-audit.txt"
-          grep -Eq '[1-9][0-9]* packages? (has|have) (a )?verified attestations?' "$RUNNER_TEMP/workshop-signature-audit.txt"
-
-          attestation_response="$RUNNER_TEMP/workshop-attestations.json"
-          curl --fail --silent --show-error --location \
-            --output "$attestation_response" "$attestations_url"
-          node - "$attestation_response" "$expected_sha512_hex" <<'NODE'
-          const fs = require('fs');
-          const [path, sha512] = process.argv.slice(2);
-          const response = JSON.parse(fs.readFileSync(path, 'utf8'));
-          const attestations = response.attestations?.filter(
-            ({ predicateType }) => predicateType === 'https://slsa.dev/provenance/v1',
-          ) ?? [];
-          if (attestations.length !== 1) throw new Error('expected exactly one SLSA v1 provenance attestation');
-          const envelope = attestations[0].bundle?.dsseEnvelope;
-          if (envelope?.payloadType !== 'application/vnd.in-toto+json') throw new Error('unexpected DSSE payload type');
-          const statement = JSON.parse(Buffer.from(envelope.payload, 'base64').toString('utf8'));
-          if (statement._type !== 'https://in-toto.io/Statement/v1') throw new Error('unexpected statement type');
-          if (statement.predicateType !== 'https://slsa.dev/provenance/v1') throw new Error('unexpected predicate type');
-          const subjects = statement.subject ?? [];
-          if (subjects.length !== 1) throw new Error('expected one provenance subject');
-          if (subjects[0].name !== 'pkg:npm/%40gnolith/workshop@0.4.2') throw new Error('unexpected provenance subject');
-          if (subjects[0].digest?.sha512 !== sha512) throw new Error('provenance subject digest mismatch');
-          const build = statement.predicate?.buildDefinition;
-          if (build?.buildType !== 'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1') throw new Error('unexpected provenance build type');
-          const workflow = build.externalParameters?.workflow;
-          if (workflow?.repository !== 'https://github.com/gnolith/workshop') throw new Error('unexpected provenance repository');
-          if (workflow?.path !== '.github/workflows/release.yml') throw new Error('unexpected provenance workflow');
-          if (workflow?.ref !== 'refs/tags/v0.4.2') throw new Error('unexpected provenance ref');
-          const source = (build.resolvedDependencies ?? []).filter(
-            ({ uri }) => uri === 'git+https://github.com/gnolith/workshop@refs/tags/v0.4.2',
-          );
-          if (source.length !== 1 || source[0].digest?.gitCommit !== '60f979c0c40734e8d931e90fa68aac6b8abb466a') {
-            throw new Error('unexpected provenance source commit');
-          }
-          NODE
-      - name: Install exact artifacts without changing publishable metadata
-        run: >-
-          npm install --ignore-scripts --no-save --package-lock=false
-          "$RUNNER_TEMP/gnolith-diamond-0.4.1.tgz"
-          "$RUNNER_TEMP/gnolith-taproot-0.4.2.tgz"
-          "$RUNNER_TEMP/gnolith-workshop-0.4.2.tgz"
+      - run: npm ci --ignore-scripts
       - run: npm run check
-      - run: npm run security:runtime-check
-      - name: Test the exact packed assembly
-        env:
-          DIAMOND_TGZ: ${{ runner.temp }}/gnolith-diamond-0.4.1.tgz
-          TAPROOT_TGZ: ${{ runner.temp }}/gnolith-taproot-0.4.2.tgz
-          WORKSHOP_TGZ: ${{ runner.temp }}/gnolith-workshop-0.4.2.tgz
-        run: npm run test:packed
-      - name: Build the image from the same exact artifacts
+      - run: npm run test:packed
+      - run: npm run test:compose
+      - run: npm run test:docker
+      - name: Prove no application-image publication surface
         shell: bash
         run: |
-          npm pack
-          cp "$RUNNER_TEMP"/gnolith-diamond-0.4.1.tgz .
-          cp "$RUNNER_TEMP"/gnolith-taproot-0.4.2.tgz .
-          cp "$RUNNER_TEMP"/gnolith-workshop-0.4.2.tgz .
-          seedbed_integrity="sha512-$(openssl dgst -sha512 -binary gnolith-seedbed-0.3.2.tgz | openssl base64 -A)"
-          bash scripts/build-production-closure.sh \
-            gnolith-seedbed-0.3.2.tgz \
-            "$seedbed_integrity" \
-            gnolith-diamond-0.4.1.tgz \
-            gnolith-taproot-0.4.2.tgz \
-            gnolith-workshop-0.4.2.tgz
-          closure_sha=$(cut -d ' ' -f 1 gnolith-production-closure.tar.gz.sha256)
-          docker build \
-            --build-arg PRODUCTION_CLOSURE_SHA256="$closure_sha" \
-            --build-arg REVISION=${{ github.sha }} \
-            --tag seedbed:test .
-          test "$(docker image inspect seedbed:test --format '{{index .Config.Labels "org.gnolith.production-closure.sha256"}}')" = "$closure_sha"
-          echo "SEEDBED_CLOSURE_SHA256=$closure_sha" >> "$GITHUB_ENV"
-      - run: npm run test:docker
+          test ! -f .github/workflows/release.yml
+          test ! -f Dockerfile
+          ! grep -R -E 'docker (push|buildx.*--push)|ghcr\.io/gnolith/seedbed' .github scripts package.json
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/dependency-review-action@56339e523c0409420f6c2c9a2f4292bbb3c07dd3
+        with:
+          fail-on-severity: high
+
+  exact-handoffs:
+    if: always()
+    needs: [candidate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Require the complete candidate matrix
+        env:
+          CANDIDATE_RESULT: ${{ needs.candidate.result }}
+        run: test "$CANDIDATE_RESULT" = success
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: ./.github/actions/setup-node
+      - run: npm ci --ignore-scripts
+      - name: Recompute exact package, graph, bundle, SBOM, and publication boundaries
+        run: |
+          npm run build
+          npm run candidate:refresh-attestation
+          git diff --exit-code
+          npm run test:packed
+          npm run check:sbom
+          npm run check:publication

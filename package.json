@@ -1,7 +1,7 @@
 {
   "name": "@gnolith/seedbed",
-  "version": "0.3.2",
-  "description": "Headless local process assembly for Gnolith.",
+  "version": "0.4.0",
+  "description": "Compose-first installer, migration, backup, adoption, and diagnostics control plane for Gnolith.",
   "type": "module",
   "private": false,
   "license": "MIT",
@@ -16,9 +16,9 @@
   },
   "keywords": [
     "gnolith",
-    "mcp",
-    "sqlite",
-    "headless"
+    "installer",
+    "compose",
+    "backup"
   ],
   "publishConfig": {
     "access": "public",
@@ -39,17 +39,41 @@
     "./config": {
       "types": "./dist/config.d.ts",
       "import": "./dist/config.js"
+    },
+    "./compose": {
+      "types": "./dist/compose.d.ts",
+      "import": "./dist/compose.js"
+    },
+    "./backup": {
+      "types": "./dist/backup.d.ts",
+      "import": "./dist/backup.js"
+    },
+    "./adoption": {
+      "types": "./dist/adoption.d.ts",
+      "import": "./dist/adoption.js"
+    },
+    "./local-control": {
+      "types": "./dist/local-control.d.ts",
+      "import": "./dist/local-control.js"
     }
   },
   "files": [
     "dist",
+    "compose",
+    "components",
+    "docker",
     "docs",
-    "seedbed.config.example.json",
+    "examples",
+    "fixtures",
+    "seedbed-assembly-attestation.json",
+    "seedbed-component-lock.json",
+    "migration-order.json",
     "CHANGELOG.md",
     "README.md",
     "LICENSE",
     "SECURITY.md",
-    "SUPPORT.md"
+    "SUPPORT.md",
+    "CONTRIBUTING.md"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -57,32 +81,28 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:packed": "node scripts/packed-system-test.mjs",
-    "test:docker": "node scripts/docker-smoke.mjs",
-    "test:qdrant": "node scripts/qdrant-qualification.mjs",
-    "test:published": "node scripts/published-system-test.mjs",
-    "check": "npm run typecheck && npm test && npm run build && npm run bundle:verify && npm run evidence:verify && npm run security:runtime-check && npm run pack:check",
-    "evidence:verify": "node scripts/verify-acceptance-evidence.mjs",
+    "test:compose": "node scripts/compose-qualification.mjs",
+    "test:docker": "node scripts/local-docker-qualification.mjs",
+    "test:legacy-docker": "node scripts/legacy-docker-qualification.mjs",
+    "check:inventory": "node scripts/verify-inventory.mjs",
+    "check:secrets": "node scripts/secret-canary.mjs",
+    "check:sbom": "node scripts/sbom-qualification.mjs",
+    "check:publication": "node scripts/verify-publication-workflow.mjs",
+    "check:legacy-fixture": "node scripts/verify-legacy-fixture.mjs",
+    "check:examples": "node scripts/sync-example-from-lock.mjs --check",
+    "sync:example": "node scripts/sync-example-from-lock.mjs --write",
+    "check": "npm run typecheck && npm test && npm run build && npm run check:inventory && npm run check:examples && npm run check:secrets && npm run check:sbom && npm run check:publication && npm run check:legacy-fixture && npm run security:runtime-check && npm run pack:check",
     "security:runtime-check": "node scripts/audit-zero.mjs --full && node scripts/audit-zero.mjs",
-    "bundle:inventory": "node scripts/bundled-runtime-inventory.mjs --write",
-    "bundle:verify": "node scripts/bundled-runtime-inventory.mjs --verify",
     "pack:check": "npm pack --dry-run",
-    "prepack": "npm run build && npm run bundle:verify"
-  },
-  "dependencies": {
-    "@gnolith/diamond": "0.4.1",
-    "@gnolith/taproot": "0.4.2",
-    "@gnolith/workshop": "0.4.2"
-  },
-  "overrides": {
-    "@hono/node-server": "2.0.11"
+    "candidate": "node scripts/candidate-handoff.mjs",
+    "candidate:refresh-attestation": "node scripts/candidate-handoff.mjs --refresh-attestation",
+    "prepack": "npm run build && npm run check:inventory && npm run check:examples"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.29.0",
     "@types/node": "24.0.0",
-    "@vitest/coverage-v8": "3.2.6",
-    "esbuild": "0.28.1",
+    "@vitest/coverage-v8": "4.1.10",
     "typescript": "5.9.2",
-    "vitest": "3.2.6",
+    "vitest": "4.1.10",
     "yaml": "2.9.0"
   }
 }

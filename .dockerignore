@@ -1,4 +1,13 @@
 *
-!gnolith-production-closure.tar.gz
-!scripts/
-!scripts/verify-production-tree.mjs
+!components/
+!components/*.tgz
+!docker/
+!docker/local-build.Dockerfile
+!docker/assembly-package.json
+!docker/assembly-package-lock.json
+!docker/operator-runner.mjs
+!docker/workshop-local-adapter.mjs
+!docker/opaque-codec.mjs
+!docker/read-only-sql.mjs
+!workshop.config.json
+!assembly.config.json

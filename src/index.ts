@@ -1,26 +1,34 @@
-export { loadConfig, requireBaseIri } from './config.js';
-export type { ConfigOverrides, SeedbedConfig } from './config.js';
-export { ExitCode, SeedbedError } from './errors.js';
-export { initializeDatabase, migrateDatabase, inspectReadiness, requireReady } from './persistence.js';
-export type { ReadinessStatus, TaprootAssembly } from './persistence.js';
-export { createSeedbedRuntime } from './runtime.js';
-export type { SeedbedRuntime } from './runtime.js';
-export { createNativeInstallationAdapter } from './adapter.js';
+export { canonicalJson, digestObject, sha256 } from './canonical.js';
+export { loadConfig, validateConfig, configDigest, redactConfig } from './config.js';
+export { renderCompose, assertSafeComposeEnvironment } from './compose.js';
+export { createLocalBearerCredential, decodeCanonicalTextSecret, inspectProtectedCredential } from './secrets.js';
+export { createInstallationPlan, createMigrationPlan, applyInstallationPlan, applyMigrationPlan } from './migration.js';
+export { createInstallationBackup, inspectInstallationBackup, verifyInstallationBackup, dryRunRestore, restoreInstallationBackup } from './backup.js';
+export { validateLegacyManifest, loadLegacyManifest, planLegacyAdoption, applyLegacyAdoption } from './adoption.js';
+export { diagnoseInstallation } from './diagnostics.js';
+export { SEEDBED_LOCAL_BUILD_SELECTOR, SeedbedLocalControl, createSeedbedControl, createDefaultSeedbedControl, defaultSeedbedControlPolicy, defaultSeedbedArtifactRoot, defaultSeedbedStateRoot } from './local-control.js';
+export { acquireOperationLock } from './operation-lock.js';
+export { semanticConfigurationFingerprint } from './semantic.js';
+export type * from './types.js';
+export type * from './owner-ports.js';
+export type * from './migration.js';
+export type * from './backup.js';
+export type * from './adoption.js';
+export type * from './diagnostics.js';
 export type {
-  InstallationHostBindings,
-  NativeInstallationAdapter,
-  BlobBinding,
-  EmbeddingProviderBinding,
-  VectorIndexBinding,
-  ClockBinding,
-  BackgroundExecutionBinding,
-  HttpBinding,
-  CredentialBinding,
-} from './adapter.js';
-export {
-  createInstallationSnapshot,
-  inspectInstallationSnapshot,
-  restoreInstallationSnapshot,
-} from './snapshot.js';
-export type { SnapshotInspection, SnapshotManifest, SnapshotBlobEntry, RestoreTestHooks } from './snapshot.js';
-
+  DefaultSeedbedControlOptions,
+  DigestQualifiedPulledImageSelection,
+  DockerImageSelection,
+  DockerInstallationRequest,
+  ExpectedWorkshopStatus,
+  InstallationDiagnosis,
+  InstallationInspection,
+  InstallationSelector,
+  SeedbedControl,
+  SeedbedControlPlan,
+  SeedbedControlPolicy,
+  SeedbedControlReceipt,
+  SeedbedControlOperationOptions,
+  SeedbedLocalBuildSelection,
+  WaystoneLocalExpectation,
+} from './local-control.js';

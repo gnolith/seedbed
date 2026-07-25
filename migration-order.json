@@ -1,0 +1,46 @@
+{
+  "format": "gnolith-seedbed-migration-order-v1",
+  "ordinaryWorkshopStartupMigrates": false,
+  "owners": [
+    {
+      "name": "diamond",
+      "order": 1,
+      "namespace": "@gnolith/diamond",
+      "target": "0001-current-rdf-schema",
+      "publicPlanApi": ["readAppliedMigrations", "checksumMigration"],
+      "publicApplyApi": "migrateDiamondStore",
+      "publicInspectApi": "inspectStoreSchema",
+      "legacyInspectApi": "decodeDiamond041LegacyOwnerV1",
+      "legacyConvertApi": "adoptDiamond041LegacyOwnerV1"
+    },
+    {
+      "name": "taproot",
+      "order": 2,
+      "namespace": "@gnolith/taproot",
+      "target": "0009-architecture-reset",
+      "publicPlanApi": "planTaprootMigrations",
+      "publicApplyApi": "applyTaprootMigrations",
+      "publicInspectApi": "inspectTaprootPersistence",
+      "legacyInspectApi": "inspectLegacyTaproot042ForAdoptionV1",
+      "legacyConvertApi": "convertLegacyTaproot042ToBackupSectionV1"
+    },
+    {
+      "name": "workshop",
+      "order": 3,
+      "namespace": "@gnolith/workshop",
+      "target": "0011_administration_control_plane",
+      "publicPlanApi": "planWorkshopMigrations",
+      "publicApplyApi": "applyWorkshopMigrations",
+      "publicInspectApi": "inspectWorkshopMigrations"
+    }
+  ],
+  "bootstrap": {
+    "order": 4,
+    "owner": "workshop",
+    "publicPort": "bootstrap-v1",
+    "beforeListener": true
+  },
+  "composeStartOrder": 5,
+  "diagnosticsOrder": 6,
+  "receiptOrder": 7
+}

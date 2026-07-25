@@ -1,0 +1,8 @@
+{
+  "kind": "seedbed-local-build-v1",
+  "selector": "gnolith-seedbed-local-build-v1",
+  "pullPolicy": "never",
+  "componentLockSha256": "eb28cb988b0c507d5c9ef4242ec13895af2c8cd8f2c57ba722d01eb89b55ed7d",
+  "graphSha256": "e400df1282ea7bb395a634abd267936137ab358091afb6cfa37618ccc4c75909",
+  "composeBundleSha256": "5d5d9aab98e21a019f551b36f28fe8fcacb4f2183ab2cdef1350e6b3185a2a52"
+}
