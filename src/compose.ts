@@ -92,18 +92,11 @@ export function renderCompose(config: SeedbedConfig): ComposeRender {
     networks: [gnolith]
     depends_on:
       qdrant:
-        condition: service_healthy${credential === undefined ? '' : `\n    secrets:\n      - source: ${credential.composeName}\n        target: ${credential.target}`}
+        condition: service_healthy${credential === undefined ? '' : '\n    volumes:\n      - protected-credentials:/run/secrets:ro'}
     deploy:
       resources:
         limits: { cpus: "0.5", memory: 128M }`);
   }
-  const workshopSecrets = [
-    '      - gnolith-bearer',
-    ...semanticSecrets.map((entry) => `      - source: ${entry.composeName}\n        target: ${entry.target}`),
-  ].join('\n');
-  const operatorSecrets = semanticSecrets.length === 0
-    ? ''
-    : `\n    secrets:\n${semanticSecrets.map((entry) => `      - source: ${entry.composeName}\n        target: ${entry.target}`).join('\n')}`;
   const usesHostGateway = config.semantic !== undefined && (
     new URL(config.semantic.configuration.provider.endpoint).hostname === 'host.docker.internal'
     || (
@@ -120,6 +113,7 @@ export function renderCompose(config: SeedbedConfig): ComposeRender {
     : '';
   const volumes = [
     '  application-data:\n    name: ${APPLICATION_DATA_VOLUME}',
+    '  protected-credentials:\n    name: ${PROTECTED_CREDENTIAL_VOLUME}\n    external: true',
     ...(config.compose.profiles.includes('qdrant') ? ['  qdrant-data:\n    name: ${QDRANT_DATA_VOLUME}'] : []),
   ];
   const yaml = `name: \${COMPOSE_PROJECT_NAME}
@@ -146,9 +140,8 @@ services:
     tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
     ports: [${portBindings.map((entry) => `"${entry}"`).join(', ')}]
     volumes:
-      - application-data:/var/lib/gnolith${waystoneMount}
-    secrets:
-${workshopSecrets}
+      - application-data:/var/lib/gnolith
+      - protected-credentials:/run/secrets:ro${waystoneMount}
     networks: [gnolith]${hostGateway}${qdrantDependency}
     healthcheck:
       test: ["CMD", "node", "-e", "let t=require('fs').readFileSync('/run/secrets/gnolith-bearer','utf8');if(Buffer.byteLength(t)!==43&&Buffer.byteLength(t)!==44)process.exit(1);t=t.endsWith('\\\\n')?t.slice(0,-1):t;if(!/^[A-Za-z0-9_-]{43}$/u.test(t))process.exit(1);fetch('http://127.0.0.1:4317/health/live',{headers:{authorization:'Bearer '+t}}).then(function(r){if(!r.ok)process.exit(1)}).catch(function(){process.exit(1)})"]
@@ -169,7 +162,7 @@ ${workshopSecrets}
     security_opt: ["no-new-privileges:true"]
     tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
     volumes:
-      - application-data:/var/lib/gnolith${operatorSecrets}
+      - application-data:/var/lib/gnolith
     networks: [gnolith]${hostGateway}
     deploy:
       resources:
@@ -181,10 +174,6 @@ networks:
     internal: false
 volumes:
 ${volumes.join('\n')}
-secrets:
-  gnolith-bearer:
-    file: \${GNOLITH_BEARER_FILE}
-${semanticSecrets.map((entry) => `  ${entry.composeName}:\n    file: \${${entry.environment}}`).join('\n')}
 `;
   const environment = {
     COMPOSE_PROJECT_NAME: config.compose.projectName,
@@ -196,9 +185,9 @@ ${semanticSecrets.map((entry) => `  ${entry.composeName}:\n    file: \${${entry.
     TAPROOT_SHA256: config.packages.taproot.sha256,
     WORKSHOP_ARTIFACT: config.packages.workshop.artifact,
     WORKSHOP_SHA256: config.packages.workshop.sha256,
-    GNOLITH_BEARER_FILE: config.authentication.tokenFile,
     GNOLITH_NETWORK_NAME: config.compose.networkName,
     APPLICATION_DATA_VOLUME: config.compose.dataVolume,
+    PROTECTED_CREDENTIAL_VOLUME: `${config.compose.projectName}-protected-credentials`,
     ...(config.compose.profiles.includes('waystone') ? {
       WAYSTONE_ASSET_DIRECTORY: join(config.paths.stateDirectory, 'compose', 'waystone'),
     } : {}),
@@ -213,7 +202,6 @@ ${semanticSecrets.map((entry) => `  ${entry.composeName}:\n    file: \${${entry.
           : 'Euclid',
     } : {}),
     ...(config.compose.qdrantImage === undefined ? {} : { QDRANT_IMAGE: config.compose.qdrantImage }),
-    ...Object.fromEntries(semanticSecrets.map((entry) => [entry.environment, entry.path])),
   };
   return {
     yaml,
@@ -235,7 +223,7 @@ ${semanticSecrets.map((entry) => `  ${entry.composeName}:\n    file: \${${entry.
 export function assertSafeComposeEnvironment(environment: Readonly<Record<string, string>>): void {
   const forbidden = /(?:TOKEN|PASSWORD|SECRET|API_KEY)$/u;
   for (const [key, value] of Object.entries(environment)) {
-    if (forbidden.test(key) && key !== 'GNOLITH_BEARER_FILE') throw new TypeError(`Compose environment contains forbidden secret literal ${key}`);
+    if (forbidden.test(key)) throw new TypeError(`Compose environment contains forbidden secret literal ${key}`);
     if (value.includes('\n') || value.includes('\r') || value.includes('\0')) throw new TypeError(`Compose environment ${key} contains control characters`);
   }
 }

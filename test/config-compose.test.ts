@@ -58,7 +58,7 @@ describe('strict installation config and Compose rendering', () => {
     expect(render.yaml).not.toMatch(/GNOLITH_BEARER_TOKEN=/u);
   });
 
-  it('binds the exact declarative semantic profile and mounts only referenced protected selectors', async () => {
+  it('binds the exact declarative semantic profile without exposing host selector paths', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seedbed-semantic-'));
     const base = fixtureConfig(root);
     const credentialPath = join(root, 'semantic-provider');
@@ -93,8 +93,9 @@ describe('strict installation config and Compose rendering', () => {
     const config = validateConfig(input, { projectDirectory: process.cwd() });
     const render = renderCompose(config);
     assertSafeComposeEnvironment(render.environment);
-    expect(render.yaml.match(/source: gnolith-semantic-/gu)).toHaveLength(2);
-    expect(Object.values(render.environment)).toContain(credentialPath);
+    expect(render.yaml).toContain('protected-credentials:/run/secrets:ro');
+    expect(render.environment.PROTECTED_CREDENTIAL_VOLUME).toBe(`${config.compose.projectName}-protected-credentials`);
+    expect(Object.values(render.environment)).not.toContain(credentialPath);
     expect(JSON.stringify(render)).not.toContain('protected-value-never-rendered');
     expect(() => validateConfig({
       ...input,
@@ -284,13 +285,13 @@ describe('strict installation config and Compose rendering', () => {
     expect(qdrantRender.oneShotServices).toContain('qdrant-init');
   });
 
-  it('mounts the protected bearer only for offline bootstrap and semantic configuration operators', () => {
-    const tokenFile = 'C:\\protected\\bearer';
-    const expected = ['--volume', `${tokenFile}:/run/secrets/gnolith-bearer:ro`];
-    expect(protectedOperatorMountArgs('workshop-bootstrap-v1', tokenFile)).toEqual(expected);
-    expect(protectedOperatorMountArgs('workshop-semantic-configure-v1', tokenFile)).toEqual(expected);
-    expect(protectedOperatorMountArgs('owner-migration-apply-v1', tokenFile)).toEqual([]);
-    expect(JSON.stringify(renderCompose(fixtureConfig(process.cwd())))).not.toContain(tokenFile);
+  it('attaches an ephemeral protected volume only for offline bootstrap and semantic configuration operators', () => {
+    const volume = 'gnolith-seedbed-secret-0123456789abcdef';
+    const expected = ['--volume', `${volume}:/run/secrets:ro`];
+    expect(protectedOperatorMountArgs('workshop-bootstrap-v1', volume)).toEqual(expected);
+    expect(protectedOperatorMountArgs('workshop-semantic-configure-v1', volume)).toEqual(expected);
+    expect(protectedOperatorMountArgs('owner-migration-apply-v1', volume)).toEqual([]);
+    expect(JSON.stringify(renderCompose(fixtureConfig(process.cwd())))).not.toContain(volume);
   });
 
   it('stages only SHA-verified regular package artifacts into the external-state local build context', async () => {

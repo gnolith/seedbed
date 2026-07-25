@@ -76,7 +76,8 @@ configuration are Alembic responsibilities.
 ## Local topology
 
 The default graph is one locally built Workshop service, an internal Compose network,
-one application-data volume, and one read-only protected bearer secret. Workshop
+one application-data volume, and one Docker-owned read-only protected-credential
+volume. Workshop
 binds `0.0.0.0:4317` inside its container; Compose publishes only
 `127.0.0.1:<configured-port>` by default. The explicit IPv6 override publishes
 `[::1]`. The optional `qdrant` profile remains internal. The default `waystone`
@@ -93,8 +94,10 @@ project using exactly 32 OS-CSPRNG bytes encoded as canonical base64url without
 padding and without a terminator. Readers accept exactly 43 encoded bytes, or those
 same 43 bytes followed by exactly one LF. CRLF, empty values, additional newlines,
 surrounding whitespace, and control bytes are rejected. The file is exclusively
-created and owner-protected. Seedbed passes only its selector to
-`gnolith-workshop bootstrap-v1`.
+created and owner-protected. Seedbed transfers the validated bytes only over a
+bounded Docker stdin pipe into an owner-only Docker volume, then passes only the
+in-container selector to `gnolith-workshop bootstrap-v1`. It never relaxes the
+source file mode or places credential bytes in Compose, CLI arguments, or environment.
 
 Receipts contain credential ID, a non-secret digest, the protected selector, and the
 required environment selector `GNOLITH_BEARER_TOKEN`. They never contain the token.
@@ -105,8 +108,8 @@ handoff.
 ## Semantic configuration
 
 Seedbed binds a typed OpenAI-compatible provider and SQLite or Qdrant vector profile
-into the digest-bound installation plan. Credential values are read only from
-protected Compose secret files by the Workshop assembly adapter; receipts expose
+into the digest-bound installation plan. Credential values are read only from the
+Docker-owned protected-credential volume by the Workshop assembly adapter; receipts expose
 only the configuration fingerprint, revision, and state. Configuration completes
 after owner migrations and Workshop bootstrap but before the listener starts.
 The provider `endpoint` is always the complete embeddings POST URL (for example,

@@ -14,6 +14,7 @@ import type { SeedbedOperatorExecutor } from './owner-ports.js';
 import type { RestoreTarget } from './backup.js';
 import { canonicalJson, redactFilesystemPaths, sha256 } from './canonical.js';
 import type { LegacyAdapterExecutor, PortableLegacySource } from './legacy-source.js';
+import { decodeCanonicalTextSecret, inspectProtectedCredential } from './secrets.js';
 
 const exec = promisify(execFile);
 const SEEDBED_PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -134,7 +135,7 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
       const manifest = assertWaystoneManifest(bytes);
       const waystoneDirectory = join(directory, 'waystone');
       const destination = join(waystoneDirectory, 'waystone-assets.json');
-      await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+      await mkdir(dirname(destination), { recursive: true, mode: 0o755 });
       await stageImmutableManifest(destination, bytes, coordinate.sha256);
       const sourceDirectory = dirname(source);
       const basenames = new Set<string>();
@@ -150,7 +151,7 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
         const assetBytes = await readFile(assetSource);
         if (sha256(assetBytes) !== asset.sha256) throw new TypeError(`waystone asset ${asset.path} digest mismatch`);
         const assetDestination = join(waystoneDirectory, ...asset.path.split('/'));
-        await mkdir(dirname(assetDestination), { recursive: true, mode: 0o700 });
+        await mkdir(dirname(assetDestination), { recursive: true, mode: 0o755 });
         await stageImmutableManifest(assetDestination, assetBytes, asset.sha256);
       }
     }
@@ -201,10 +202,31 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
   }
 
   async up(config: SeedbedConfig): Promise<void> {
+    const credentialVolume = runtimeCredentialVolume(config);
+    await this.stageCredentialVolume(config, credentialVolume, 'runtime-v1');
     const args = this.args(config);
     for (const profile of config.compose.profiles) args.push('--profile', profile);
     args.push('up', '--build', '--detach', '--wait', '--force-recreate');
-    await this.docker(args, 5 * 60_000);
+    try {
+      await this.docker(args, 5 * 60_000);
+    } catch (error) {
+      const logs = await this.docker(
+        [...this.args(config), 'logs', '--no-color', '--tail', '100', 'workshop'],
+        10_000,
+      ).then(
+        (result) => `${result.stdout}\n${result.stderr}`,
+        () => '',
+      );
+      await this.docker(['volume', 'rm', '--force', credentialVolume], 10_000).catch(() => undefined);
+      const diagnostic = redactFilesystemPaths(logs)
+        .replaceAll(/[A-Za-z0-9_-]{43}/gu, '[redacted-credential]')
+        .trim()
+        .slice(0, 4096);
+      throw new Error(
+        diagnostic ? `Workshop start failed: ${diagnostic}` : 'Workshop start failed without container diagnostics',
+        { cause: error },
+      );
+    }
   }
 
   async ensureSemanticDependencies(config: SeedbedConfig): Promise<void> {
@@ -250,25 +272,38 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
   }
 
   async invoke<T>(config: SeedbedConfig, operation: string, input: unknown): Promise<T> {
-    const process = this.operatorProcess(config, operation, [], [], operatorSubject(input));
-    const { child } = process;
-    const stdin = child.stdin!;
-    const stdout = child.stdout!;
-    const output: Buffer[] = [];
-    let bytes = 0;
-    const limit = operation === 'owner-backup-export-v1'
-      ? encodedResponseLimit(config.backup.maxArchiveBytes)
-      : 8 * 1024 * 1024;
-    stdout.on('data', (chunk: Buffer) => {
-      bytes += chunk.byteLength;
-      if (bytes > limit) void terminateOperator(process);
-      else output.push(chunk);
-    });
-    const completion = operatorCompletion(process, 'Seedbed Compose operator');
-    stdin.end(`${canonicalJson({ context: operatorContext(config), input })}\n`);
-    await completion;
-    if (bytes > limit) throw new TypeError('Seedbed operator response exceeded configured bounds');
-    return JSON.parse(Buffer.concat(output).toString('utf8')) as T;
+    const protectedVolume = await this.stageProtectedOperatorVolume(config, operation);
+    try {
+      const process = this.operatorProcess(
+        config,
+        operation,
+        [],
+        protectedVolume === undefined ? [] : protectedOperatorMountArgs(operation, protectedVolume),
+        operatorSubject(input),
+      );
+      const { child } = process;
+      const stdin = child.stdin!;
+      const stdout = child.stdout!;
+      const output: Buffer[] = [];
+      let bytes = 0;
+      const limit = operation === 'owner-backup-export-v1'
+        ? encodedResponseLimit(config.backup.maxArchiveBytes)
+        : 8 * 1024 * 1024;
+      stdout.on('data', (chunk: Buffer) => {
+        bytes += chunk.byteLength;
+        if (bytes > limit) void terminateOperator(process);
+        else output.push(chunk);
+      });
+      const completion = operatorCompletion(process, 'Seedbed Compose operator');
+      stdin.end(`${canonicalJson({ context: operatorContext(config), input })}\n`);
+      await completion;
+      if (bytes > limit) throw new TypeError('Seedbed operator response exceeded configured bounds');
+      return JSON.parse(Buffer.concat(output).toString('utf8')) as T;
+    } finally {
+      if (protectedVolume !== undefined) {
+        await this.docker(['volume', 'rm', '--force', protectedVolume], 10_000).catch(() => undefined);
+      }
+    }
   }
 
   async read(config: SeedbedConfig, operation: string, input: unknown): Promise<AsyncIterable<Uint8Array>> {
@@ -374,6 +409,7 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
 
   async downRetainData(config: SeedbedConfig): Promise<void> {
     await this.docker([...this.args(config), 'down', '--remove-orphans'], 30_000);
+    await this.docker(['volume', 'rm', '--force', runtimeCredentialVolume(config)], 10_000).catch(() => undefined);
   }
 
   private args(config: SeedbedConfig): string[] {
@@ -390,14 +426,13 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
   ): OperatorProcess {
     if (!OPERATOR_OPERATIONS.has(operation)) throw new TypeError('Unsupported Seedbed operator operation');
     if (this.execution.signal?.aborted) throw new SeedbedOperationAbortedError(operation);
-    const secretMount = protectedOperatorMountArgs(operation, config.authentication.tokenFile);
     const containerName = `gnolith-seedbed-op-${randomUUID().replaceAll('-', '')}`;
     const installationProfiles = config.compose.profiles.flatMap((profile) => ['--profile', profile]);
     const child = spawn('docker', [
       ...this.args(config),
       ...installationProfiles,
       '--profile', 'seedbed-operator',
-      'run', '--rm', '--name', containerName, '--no-deps', '-T', ...secretMount, ...mounts, 'seedbed-operator',
+      'run', '--rm', '--name', containerName, '--no-deps', '-T', ...mounts, 'seedbed-operator',
       operation, ...mode,
     ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     return {
@@ -423,6 +458,58 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
     return Math.min(standard, this.execution.timeoutMs ?? standard);
   }
 
+  private async stageProtectedOperatorVolume(config: SeedbedConfig, operation: string): Promise<string | undefined> {
+    if (operation !== 'workshop-bootstrap-v1' && operation !== 'workshop-semantic-configure-v1') return undefined;
+    const volume = `gnolith-seedbed-secret-${randomUUID().replaceAll('-', '')}`;
+    await this.stageCredentialVolume(config, volume, 'protected-operator-v1');
+    return volume;
+  }
+
+  private async stageCredentialVolume(config: SeedbedConfig, volume: string, purpose: string): Promise<void> {
+    await inspectProtectedCredential(config.authentication.tokenFile);
+    const files: Record<string, string> = {
+      'gnolith-bearer': Buffer.from(
+        decodeCanonicalTextSecret(await readFile(config.authentication.tokenFile), 44),
+        'utf8',
+      ).toString('base64'),
+    };
+    for (const selector of config.semantic?.credentialSelectors ?? []) {
+      const target = `gnolith-semantic-${sha256(selector.id).slice(0, 16)}`;
+      files[target] = Buffer.from(
+        decodeCanonicalTextSecret(await readFile(selector.path), 1024 * 1024),
+        'utf8',
+      ).toString('base64');
+    }
+    await this.docker(['volume', 'create', '--label', `dev.gnolith.seedbed=${purpose}`, volume], 10_000);
+    const script = [
+      "const fs=require('node:fs');",
+      "let b='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>{b+=c;if(b.length>2097152)process.exit(2)});",
+      "process.stdin.on('end',()=>{const v=JSON.parse(b);for(const n of fs.readdirSync('/seedbed-secrets')){if(!/^gnolith-(?:bearer|semantic-[0-9a-f]{16})$/.test(n))process.exit(3);fs.unlinkSync('/seedbed-secrets/'+n)}for(const [n,e] of Object.entries(v)){if(!/^gnolith-(?:bearer|semantic-[0-9a-f]{16})$/.test(n)||typeof e!=='string')process.exit(4);const p='/seedbed-secrets/'+n;fs.writeFileSync(p,Buffer.from(e,'base64'),{mode:0o400,flag:'wx'});fs.chownSync(p,10001,10001)}});",
+    ].join('');
+    const child = spawn('docker', [
+      'run', '--rm', '--interactive', '--network', 'none', '--read-only',
+      '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--security-opt', 'no-new-privileges:true',
+      '--user', '0:0', '--volume', `${volume}:/seedbed-secrets`,
+      '--entrypoint', 'node', `${config.compose.projectName}-workshop:local`, '-e', script,
+    ], { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] });
+    const stderr: Buffer[] = [];
+    child.stderr!.on('data', (chunk: Buffer) => {
+      if (Buffer.concat(stderr).byteLength < 16 * 1024) stderr.push(chunk);
+    });
+    child.stdin!.end(`${canonicalJson(files)}\n`);
+    try {
+      await new Promise<void>((resolveStage, rejectStage) => {
+        child.once('error', rejectStage);
+        child.once('close', (code) => code === 0
+          ? resolveStage()
+          : rejectStage(new Error(`Protected operator credential staging failed: ${redactFilesystemPaths(Buffer.concat(stderr).toString('utf8')).slice(0, 512)}`)));
+      });
+    } catch (error) {
+      await this.docker(['volume', 'rm', '--force', volume], 10_000).catch(() => undefined);
+      throw error;
+    }
+  }
+
   private docker(args: readonly string[], standardTimeoutMs: number) {
     const timeout = Math.min(standardTimeoutMs, this.execution.timeoutMs ?? standardTimeoutMs);
     return exec('docker', [...args], {
@@ -442,10 +529,14 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
   }
 }
 
-export function protectedOperatorMountArgs(operation: string, tokenFile: string): readonly string[] {
+export function protectedOperatorMountArgs(operation: string, volume: string): readonly string[] {
   return operation === 'workshop-bootstrap-v1' || operation === 'workshop-semantic-configure-v1'
-    ? ['--volume', `${tokenFile}:/run/secrets/gnolith-bearer:ro`]
+    ? ['--volume', `${volume}:/run/secrets:ro`]
     : [];
+}
+
+function runtimeCredentialVolume(config: SeedbedConfig): string {
+  return `${config.compose.projectName}-protected-credentials`;
 }
 
 export class DockerDiagnosticHost implements DiagnosticHost {
@@ -574,8 +665,9 @@ async function stageImmutableManifest(destination: string, bytes: Uint8Array, ex
     if (sha256(await readFile(destination)) !== expectedDigest) throw new TypeError('staged waystone manifest conflicts with immutable coordinate');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    await writeFile(destination, bytes, { mode: 0o600, flag: 'wx' });
+    await writeFile(destination, bytes, { mode: 0o444, flag: 'wx' });
   }
+  if (process.platform !== 'win32') await chmod(destination, 0o444);
 }
 
 async function assertProtectedDirectory(path: string): Promise<void> {

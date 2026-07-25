@@ -5,7 +5,7 @@ import YAML from 'yaml';
 const document = YAML.parse(await readFile('compose/compose.yaml', 'utf8'));
 const services = Object.keys(document.services).sort();
 if (JSON.stringify(services) !== JSON.stringify(['qdrant', 'seedbed-operator', 'workshop'])) throw new Error(`unexpected Compose services: ${services.join(',')}`);
-if (document.services.workshop.image.includes('ghcr.io')) throw new Error('Workshop must be built locally');
+if (document.services.workshop.image !== '${COMPOSE_PROJECT_NAME}-workshop:local') throw new Error('Workshop must use the exact local-build image');
 if (document.services.workshop.command.join(' ') !== 'serve --config /app/seedbed/workshop.config.json') throw new Error('Workshop must use its exact config-only serve CLI');
 if (!document.services.workshop.healthcheck.test.join(' ').includes('/health/live')) throw new Error('Workshop container healthcheck must use exact authenticated liveness');
 if (document.services.workshop.healthcheck.test.join(' ').includes('/health/ready')) throw new Error('Optional semantic degradation must not make the Workshop container unhealthy');
@@ -30,9 +30,9 @@ if (process.platform !== 'win32') {
       TAPROOT_SHA256: 'b'.repeat(64),
       WORKSHOP_ARTIFACT: 'artifacts/workshop.tgz',
       WORKSHOP_SHA256: 'c'.repeat(64),
-      GNOLITH_BEARER_FILE: '/tmp/gnolith-bearer',
       GNOLITH_NETWORK_NAME: 'gnolith-candidate',
       APPLICATION_DATA_VOLUME: 'gnolith-candidate-data',
+      PROTECTED_CREDENTIAL_VOLUME: 'gnolith-candidate-protected-credentials',
       QDRANT_DATA_VOLUME: 'gnolith-candidate-qdrant',
       WAYSTONE_ASSET_DIRECTORY: '/tmp/gnolith-waystone',
       QDRANT_IMAGE: `qdrant/qdrant@sha256:${'1'.repeat(64)}`,

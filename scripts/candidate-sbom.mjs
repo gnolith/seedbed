@@ -177,7 +177,7 @@ export function assertCandidateSbom(sbom, input) {
 }
 
 function purl(name, version) {
-  return `pkg:npm/${name.replace('@', '%40')}@${version}`;
+  return `pkg:npm/${name.replaceAll('@', '%40')}@${version}`;
 }
 
 function hash(content) {

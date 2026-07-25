@@ -965,6 +965,10 @@ async function cleanupCompose(name, directory, volume) {
     windowsHide: true,
     maxBuffer: 1024 * 1024,
   }).catch(() => undefined);
+  await exec('docker', ['volume', 'rm', `${name}-protected-credentials`], {
+    windowsHide: true,
+    maxBuffer: 1024 * 1024,
+  }).catch(() => undefined);
   await exec('docker', ['network', 'rm', name], {
     windowsHide: true,
     maxBuffer: 1024 * 1024,
