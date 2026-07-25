@@ -38,3 +38,25 @@ jobs:
       - uses: actions/dependency-review-action@56339e523c0409420f6c2c9a2f4292bbb3c07dd3
         with:
           fail-on-severity: high
+
+  exact-handoffs:
+    if: always()
+    needs: [candidate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Require the complete candidate matrix
+        env:
+          CANDIDATE_RESULT: ${{ needs.candidate.result }}
+        run: test "$CANDIDATE_RESULT" = success
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: ./.github/actions/setup-node
+      - run: npm ci --ignore-scripts
+      - name: Recompute exact package, graph, bundle, SBOM, and publication boundaries
+        run: |
+          npm run build
+          npm run candidate:refresh-attestation
+          git diff --exit-code
+          npm run test:packed
+          npm run check:sbom
+          npm run check:publication
