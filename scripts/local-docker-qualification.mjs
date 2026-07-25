@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { createServer } from 'node:net';
+import { createServer, isIP } from 'node:net';
 import {
   decodeCanonicalTextSecret,
   digestObject,
@@ -368,7 +368,8 @@ async function verifySemanticProfile(packed, vectorKind) {
       profiles: qdrant ? ['waystone', 'qdrant'] : ['waystone'],
     },
   });
-  await startSemanticMock(policy.compose.nodeImage, mockContainer, mockPort);
+  const mockPublishHost = await semanticMockPublishHost(policy.compose.nodeImage);
+  await startSemanticMock(policy.compose.nodeImage, mockContainer, mockPort, mockPublishHost);
   await assertHostGatewayMockReachable(policy.compose.nodeImage, mockPort);
   const configuration = {
     version: 1,
@@ -843,7 +844,7 @@ async function waitForLexicalSearch(workshopPort, token, entityId, text) {
   throw new Error(`lexical fallback search did not remain available: ${JSON.stringify(last).slice(0, 1024)}`);
 }
 
-async function startSemanticMock(nodeImage, containerName, hostPort) {
+async function startSemanticMock(nodeImage, containerName, hostPort, publishHost) {
   const server = [
     "const http=require('node:http')",
     "http.createServer((req,res)=>{",
@@ -859,13 +860,33 @@ async function startSemanticMock(nodeImage, containerName, hostPort) {
   await exec('docker', [
     'run', '--detach', '--rm',
     '--name', containerName,
-    '--publish', `127.0.0.1:${hostPort}:8787`,
+    '--publish', `${publishHost}:${hostPort}:8787`,
     '--read-only',
     '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges:true',
     nodeImage,
     'node', '-e', server,
   ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+}
+
+async function semanticMockPublishHost(nodeImage) {
+  const [hostGateway, bridgeGateway] = await Promise.all([
+    exec('docker', [
+      'run', '--rm',
+      '--add-host', 'host.docker.internal:host-gateway',
+      nodeImage,
+      'node', '-e',
+      "require('node:dns').lookup('host.docker.internal',(error,address)=>{if(error)throw error;process.stdout.write(address)})",
+    ], { windowsHide: true, maxBuffer: 1024 * 1024 }),
+    exec('docker', [
+      'network', 'inspect', 'bridge',
+      '--format', '{{(index .IPAM.Config 0).Gateway}}',
+    ], { windowsHide: true, maxBuffer: 1024 * 1024 }),
+  ]);
+  const host = hostGateway.stdout.trim();
+  const bridge = bridgeGateway.stdout.trim();
+  if (isIP(host) !== 4 || isIP(bridge) !== 4) throw new Error('Docker host gateway probe did not return canonical IPv4 addresses');
+  return host === bridge ? host : '127.0.0.1';
 }
 
 async function assertHostGatewayMockReachable(nodeImage, hostPort) {
