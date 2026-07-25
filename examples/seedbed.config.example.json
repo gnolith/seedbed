@@ -12,14 +12,14 @@
     "taproot": {
       "version": "0.5.0",
       "artifact": "components/gnolith-taproot-0.5.0.tgz",
-      "sha256": "030e0bc4b58873b1ba362cc7ea0a232b769fcd5163ce7679d397c47b8f15b818",
-      "sourceCommit": "98c7bc6e66b39d4bba0862a7e5dcb3a58a7882ac"
+      "sha256": "8d7b42bd3c9a283f7cbcfa8579ae71296b6e571e1813998b4c460f6db1e0e2c4",
+      "sourceCommit": "fa74e4550301fd575049d7c3703e39086ea93200"
     },
     "workshop": {
       "version": "0.5.0",
       "artifact": "components/gnolith-workshop-0.5.0.tgz",
-      "sha256": "6479db87d6c2529b4a5c9e5063cc705f8f2aa3057ae4c7d5a0668e36e48163e4",
-      "sourceCommit": "10ce0e1ae441094b28e61ad2772e10e1b391a464"
+      "sha256": "660860bcce2e9cfdd48c6d7f72fcb92d8480914d63d75eab71152f63eb04605c",
+      "sourceCommit": "4614f7d6729e8afc93838f76b879ccb5c3bfe602"
     },
     "waystone": {
       "version": "0.3.0",

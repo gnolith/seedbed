@@ -381,25 +381,30 @@ export class DockerComposeDriver implements ComposeDriver, SeedbedOperatorExecut
     input: unknown,
   ): Promise<T> {
     const process = this.operatorProcess(config, operation, [], this.legacyMounts(source));
-    const { child } = process;
-    const stdin = child.stdin!;
-    const stdout = child.stdout!;
-    const output: Buffer[] = [];
-    let bytes = 0;
-    const limit = encodedResponseLimit(config.backup.maxArchiveBytes);
-    stdout.on('data', (chunk: Buffer) => {
-      bytes += chunk.byteLength;
-      if (bytes > limit) void terminateOperator(process);
-      else output.push(chunk);
-    });
-    const completion = operatorCompletion(process, 'Seedbed legacy owner adapters');
-    const inputCompletion = writeOperatorInput(
-      stdin,
-      singleInput(`${canonicalJson({ context: operatorContext(config), input, source: portableContainerSource() })}\n`),
-    );
-    await settleOperatorIo(process, inputCompletion, completion);
-    if (bytes > limit) throw new TypeError('Legacy owner adapter response exceeded configured bounds');
-    return JSON.parse(Buffer.concat(output).toString('utf8')) as T;
+    try {
+      const { child } = process;
+      const stdin = child.stdin!;
+      const stdout = child.stdout!;
+      const output: Buffer[] = [];
+      let bytes = 0;
+      const limit = encodedResponseLimit(config.backup.maxArchiveBytes);
+      stdout.on('data', (chunk: Buffer) => {
+        bytes += chunk.byteLength;
+        if (bytes > limit) void terminateOperator(process);
+        else output.push(chunk);
+      });
+      const completion = operatorCompletion(process, 'Seedbed legacy owner adapters');
+      const inputCompletion = writeOperatorInput(
+        stdin,
+        singleInput(`${canonicalJson({ context: operatorContext(config), input, source: portableContainerSource() })}\n`),
+      );
+      await settleOperatorIo(process, inputCompletion, completion);
+      if (bytes > limit) throw new TypeError('Legacy owner adapter response exceeded configured bounds');
+      return JSON.parse(Buffer.concat(output).toString('utf8')) as T;
+    } catch (error) {
+      await terminateOperator(process);
+      throw error;
+    }
   }
 
   async readLegacy(
@@ -887,6 +892,7 @@ function operatorCompletion(process: OperatorProcess, label: string): Promise<vo
   });
   const completion = new Promise<void>((resolveCompletion, rejectCompletion) => {
     let termination: 'timeout' | 'aborted' | undefined;
+    let terminationCleanup: Promise<void> | undefined;
     let settled = false;
     const finish = (error?: Error) => {
       if (settled) return;
@@ -898,13 +904,25 @@ function operatorCompletion(process: OperatorProcess, label: string): Promise<vo
     };
     const timeout = () => {
       termination = 'timeout';
-      void terminateOperator(process);
+      terminationCleanup = terminateOperator(process);
+      void terminationCleanup.then(
+        () => finish(new SeedbedOperatorTimeoutError(process.operation)),
+        () => finish(new SeedbedOperatorTimeoutError(process.operation)),
+      );
     };
     const abort = () => {
       termination = process.signal?.reason instanceof DOMException && process.signal.reason.name === 'TimeoutError'
         ? 'timeout'
         : 'aborted';
-      void terminateOperator(process);
+      terminationCleanup = terminateOperator(process);
+      void terminationCleanup.then(
+        () => finish(termination === 'timeout'
+          ? new SeedbedOperatorTimeoutError(process.operation)
+          : new SeedbedOperationAbortedError(process.operation)),
+        () => finish(termination === 'timeout'
+          ? new SeedbedOperatorTimeoutError(process.operation)
+          : new SeedbedOperationAbortedError(process.operation)),
+      );
     };
     const timer = setTimeout(timeout, process.timeoutMs);
     timer.unref();
@@ -912,6 +930,7 @@ function operatorCompletion(process: OperatorProcess, label: string): Promise<vo
     if (process.signal?.aborted) abort();
     child.once('error', (error) => finish(new Error(`${label} could not start: ${redactFilesystemPaths(error.message).slice(0, 1024)}`)));
     child.once('close', (code) => {
+      if (terminationCleanup !== undefined) return;
       if (termination === 'timeout') finish(new SeedbedOperatorTimeoutError(process.operation));
       else if (termination === 'aborted') finish(new SeedbedOperationAbortedError(process.operation));
       else if (code === 0) finish();
