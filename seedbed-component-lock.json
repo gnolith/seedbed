@@ -24,7 +24,7 @@
       "version": "0.3.0",
       "artifact": "components/waystone/waystone-assets.json",
       "sha256": "f341c3fe00d3a93d9af6ca379453c02eb02287fa486847a5cf0764f1fef87a65",
-      "sourceCommit": "1d596bd838d142a57faff8a9f1146321fbe32ac2"
+      "sourceCommit": "0c40be9753f2e4fd1b89b203c3aedf7742c23912"
     }
   },
   "compose": {

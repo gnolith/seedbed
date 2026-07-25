@@ -1,0 +1,27 @@
+{
+  "package": "@gnolith/waystone",
+  "version": "0.3.0",
+  "commit": "0c40be9753f2e4fd1b89b203c3aedf7742c23912",
+  "workshop": {
+    "exactCoordinate": "@gnolith/workshop@0.5.0",
+    "commit": "66c923f9505359ee7ae92ca48beddd044d2bb036",
+    "tree": "fa55f0c8bce7a77945626f177a7759e903d7f59b",
+    "archiveBytes": 274551,
+    "archiveSha256": "5b266e029201e0eba33d497212b9f80c4b6821731efe289189d547c626f8d44c",
+    "integrity": "sha512-4DwTKaR/cObyGvNEUmQ0a7VzRU4oA2Ma5fO4IM2on+B8LOst0bAdeSLZvYqHl7rDblfgZyOG0OFBtlM9AKcnGw==",
+    "sbomSha256": "d5b003a1d0249b593eabf54d1e0c5ac4f3b5279bc2596b1b940cb6413a3d38f4",
+    "inventorySha256": "51107a743f2410c0621247df1e1db9cf0e2d6b43e4c4b3c9a91b2c63faa388bb",
+    "checksumManifestSha256": "e0741eefd87e3326e2022265b5016a911fc179d3b8485d2241fa465d09c482c3",
+    "schemaVersion": 11,
+    "operationSchemaVersion": 2,
+    "catalogDigest": "af455b4d6ab3560bca9c0ab48e9db7bd3cbcfa166ace875578d88d182069071f",
+    "assetPrefix": "/app"
+  },
+  "files": {
+    "gnolith-waystone-0.3.0.tgz": "54baccbca7dcba03a3a6ea7d2c3bfa039d3c83a5513de496569fb4418245d7f9",
+    "inventory.json": "6bc1fe2c0e0954fed0d012da09c04f1e3f3d271344c1d6e29c3d08fde1bef3f6",
+    "waystone-assets.json": "f341c3fe00d3a93d9af6ca379453c02eb02287fa486847a5cf0764f1fef87a65",
+    "waystone.cdx.json": "e74836af594c9dc407b3250e89b53aafc151e0f59b5621796cbfd4188aa3d279",
+    "waystone.css": "6439decf9ad5245e1652da92d9547ad09e1a350ea97ab9b94fc6e6b632b66a7a"
+  }
+}

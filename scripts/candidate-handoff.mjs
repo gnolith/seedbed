@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import YAML from 'yaml';
 import { createCandidateSbom } from './candidate-sbom.mjs';
+import { loadWaystoneEvidence } from './waystone-evidence.mjs';
 
 const refreshAttestation = process.argv.includes('--refresh-attestation');
 const status = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' });
@@ -41,6 +42,7 @@ for (const name of ['diamond', 'taproot', 'workshop', 'waystone']) {
     : componentLock.packages[name].artifact;
   shippedArchives[name] = { path, sha256: sha256(await readFile(path)) };
 }
+const waystoneEvidence = await loadWaystoneEvidence(componentLock, shippedArchives, waystoneManifest);
 const legacyFixture = JSON.parse(await readFile('fixtures/legacy-local-v1/fixture-evidence.json', 'utf8'));
 const localBuild = JSON.parse(await readFile('seedbed-assembly-attestation.json', 'utf8'));
 await writeFile(join(output, 'compose-graph.json'), `${JSON.stringify({
@@ -57,6 +59,7 @@ await writeFile(join(output, 'compose-graph.json'), `${JSON.stringify({
   nodeImage: componentLock.compose.nodeImage,
   qdrantImage: componentLock.compose.qdrantImage,
   components: componentLock.packages,
+  waystoneProvenance: waystoneEvidence,
   migrations: componentLock.migrations,
   legacyFixture: {
     format: legacyFixture.format,
@@ -88,6 +91,7 @@ const sbom = createCandidateSbom({
   packageManifest,
   componentLock,
   waystoneManifest,
+  waystoneEvidence,
   shippedArchives,
   commit,
   tree,
@@ -115,6 +119,7 @@ await writeFile(join(output, 'candidate.json'), `${JSON.stringify({
   localBuild,
   components: componentLock.packages,
   shippedRuntimeArchives: shippedArchives,
+  waystoneProvenance: waystoneEvidence,
   legacyFixture: {
     sha256: legacyFixture.snapshot.sha256,
     bytes: legacyFixture.snapshot.bytes,

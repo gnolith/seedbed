@@ -205,6 +205,15 @@ After committing a clean candidate, `npm run candidate` regenerates the exact pa
 Compose bundle, complete CycloneDX composition/dependency SBOM, rendered graph inventory, and lowercase SHA-256
 checksums. It never tags, publishes npm, creates a Release, or pushes an image.
 
+The consolidated Waystone boundary is frozen at protected-main commit
+`0c40be9753f2e4fd1b89b203c3aedf7742c23912` and tree
+`413e01179ee719c979485b68f32705c10794675c`. Seedbed vendors its exact
+`0.3.0` archive together with the owner candidate, inventory, and CycloneDX
+evidence under `components/waystone`. Candidate generation verifies those
+offline inputs, the unchanged immutable asset manifest and CSS, the exact
+Workshop coordinate, and includes every evidence digest in the graph, bundle,
+complete SBOM, and handoff.
+
 ## Eventual npm publication
 
 `.github/workflows/registry.yml` is the only npm publication path. A maintainer must
