@@ -1173,7 +1173,8 @@ function deepFreeze<T>(value: T): T {
 function canonicalExistingDirectory(path: string, label: string): string {
   const normalized = normalize(resolve(path));
   const metadata = lstatSync(normalized);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new TypeError(`${label} must be a real local directory`);
+  if (metadata.isSymbolicLink()) throw new TypeError(`${label} must not use a symlink, junction, or path alias`);
+  if (!metadata.isDirectory()) throw new TypeError(`${label} must be a real local directory`);
   const canonical = normalize(realpathSync(normalized));
   if (!samePath(normalized, canonical)) throw new TypeError(`${label} must not use a symlink, junction, or path alias`);
   return canonical;
@@ -1186,7 +1187,8 @@ function canonicalProspectiveDirectory(path: string, label: string): string {
   while (true) {
     try {
       const metadata = lstatSync(cursor);
-      if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new TypeError(`${label} must resolve beneath a real local directory`);
+      if (metadata.isSymbolicLink()) throw new TypeError(`${label} must not use a symlink, junction, or path alias`);
+      if (!metadata.isDirectory()) throw new TypeError(`${label} must resolve beneath a real local directory`);
       const canonicalParent = normalize(realpathSync(cursor));
       if (!samePath(cursor, canonicalParent)) throw new TypeError(`${label} must not use a symlink, junction, or path alias`);
       const canonical = normalize(join(canonicalParent, ...missing.reverse()));

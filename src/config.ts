@@ -341,8 +341,8 @@ function canonicalBaseIri(value: unknown): string {
 
 function safeAbsolutePath(value: unknown, label: string): string {
   const result = text(value, label);
-  if (!isAbsolute(result) || /[\0\r\n]/u.test(result)) fail(`${label} must be an absolute local path without control characters`);
   if (/^\\\\/u.test(result) || /^\/\/[^/]/u.test(result)) fail(`${label} must not be a network path`);
+  if (!isAbsolute(result) || /[\0\r\n]/u.test(result)) fail(`${label} must be an absolute local path without control characters`);
   return normalize(result);
 }
 
