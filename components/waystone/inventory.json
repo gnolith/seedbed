@@ -1,0 +1,26 @@
+{
+  "package": "@gnolith/waystone",
+  "version": "0.3.0",
+  "commit": "0c40be9753f2e4fd1b89b203c3aedf7742c23912",
+  "publicExports": [
+    ".",
+    "./assets",
+    "./assets/manifest.json",
+    "./assets/waystone.css",
+    "./client",
+    "./fixtures",
+    "./package.json",
+    "./plugin",
+    "./site",
+    "./styles.css"
+  ],
+  "operationCatalogDigest": "af455b4d6ab3560bca9c0ab48e9db7bd3cbcfa166ace875578d88d182069071f",
+  "workshopAssetPrefix": "/app",
+  "removedBoundaries": [
+    "authentication and token storage",
+    "canonical DTO adapters",
+    "host operations and snapshots",
+    "path maps and route construction",
+    "server and transport implementation"
+  ]
+}

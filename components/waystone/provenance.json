@@ -1,0 +1,33 @@
+{
+  "format": "gnolith-seedbed-waystone-provenance-v1",
+  "sourceCommit": "0c40be9753f2e4fd1b89b203c3aedf7742c23912",
+  "sourceTree": "413e01179ee719c979485b68f32705c10794675c",
+  "package": {
+    "path": "components/gnolith-waystone-0.3.0.tgz",
+    "bytes": 110720,
+    "sha256": "54baccbca7dcba03a3a6ea7d2c3bfa039d3c83a5513de496569fb4418245d7f9",
+    "integrity": "sha512-RNxn1Paeor0oDKxpux0hRYAUCJ6UiQXcAcMKcq6HrubLHaqBl+9HOtcb/6NKfmCnnLGB7rCeTKmVjObetSopvQ=="
+  },
+  "assetManifest": {
+    "path": "components/waystone/waystone-assets.json",
+    "sha256": "f341c3fe00d3a93d9af6ca379453c02eb02287fa486847a5cf0764f1fef87a65"
+  },
+  "css": {
+    "path": "components/waystone/assets/waystone.css",
+    "sha256": "6439decf9ad5245e1652da92d9547ad09e1a350ea97ab9b94fc6e6b632b66a7a"
+  },
+  "ownerEvidence": {
+    "candidate": {
+      "path": "components/waystone/candidate.json",
+      "sha256": "ebf28efe18829b35963d83868a661b602e384322a29a44f539944a98fe02c3c7"
+    },
+    "inventory": {
+      "path": "components/waystone/inventory.json",
+      "sha256": "6bc1fe2c0e0954fed0d012da09c04f1e3f3d271344c1d6e29c3d08fde1bef3f6"
+    },
+    "sbom": {
+      "path": "components/waystone/waystone.cdx.json",
+      "sha256": "e74836af594c9dc407b3250e89b53aafc151e0f59b5621796cbfd4188aa3d279"
+    }
+  }
+}

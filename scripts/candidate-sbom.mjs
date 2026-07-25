@@ -60,6 +60,16 @@ export function createCandidateSbom(input) {
   const graphRef = 'urn:gnolith:seedbed:compose-graph';
   const bundleRef = 'urn:gnolith:seedbed:compose-bundle';
   const waystoneAssetsRef = 'urn:gnolith:seedbed:waystone-assets';
+  const waystoneProvenanceRef = 'urn:gnolith:seedbed:waystone-provenance';
+  const waystoneCandidateRef = 'urn:gnolith:seedbed:waystone-owner-candidate';
+  const waystoneInventoryRef = 'urn:gnolith:seedbed:waystone-owner-inventory';
+  const waystoneSbomRef = 'urn:gnolith:seedbed:waystone-owner-sbom';
+  const waystoneEvidenceRefs = [
+    waystoneProvenanceRef,
+    waystoneCandidateRef,
+    waystoneInventoryRef,
+    waystoneSbomRef,
+  ];
   components.push(
     fileComponent(waystoneAssetsRef, 'waystone-assets.json', input.componentLock.packages.waystone.sha256, [
       property('gnolith:artifact:path', input.componentLock.packages.waystone.artifact),
@@ -75,6 +85,30 @@ export function createCandidateSbom(input) {
     fileComponent(bundleRef, 'seedbed-compose-bundle.tar.gz', input.composeBundleSha256, [
       property('gnolith:source:commit', input.commit),
     ]),
+    fileComponent(
+      waystoneProvenanceRef,
+      'provenance.json',
+      input.waystoneEvidence.provenance.sha256,
+      waystoneEvidenceProperties(input, input.waystoneEvidence.provenance.path),
+    ),
+    fileComponent(
+      waystoneCandidateRef,
+      'candidate.json',
+      input.waystoneEvidence.ownerEvidence.candidate.sha256,
+      waystoneEvidenceProperties(input, input.waystoneEvidence.ownerEvidence.candidate.path),
+    ),
+    fileComponent(
+      waystoneInventoryRef,
+      'inventory.json',
+      input.waystoneEvidence.ownerEvidence.inventory.sha256,
+      waystoneEvidenceProperties(input, input.waystoneEvidence.ownerEvidence.inventory.path),
+    ),
+    fileComponent(
+      waystoneSbomRef,
+      'waystone.cdx.json',
+      input.waystoneEvidence.ownerEvidence.sbom.sha256,
+      waystoneEvidenceProperties(input, input.waystoneEvidence.ownerEvidence.sbom.path),
+    ),
   );
 
   const dependencyRefs = Object.values(componentRefs);
@@ -87,6 +121,7 @@ export function createCandidateSbom(input) {
     componentLockSha256: input.componentLockSha256,
     components: input.componentLock.packages,
     shippedArchives: input.shippedArchives,
+    waystoneEvidence: input.waystoneEvidence,
   })).digest('hex');
   const result = {
     $schema: 'http://cyclonedx.org/schema/bom-1.5.schema.json',
@@ -127,17 +162,21 @@ export function createCandidateSbom(input) {
     },
     components,
     dependencies: [
-      { ref: rootRef, dependsOn: [...dependencyRefs, waystoneAssetsRef, lockRef, graphRef, bundleRef].sort() },
-      { ref: lockRef, dependsOn: [...dependencyRefs, waystoneAssetsRef].sort() },
-      { ref: graphRef, dependsOn: [...dependencyRefs, waystoneAssetsRef, lockRef].sort() },
-      { ref: bundleRef, dependsOn: [...dependencyRefs, waystoneAssetsRef, lockRef].sort() },
+      { ref: rootRef, dependsOn: [...dependencyRefs, waystoneAssetsRef, ...waystoneEvidenceRefs, lockRef, graphRef, bundleRef].sort() },
+      { ref: lockRef, dependsOn: [...dependencyRefs, waystoneAssetsRef, ...waystoneEvidenceRefs].sort() },
+      { ref: graphRef, dependsOn: [...dependencyRefs, waystoneAssetsRef, ...waystoneEvidenceRefs, lockRef].sort() },
+      { ref: bundleRef, dependsOn: [...dependencyRefs, waystoneAssetsRef, ...waystoneEvidenceRefs, lockRef].sort() },
       { ref: waystoneAssetsRef, dependsOn: [componentRefs.waystone] },
+      { ref: waystoneProvenanceRef, dependsOn: [waystoneCandidateRef] },
+      { ref: waystoneCandidateRef, dependsOn: [componentRefs.waystone, waystoneAssetsRef, waystoneInventoryRef, waystoneSbomRef].sort() },
+      { ref: waystoneInventoryRef, dependsOn: [componentRefs.waystone] },
+      { ref: waystoneSbomRef, dependsOn: [componentRefs.waystone] },
       ...dependencyRefs.sort().map((ref) => ({ ref, dependsOn: [] })),
     ],
     compositions: [{
       aggregate: 'complete',
       assemblies: [rootRef],
-      dependencies: [...dependencyRefs, waystoneAssetsRef, lockRef, graphRef, bundleRef].sort(),
+      dependencies: [...dependencyRefs, waystoneAssetsRef, ...waystoneEvidenceRefs, lockRef, graphRef, bundleRef].sort(),
     }],
   };
   assertCandidateSbom(result, input);
@@ -172,8 +211,27 @@ export function assertCandidateSbom(sbom, input) {
   if (waystoneAssets?.hashes?.[0]?.content !== input.componentLock.packages.waystone.sha256) {
     throw new TypeError('Candidate SBOM does not bind the shipped Waystone asset manifest');
   }
+  for (const [ref, digest] of [
+    ['urn:gnolith:seedbed:waystone-provenance', input.waystoneEvidence.provenance.sha256],
+    ['urn:gnolith:seedbed:waystone-owner-candidate', input.waystoneEvidence.ownerEvidence.candidate.sha256],
+    ['urn:gnolith:seedbed:waystone-owner-inventory', input.waystoneEvidence.ownerEvidence.inventory.sha256],
+    ['urn:gnolith:seedbed:waystone-owner-sbom', input.waystoneEvidence.ownerEvidence.sbom.sha256],
+  ]) {
+    const evidence = sbom.components.find((entry) => entry['bom-ref'] === ref);
+    if (evidence?.hashes?.[0]?.content !== digest) {
+      throw new TypeError(`Candidate SBOM does not bind ${ref}`);
+    }
+  }
   const rootDependency = sbom.dependencies.find((entry) => entry.ref === root['bom-ref']);
-  if (rootDependency?.dependsOn?.length !== 8) throw new TypeError('Candidate SBOM root dependency graph is incomplete');
+  if (rootDependency?.dependsOn?.length !== 12) throw new TypeError('Candidate SBOM root dependency graph is incomplete');
+}
+
+function waystoneEvidenceProperties(input, path) {
+  return [
+    property('gnolith:artifact:path', path),
+    property('gnolith:source:commit', input.waystoneEvidence.sourceCommit),
+    property('gnolith:source:tree', input.waystoneEvidence.sourceTree),
+  ];
 }
 
 function purl(name, version) {
