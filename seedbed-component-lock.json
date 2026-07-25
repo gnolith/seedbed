@@ -17,8 +17,8 @@
     "workshop": {
       "version": "0.5.0",
       "artifact": "components/gnolith-workshop-0.5.0.tgz",
-      "sha256": "660860bcce2e9cfdd48c6d7f72fcb92d8480914d63d75eab71152f63eb04605c",
-      "sourceCommit": "4614f7d6729e8afc93838f76b879ccb5c3bfe602"
+      "sha256": "5b266e029201e0eba33d497212b9f80c4b6821731efe289189d547c626f8d44c",
+      "sourceCommit": "66c923f9505359ee7ae92ca48beddd044d2bb036"
     },
     "waystone": {
       "version": "0.3.0",
