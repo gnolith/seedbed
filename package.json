@@ -103,6 +103,6 @@
     "@vitest/coverage-v8": "4.1.10",
     "typescript": "5.9.2",
     "vitest": "4.1.10",
-    "yaml": "2.9.0"
+    "yaml": "2.9.1"
   }
 }
