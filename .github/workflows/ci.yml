@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: ./.github/actions/setup-node
       - run: npm ci --ignore-scripts
       - run: npm run check
@@ -34,7 +34,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/dependency-review-action@56339e523c0409420f6c2c9a2f4292bbb3c07dd3
         with:
           fail-on-severity: high
@@ -49,7 +49,7 @@ jobs:
         env:
           CANDIDATE_RESULT: ${{ needs.candidate.result }}
         run: test "$CANDIDATE_RESULT" = success
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: ./.github/actions/setup-node
       - run: npm ci --ignore-scripts
       - name: Recompute exact package, graph, bundle, SBOM, and publication boundaries
