@@ -1,5 +1,7 @@
 # Seedbed
 
+> **Retired.** Active use of this repository has ended.
+
 Seedbed 0.4 is the deterministic Compose-first installer and offline operator control
 plane for a local Gnolith installation. It is not the Gnolith application or a
 server. Workshop is the sole HTTP `/mcp` service.
